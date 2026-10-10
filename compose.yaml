@@ -16,8 +16,12 @@ services:
       OSSBSS_DB_USER: ossbss
       OSSBSS_DB_PASSWORD: ${OSSBSS_DB_PASSWORD:?.env に OSSBSS_DB_PASSWORD を設定してください}
       OSSBSS_LOG_LEVEL: ${OSSBSS_LOG_LEVEL:-info}
+      # 利用者は Cloudflare Access の JWT で識別する（設計概要 §5）。compose では開発用の設定（OSSBSS_DEV_USER_EMAIL）は
+      # 使えない（ループバックで待ち受けるときだけ。§17.2）。
+      OSSBSS_ACCESS_TEAM_DOMAIN: ${OSSBSS_ACCESS_TEAM_DOMAIN:?.env に OSSBSS_ACCESS_TEAM_DOMAIN を設定してください}
+      OSSBSS_ACCESS_AUD: ${OSSBSS_ACCESS_AUD:?.env に OSSBSS_ACCESS_AUD を設定してください}
+      OSSBSS_INITIAL_ADMIN_EMAIL: ${OSSBSS_INITIAL_ADMIN_EMAIL:?.env に OSSBSS_INITIAL_ADMIN_EMAIL を設定してください}
     # ホストにポートを公開しない。ブラウザからの要求は、同じ compose の cloudflared から届く（設計概要 §5.4、§12）。
-    # 開発では compose.dev.yaml を重ねて、ホストのループバックにだけ公開する。
     healthcheck:
       test: ["CMD", "/eapaka-ossbss", "healthcheck"]
       interval: 10s

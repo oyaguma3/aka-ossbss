@@ -15,6 +15,8 @@ import (
 	// distroless のイメージにはタイムゾーンのデータがないので、埋め込んで環境変数 TZ を効かせる。
 	_ "time/tzdata"
 
+	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
+	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/config"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/server"
@@ -115,11 +117,47 @@ func serve(ctx context.Context) error {
 	}
 	defer d.Close()
 
-	h, err := web.New(web.Options{Log: log, Version: version, DB: d})
+	// 最初のシステム管理者（設計概要 §15 の 12）。役割を変えられていたり無効にされていたりしたら戻す。
+	res, err := d.EnsureInitialAdmin(ctx, cfg.InitialAdminEmail)
+	if err != nil {
+		return err
+	}
+	if res == db.InitialAdminRestored {
+		log.Warn("restored the initial system admin to an enabled system admin", "email", cfg.InitialAdminEmail)
+	} else {
+		log.Info("initial system admin", "email", cfg.InitialAdminEmail, "result", string(res))
+	}
+
+	ident, err := newIdentifier(ctx, cfg, log)
+	if err != nil {
+		return err
+	}
+	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident})
 	if err != nil {
 		return err
 	}
 	return server.Run(ctx, server.Options{Addr: cfg.Addr, Handler: h.Routes(), Log: log})
+}
+
+// newIdentifier は、要求から利用者を決める方法を作る（Cloudflare Access の JWT、または開発用の設定）。
+func newIdentifier(ctx context.Context, cfg config.Config, log *slog.Logger) (auth.Identifier, error) {
+	if cfg.DevMode() {
+		log.Warn("development mode: requests are not authenticated; every request acts as the development user "+
+			"(OSSBSS_DEV_USER_EMAIL). Do not use this setting in production", "email", cfg.DevUserEmail, "addr", cfg.Addr)
+		return auth.Dev(cfg.DevUserEmail), nil
+	}
+	v, err := access.New(access.Options{TeamDomain: cfg.AccessTeamDomain, AUDs: cfg.AccessAUDs,
+		HTTPClient: &http.Client{Timeout: 10 * time.Second}})
+	if err != nil {
+		return nil, err
+	}
+	// 公開鍵を先に取得しておく。取得できなくても起動は続ける（最初の要求のときにもう一度試みる）。
+	if n, err := v.Refresh(ctx); err != nil {
+		log.Warn("cannot fetch Cloudflare Access public keys; will retry on the first request", "url", v.CertsURL(), "error", err)
+	} else {
+		log.Info("cloudflare access", "team_domain", cfg.AccessTeamDomain, "auds", len(cfg.AccessAUDs), "keys", n)
+	}
+	return auth.Access(v), nil
 }
 
 func migrate(ctx context.Context) error {

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"path"
 	"strings"
+
+	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
 )
 
 // pages はページごとのテンプレート（layout.html と部品に、ページのファイルを重ねたもの）。
@@ -38,8 +40,17 @@ func parsePages() (pages, error) {
 type pageData struct {
 	Title   string
 	Version string
-	Data    any
+	// User は認証した利用者（401・403 などの画面では nil）。
+	User *db.Account
+	// Dev は開発用の設定で動いているか。
+	Dev bool
+	// LogoutURL はログアウトのリンク（Cloudflare Access のログアウト。開発用の設定では空）。
+	LogoutURL string
+	Data      any
 }
+
+// accessLogoutURL は Cloudflare Access のログアウト（公開ホスト名のパス。Access が処理する）。
+const accessLogoutURL = "/cdn-cgi/access/logout"
 
 // render はページを描いて返す。描くのに失敗したら 500 を返す（途中まで書き出さないよう、先にバッファーに描く）。
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, page, title string, data any) {
@@ -50,7 +61,14 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, pag
 		return
 	}
 	var buf bytes.Buffer
-	if err := t.ExecuteTemplate(&buf, "layout", pageData{Title: title, Version: h.version, Data: data}); err != nil {
+	pd := pageData{Title: title, Version: h.version, Dev: h.ident.Dev(), Data: data}
+	if !pd.Dev {
+		pd.LogoutURL = accessLogoutURL
+	}
+	if u := userFrom(r.Context()); u.Email != "" {
+		pd.User = &u
+	}
+	if err := t.ExecuteTemplate(&buf, "layout", pd); err != nil {
 		h.log.ErrorContext(r.Context(), "render", "page", page, "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
@@ -65,6 +83,8 @@ func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, pag
 type errorData struct {
 	Status  int
 	Message string
+	// Relogin は、別のメールアドレスでログインし直すリンク（Access のログアウト）を出すか（登録のない利用者の 403）。
+	Relogin bool
 }
 
 // renderError はエラーの画面を返す。

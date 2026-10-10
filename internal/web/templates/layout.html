@@ -16,10 +16,23 @@
   <script src="/static/htmx.min.js" defer></script>
 </head>
 <body class="min-h-screen bg-base-200 flex flex-col">
-  <header class="navbar bg-base-100 shadow-sm px-4">
+  <header class="navbar bg-base-100 shadow-sm px-4 gap-2">
     <div class="flex-1">
       <a href="/" class="text-lg font-bold">EAP-AKA OSS/BSS サンプル</a>
     </div>
+    {{- if .Dev}}
+    <span class="badge badge-warning" title="JWT を検証せず、決まった利用者として動いています">開発用の設定</span>
+    {{- end}}
+    {{- with .User}}
+    <div class="flex items-center gap-2 text-sm">
+      <span class="hidden sm:inline">{{.Email}}</span>
+      <span class="badge badge-neutral">{{.Role.Label}}</span>
+      {{- if .TenantName}}<span class="badge badge-outline">{{.TenantName}}</span>{{end}}
+    </div>
+    {{- end}}
+    {{- if and .User .LogoutURL}}
+    <a href="{{.LogoutURL}}" class="btn btn-ghost btn-sm">ログアウト</a>
+    {{- end}}
   </header>
   <main class="container mx-auto w-full max-w-6xl flex-1 px-4 py-6">
     {{template "content" .}}
