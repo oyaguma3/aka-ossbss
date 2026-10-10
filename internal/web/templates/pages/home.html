@@ -1,0 +1,18 @@
+{{define "content" -}}
+{{with .Data -}}
+<h1 class="text-2xl font-bold mb-4">ダッシュボード</h1>
+<div role="alert" class="alert alert-info mb-6">
+  <span>骨組みの段階です（設計概要 §16 の 4 のステップ 1）。認証と画面はステップ 2 以降で加えます。</span>
+</div>
+<div class="stats stats-vertical sm:stats-horizontal shadow bg-base-100">
+  <div class="stat">
+    <div class="stat-title">データベース（PostgreSQL）</div>
+    <div class="stat-value text-2xl">
+      {{- if .DBReachable}}<span class="badge badge-success badge-lg">接続できます</span>
+      {{- else}}<span class="badge badge-error badge-lg">接続できません</span>{{end -}}
+    </div>
+    <div class="stat-desc">{{if .DBReachable}}スキーマの版 {{.SchemaVersion}}{{else}}本BFF のログを確かめてください{{end}}</div>
+  </div>
+</div>
+{{- end}}
+{{- end}}

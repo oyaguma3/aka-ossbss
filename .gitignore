@@ -27,3 +27,7 @@ coverage.*
 # エディター
 *.swp
 *~
+
+# CSS の生成に使うファイル（scripts/build-css.sh が取得する）
+/.cache/
+/internal/web/css/daisyui.mjs

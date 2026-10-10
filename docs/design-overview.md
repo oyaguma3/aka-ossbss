@@ -1,6 +1,6 @@
 # eapaka-ossbss-sample 設計概要
 
-- 状態: 初版（2026-10-10）。§15 の確認事項はすべて推奨案で合意した。実装は §16 の順に進める（まだ着手していない）。
+- 状態: 初版（2026-10-10）。§15 の確認事項はすべて推奨案で合意した。実装は §16 の順に進める。§16 の 1〜3（下流の変更）は完了し、4 のステップ 1（骨組み）を実装した（§17）。
 - 対象: 外部 OSS/BSS のサンプル実装としての統合BFF（コマンド名 `eapaka-ossbss`。以下「本BFF」）。
 - 関連:
   - eapaka-node-provisioner（以下「provisioner」）: `docs/design-overview.md`、`docs/openapi/provisioner-api.yaml`、`docs/operation-guide.md`
@@ -299,3 +299,22 @@ provisioner には所属の概念がないので、A・B の一覧は本BFF の�
    6. compose（cloudflared を含む）・運用ガイド・README、実機での確認（ドメインを用意できてから、Cloudflare を通した通し）
 
 各ステップの終わりに「作ったもの」と「実際に動かして確かめたこと」を報告して確認をもらう。
+
+## 17. 実装の記録
+
+### 17.1 ステップ 1: 骨組み（2026-10-10）
+
+| 対象 | 内容 |
+|---|---|
+| コマンド | `eapaka-ossbss`。サブコマンド `serve`（既定。起動時に DB のスキーマを移行する）、`migrate`、`healthcheck`（同じコンテナの `/healthz` を確かめる。distroless に curl がないため、compose の healthcheck に使う） |
+| 設定 | `internal/config`。`OSSBSS_ADDR`（既定 `:8446`）、`OSSBSS_LOG_LEVEL`、`OSSBSS_DB_ADDR`（既定 `postgres:5432`）、`OSSBSS_DB_NAME` / `OSSBSS_DB_USER`（既定 `ossbss`）、`OSSBSS_DB_PASSWORD`（必須）、`OSSBSS_DB_MAX_CONNS`（既定 10）。誤りはまとめて返す |
+| HTTP サーバー | `internal/server`。HTTP（TLS は Cloudflare が終端する）。書き出しの上限は 90 秒（provisioner の呼び出しの上限 60 秒より長くする） |
+| DB | `internal/db`。pgx v5（`pgxpool`）。接続文字列にはせず項目ごとに渡す（パスワードの記号のため）。起動時に DB の起動を 30 秒まで待つ |
+| スキーマの移行 | `internal/db/migrations/NNNN_名前.sql` を `embed` し、未適用のものを番号順に 1 つのトランザクションで適用する（`schema_migrations`、`pg_advisory_xact_lock` で同時の移行を防ぐ）。DB の版がプログラムより新しければ起動しない。`0001_init.sql` は §11 のテーブルをすべて作る |
+| 画面の土台 | `internal/web`。レイアウト（daisyUI の navbar・footer、テーマはブラウザの設定に従う）、トップ（DB の状態）、エラーの画面、`/healthz`、静的ファイル（ETag）、セキュリティのヘッダー（CSP 等。既存の BFF と同じ）、アクセスログ（トレースID。静的ファイルと `/healthz` は debug）、`CrossOriginProtection` |
+| CSS | `scripts/build-css.sh`。Tailwind CSS v4.3.3 のスタンドアロン CLI と daisyUI v5.7.43 の `daisyui.mjs` を SHA-256 を確かめて取得し、`internal/web/css/app.input.css` から `internal/web/static/app.css` を作る（生成物と `daisyui.mjs` は `.gitignore`）。Dockerfile のビルドの段でも同じスクリプトを使う（取得したファイルはビルドのキャッシュに置く） |
+| compose | `compose.yaml`（本BFF と PostgreSQL 18。ホストにポートを公開しない）、`compose.dev.yaml`（開発用。`OSSBSS_DEV_PUBLISH`、既定 `127.0.0.1:8446` に公開する）。cloudflared はステップ 6 で加える |
+| CI | テスト（gofmt、vet、`go test -race`、PostgreSQL のサービスコンテナでの結合テストとスキップの検出）と、イメージのビルド・CSS の確認・compose の設定の確認 |
+
+- スキーマの値: 役割は `tenant_user`（A）・`tenant_admin`（B）・`operator`（C）・`system_admin`（D）。A・B だけがテナントを持つことを CHECK 制約で守る。メールアドレスは小文字で、`X-Operator-Id` の形式に合うもの（64 文字まで）に限る（§15 の 6）。所属が残るテナントは削除できない（`ON DELETE RESTRICT`）。監査ログの `tenant_id` は外部キーにしない（テナントを消しても記録を残すため）。
+- 版の選び方: daisyUI は公開から 2 週間以上たった版にした（v5.7.47 は公開から 10 日だった）。PostgreSQL は 19 が beta のため 18。

@@ -1,0 +1,32 @@
+{{define "layout" -}}
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{/* テーマはブラウザの設定（ライト / ダーク）に従う（daisyUI の light / dark。設計概要 §9）。 */ -}}
+  <meta name="color-scheme" content="light dark">
+  {{/* CSP に合わせて eval とインラインのスタイル挿入を止める。
+       履歴のスナップショットは画面の HTML（鍵情報を含みうる）をブラウザに保存するので使わない。
+       入力の誤りなどは 4xx で説明つきの HTML を返すので、4xx と 5xx の応答も差し替える（htmx の既定では差し替えない）。 */ -}}
+  <meta name="htmx-config" content='{"allowEval":false,"includeIndicatorStyles":false,"historyCacheSize":0,"refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
+  <title>{{.Title}} | EAP-AKA OSS/BSS サンプル</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body class="min-h-screen bg-base-200 flex flex-col">
+  <header class="navbar bg-base-100 shadow-sm px-4">
+    <div class="flex-1">
+      <a href="/" class="text-lg font-bold">EAP-AKA OSS/BSS サンプル</a>
+    </div>
+  </header>
+  <main class="container mx-auto w-full max-w-6xl flex-1 px-4 py-6">
+    {{template "content" .}}
+  </main>
+  <footer class="footer footer-center p-4 text-base-content/60 text-sm">
+    <p>eapaka-ossbss-sample {{.Version}}</p>
+  </footer>
+</body>
+</html>
+{{- end}}

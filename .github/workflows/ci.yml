@@ -1,0 +1,91 @@
+# テスト（PostgreSQL の結合テストを含む）、イメージのビルド（画面の CSS の生成を含む）と compose の設定の確認を行う。
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# 同じブランチで新しく push したら、古い実行は止める。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: テスト
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      # internal/db の結合テストに使う（テストのたびに public スキーマを作り直す）。
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: ossbss_test
+          POSTGRES_USER: ossbss
+          POSTGRES_PASSWORD: ci-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ossbss -d ossbss_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      OSSBSS_TEST_DB_ADDR: localhost:5432
+      OSSBSS_TEST_DB_PASSWORD: ci-password
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: 整形の確認
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt で整形されていないファイル:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: テスト（PostgreSQL の結合テストを含む）
+        run: go test -race -count=1 ./...
+      - name: PostgreSQL の結合テストが実行されたことの確認
+        run: |
+          set -o pipefail
+          # 接続先がなければ結合テストはスキップされ、テスト自体は成功してしまうので、別に確かめる。
+          go test -count=1 -v ./internal/db/ | tee db.log
+          if grep -q -- '--- SKIP' db.log; then
+            echo "PostgreSQL の結合テストがスキップされました"
+            exit 1
+          fi
+
+  docker:
+    name: イメージと compose の設定
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: イメージのビルド（画面の CSS の生成を含む）
+        run: docker build --build-arg VERSION="${GITHUB_SHA::7}" -t eapaka-ossbss:ci .
+      - name: 生成した CSS の確認
+        run: |
+          # Tailwind CSS と daisyUI で作った CSS が入っていること（テンプレートのクラスと、ダークテーマ）。
+          docker create --name css eapaka-ossbss:ci >/dev/null
+          docker cp css:/eapaka-ossbss ./eapaka-ossbss-bin
+          docker rm css >/dev/null
+          strings ./eapaka-ossbss-bin | grep -q 'daisyUI' || { echo "daisyUI の CSS が埋め込まれていません"; exit 1; }
+          strings ./eapaka-ossbss-bin | grep -q 'prefers-color-scheme:dark' || { echo "ダークテーマの CSS がありません"; exit 1; }
+      - name: compose の設定（本番と開発）
+        run: |
+          cp .env.example .env
+          sed -i -e 's|^OSSBSS_DB_PASSWORD=.*|OSSBSS_DB_PASSWORD=ci|' .env
+          docker compose config -q
+          docker compose config --services
+          COMPOSE_FILE=compose.yaml:compose.dev.yaml docker compose config -q
+          # 本番ではホストにポートを公開しない。開発ではループバックにだけ公開する。
+          ! docker compose config | grep -q 'published'
+          COMPOSE_FILE=compose.yaml:compose.dev.yaml docker compose config | grep -q 'host_ip: 127.0.0.1'

@@ -1,0 +1,12 @@
+# イメージのビルドに要らないもの。生成物（CSS）は手元のものを持ち込まず、ビルドの段で作り直す。
+.git
+.github
+.cache
+.env
+certs
+*.pem
+*.key
+CLAUDE.md
+/eapaka-ossbss
+internal/web/static/app.css
+internal/web/css/daisyui.mjs

@@ -1,0 +1,50 @@
+services:
+  eapaka-ossbss:
+    build:
+      context: .
+      args:
+        VERSION: ${OSSBSS_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Tokyo}
+      OSSBSS_ADDR: ":8446"
+      OSSBSS_DB_ADDR: postgres:5432
+      OSSBSS_DB_NAME: ossbss
+      OSSBSS_DB_USER: ossbss
+      OSSBSS_DB_PASSWORD: ${OSSBSS_DB_PASSWORD:?.env に OSSBSS_DB_PASSWORD を設定してください}
+      OSSBSS_LOG_LEVEL: ${OSSBSS_LOG_LEVEL:-info}
+    # ホストにポートを公開しない。ブラウザからの要求は、同じ compose の cloudflared から届く（設計概要 §5.4、§12）。
+    # 開発では compose.dev.yaml を重ねて、ホストのループバックにだけ公開する。
+    healthcheck:
+      test: ["CMD", "/eapaka-ossbss", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - default
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    # 本BFF 専用（テナント・利用者・所属・監査ログ。設計概要 §11）。ポートは公開しない。
+    environment:
+      POSTGRES_DB: ossbss
+      POSTGRES_USER: ossbss
+      POSTGRES_PASSWORD: ${OSSBSS_DB_PASSWORD:?.env に OSSBSS_DB_PASSWORD を設定してください}
+    volumes:
+      # PostgreSQL 18 のイメージは、データを /var/lib/postgresql/18/docker に置く（版ごとのディレクトリ）。
+      - postgres-data:/var/lib/postgresql
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ossbss -d ossbss"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

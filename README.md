@@ -17,7 +17,39 @@
 
 ## 現在の状態
 
-設計中です。設計は [docs/design-overview.md](docs/design-overview.md) にあります。実装はこれからです。
+実装中です（[設計概要](docs/design-overview.md) §16 の 4 のステップ 1「骨組み」まで）。今は、設定、HTTP サーバー、PostgreSQL への接続とスキーマの移行、画面の土台（daisyUI）、compose、CI だけがあります。認証と画面はこれから加えます。
+
+## 開発
+
+Go 1.27.1 と Docker（compose プラグイン）を使います。
+
+画面の CSS（`internal/web/static/app.css`）はリポジトリに入れていないので、最初に作ります。Tailwind CSS のスタンドアロン CLI と daisyUI のプラグインを、版を固定して取得し、SHA-256 を確かめてから使います（Node.js は使いません。Linux の x86_64 / arm64 だけ）。取得したファイルは `.cache/css/` に置いて使い回します。テンプレートのクラスを変えたら作り直します。
+
+```bash
+sh scripts/build-css.sh
+```
+
+テスト。PostgreSQL の結合テストは、接続先を環境変数で与えたときだけ動きます。テストのたびに public スキーマを作り直すので、名前に `test` を含む DB を使います（既定 `ossbss_test`）。
+
+```bash
+docker run -d --name ossbss-it-pg -p 127.0.0.1:25432:5432 -e POSTGRES_USER=ossbss -e POSTGRES_PASSWORD=it-pass -e POSTGRES_DB=ossbss_test postgres:18
+```
+
+```bash
+OSSBSS_TEST_DB_ADDR=127.0.0.1:25432 OSSBSS_TEST_DB_PASSWORD=it-pass go test -race ./...
+```
+
+compose で起動する（開発用。ホストのループバックにだけ公開する）。`.env` の `OSSBSS_DB_PASSWORD` を書き換え、`COMPOSE_FILE=compose.yaml:compose.dev.yaml` にしてから起動し、`http://127.0.0.1:8446/` を開きます。
+
+```bash
+cp .env.example .env && chmod 600 .env
+```
+
+```bash
+docker compose up -d --build
+```
+
+本番の構成（cloudflared を含む）と運用の手順は、設計概要 §16 の 4 のステップ 6 で運用ガイドにまとめます。
 
 ## ライセンス
 

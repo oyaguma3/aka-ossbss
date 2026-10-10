@@ -1,0 +1,6 @@
+# 開発用（設計概要 §12、§15 の 10）。本BFF をホストのループバックにだけ公開する（cloudflared は使わない）。
+# .env の COMPOSE_FILE に compose.yaml:compose.dev.yaml と書いて重ねる。
+services:
+  eapaka-ossbss:
+    ports:
+      - "${OSSBSS_DEV_PUBLISH:-127.0.0.1:8446}:8446"

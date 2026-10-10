@@ -1,0 +1,11 @@
+{{define "content" -}}
+{{with .Data -}}
+<div class="card bg-base-100 shadow max-w-xl mx-auto">
+  <div class="card-body">
+    <h1 class="card-title">{{.Status}}</h1>
+    <p role="alert">{{.Message}}</p>
+    <div class="card-actions justify-end"><a href="/" class="btn btn-primary">トップへ</a></div>
+  </div>
+</div>
+{{- end}}
+{{- end}}
