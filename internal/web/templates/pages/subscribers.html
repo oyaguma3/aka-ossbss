@@ -29,10 +29,14 @@
 <div role="status" class="alert alert-info mb-4"><span>{{.Scanned}} 件を調べました（IMSI {{.ScanLast}} まで）。続きは「続きを探す」で調べます。</span></div>
 {{- end}}
 
+{{- if and .CanAssign .Rows}}
+{{template "bulk-assign" (dict "Action" "/subscribers/assign" "Back" .Back "Tenants" .Tenants "What" "加入者")}}
+{{- end}}
 <div class="overflow-x-auto bg-base-100 rounded-box shadow">
   <table class="table table-sm">
     <thead>
       <tr>
+        {{- if .CanAssign}}<th class="w-8"><span class="sr-only">選ぶ</span></th>{{end}}
         <th>IMSI</th>
         {{- if .Staff}}<th>テナント</th><th>鍵の置き場所</th><th>SQN</th><th>AMF</th>{{end}}
         <th>認可ポリシー</th>
@@ -43,6 +47,9 @@
     <tbody>
       {{- range .Rows}}
       <tr>
+        {{- if $.Data.CanAssign}}
+        <td>{{if not .Missing}}<input type="checkbox" name="imsi" value="{{.IMSI}}" form="bulk-assign" class="checkbox checkbox-sm" aria-label="{{.IMSI}} を選ぶ">{{end}}</td>
+        {{- end}}
         <td class="font-mono">
           {{- if .Missing}}{{.IMSI}}{{else}}<a class="link" href="/subscribers/{{.IMSI}}">{{.IMSI}}</a>{{end -}}
         </td>
@@ -68,7 +75,7 @@
         {{- end}}
       </tr>
       {{- else}}
-      <tr><td colspan="{{if .Staff}}8{{else}}3{{end}}" class="text-base-content/60">該当する加入者はありません。</td></tr>
+      <tr><td colspan="{{if .CanAssign}}9{{else if .Staff}}8{{else}}3{{end}}" class="text-base-content/60">該当する加入者はありません。</td></tr>
       {{- end}}
     </tbody>
   </table>

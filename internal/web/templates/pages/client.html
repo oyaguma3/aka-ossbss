@@ -23,6 +23,10 @@
     </div>
   </div>
 
+  {{- if .CanAssign}}
+  {{template "assign-card" (dict "URL" (printf "/clients/%d/tenant" .Client.ID) "Target" "#client" "Current" .Tenant "Tenants" .Tenants "What" "RADIUSクライアント")}}
+  {{- end}}
+
   {{- if .CanEdit}}
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">

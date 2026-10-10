@@ -42,6 +42,12 @@ type fakePV struct {
 	lastUpdate       provisioner.SubscriberUpdate
 	lastClientUpdate provisioner.RADIUSClientUpdate
 	lastPut          provisioner.PolicyPut
+	// policyCalls は ListPolicies の呼び出し回数。opsByID は操作の記録、pvAudit・provAudit・akaAudit は監査ログ。
+	policyCalls int
+	opsByID     map[string]provisioner.Operation
+	pvAudit     []provisioner.AuditLogEntry
+	provAudit   []provisioner.ProvAuditLogEntry
+	akaAudit    []provisioner.AkaAuditLogEntry
 }
 
 func newFakePV() *fakePV {
@@ -55,7 +61,7 @@ func newFakePV() *fakePV {
 		Operations: &provisioner.OperationCounts{Failed: 1}},
 		subs: map[string]provisioner.Subscriber{}, keys: map[string]provisioner.SubscriberKeys{},
 		clients: map[int64]provisioner.RADIUSClient{}, secrets: map[int64]string{}, nextID: 1,
-		errs: map[string]error{}}
+		errs: map[string]error{}, opsByID: map[string]provisioner.Operation{}}
 }
 
 func pvNotFound(cause string) error {
@@ -370,4 +376,97 @@ func (f *fakePV) ListSessions(_ context.Context, p provisioner.SessionParams) (p
 		}
 	}
 	return l, nil
+}
+
+// ---- 認可ポリシーの一覧、操作の記録、監査ログ（ステップ 5） ----
+
+func (f *fakePV) ListPolicies(_ context.Context, p provisioner.ListParams) (provisioner.PolicyList, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.policyCalls++
+	if err := f.errs["ListPolicies"]; err != nil {
+		return provisioner.PolicyList{}, err
+	}
+	var l provisioner.PolicyList
+	var rest []provisioner.Policy
+	for _, imsi := range slices.Sorted(maps.Keys(f.subs)) {
+		s := f.subs[imsi]
+		if s.Policy == nil {
+			continue
+		}
+		l.Total++
+		if imsi > p.Cursor {
+			rest = append(rest, provisioner.Policy{IMSI: imsi, Default: s.Policy.Default, Rules: s.Policy.Rules, Status: s.Status})
+		}
+	}
+	if limit := cmp.Or(p.Limit, 50); len(rest) > limit {
+		rest = rest[:limit]
+		l.NextCursor = rest[limit-1].IMSI
+	}
+	l.Items = rest
+	return l, nil
+}
+
+func (f *fakePV) ListOperations(_ context.Context, status string, limit int) (provisioner.OperationList, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.errs["ListOperations"]; err != nil {
+		return provisioner.OperationList{}, err
+	}
+	var l provisioner.OperationList
+	for _, id := range slices.Sorted(maps.Keys(f.opsByID)) {
+		op := f.opsByID[id]
+		if (status == "" && slices.Contains(operationStatuses, op.Status)) || op.Status == status {
+			l.Total++
+			if len(l.Items) < limit {
+				l.Items = append(l.Items, op)
+			}
+		}
+	}
+	return l, nil
+}
+
+func (f *fakePV) GetOperation(_ context.Context, id string) (provisioner.Operation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	op, ok := f.opsByID[id]
+	if !ok {
+		return provisioner.Operation{}, pvNotFound(provisioner.CauseOperationNotFound)
+	}
+	return op, nil
+}
+
+func (f *fakePV) RetryOperation(ctx context.Context, id, key string) (provisioner.Operation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record(ctx, "RetryOperation", key)
+	if err := f.errs["RetryOperation"]; err != nil {
+		return provisioner.Operation{}, err
+	}
+	op := f.opsByID[id]
+	op.Status = provisioner.OpCompleted
+	f.opsByID[id] = op
+	return op, nil
+}
+
+func (f *fakePV) DismissOperation(ctx context.Context, id, key string) (provisioner.Operation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record(ctx, "DismissOperation", key)
+	op := f.opsByID[id]
+	op.Status = provisioner.OpDismissed
+	f.opsByID[id] = op
+	return op, nil
+}
+
+func (f *fakePV) ListAuditLogs(context.Context, provisioner.AuditLogParams) (provisioner.AuditLogList, error) {
+	return provisioner.AuditLogList{Items: f.pvAudit}, f.errs["ListAuditLogs"]
+}
+
+func (f *fakePV) ListProvAuditLogs(context.Context, provisioner.AuditLogParams) (provisioner.ProvAuditLogList, error) {
+	return provisioner.ProvAuditLogList{Items: f.provAudit}, f.errs["ListProvAuditLogs"]
+}
+
+func (f *fakePV) ListAkaAuditLogs(context.Context, provisioner.AuditLogParams) (provisioner.AkaAuditLogList, error) {
+	return provisioner.AkaAuditLogList{Items: f.akaAudit}, f.errs["ListAkaAuditLogs"]
 }

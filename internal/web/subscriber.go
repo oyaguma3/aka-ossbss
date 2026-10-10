@@ -61,12 +61,19 @@ type subscriberListData struct {
 	ScanLast    string
 	Message     string
 	Error       string
+	// CanAssign は、行のチェックボックスとまとめての付け替えを出すか（システム管理者。画面仕様 §7.1）。Back は付け替えの後の戻り先。
+	CanAssign bool
+	Back      string
 }
 
 func (h *Handler) subscribers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	d := subscriberListData{Staff: isStaff(r), CanCreate: can(r, authz.SubscriberCreate),
-		Prefix: strings.TrimSpace(q.Get("prefix")), Cursor: q.Get("cursor")}
+		Prefix: strings.TrimSpace(q.Get("prefix")), Cursor: q.Get("cursor"),
+		CanAssign: can(r, authz.AssignmentUpdate), Back: r.URL.RequestURI()}
+	if d.CanAssign {
+		d.Message, d.Error = bulkResult(r)
+	}
 	if v := q.Get("deleted"); imsiPattern.MatchString(v) {
 		d.Message = "加入者 " + v + " を削除しました（認可ポリシーも削除しました）。"
 		if q.Get("unassign") == "failed" {
@@ -384,10 +391,13 @@ type subscriberData struct {
 	CanEditPolicy, CanKeys, CanAuth, CanDelete, CanSuspend bool
 	// AuthKey・DeleteKey・StatusKey は、変更・削除・停止と再開のフォームの Idempotency-Key。
 	AuthKey, DeleteKey, StatusKey string
-	Message                       string
-	Error                         string
-	ErrorOperation                string
-	Errors                        fieldErrors
+	// CanAssign は所属の変更を出すか（システム管理者）。Tenants はその選択肢。
+	CanAssign      bool
+	Tenants        tenantInfo
+	Message        string
+	Error          string
+	ErrorOperation string
+	Errors         fieldErrors
 }
 
 // missingMessage は、provisioner に加入者がないときの文。所属の記録があれば、本BFF の外で削除されたものと分かる。
@@ -408,12 +418,13 @@ func (h *Handler) loadSubscriber(r *http.Request, imsi string, tenant int64) (su
 		CanDelete:     authz.Allowed(a, authz.SubscriberDelete, tenant),
 		CanSuspend:    authz.Allowed(a, authz.SubscriberSuspend, tenant),
 		AuthKey:       newIdemKey(), DeleteKey: newIdemKey(), StatusKey: newIdemKey(), Errors: fieldErrors{}}
+	d.CanAssign = authz.Allowed(a, authz.AssignmentUpdate, tenant)
 	if d.Staff {
 		t, err := h.tenants(r)
 		if err != nil {
 			h.log.Error("tenants", "error", err)
 		}
-		d.TenantName = t.Name(tenant)
+		d.TenantName, d.Tenants = t.Name(tenant), t
 	}
 	sub, err := h.pv.GetSubscriber(r.Context(), imsi)
 	if err != nil {

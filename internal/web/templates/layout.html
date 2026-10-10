@@ -38,10 +38,9 @@
   {{- if .User}}
   <nav class="bg-base-100 border-t border-base-200 shadow-sm" aria-label="メニュー">
     <ul class="menu menu-horizontal px-2 py-1 gap-1">
-      <li><a href="/"{{if eq .Section ""}} class="menu-active" aria-current="page"{{end}}>ダッシュボード</a></li>
-      <li><a href="/subscribers"{{if eq .Section "subscribers"}} class="menu-active" aria-current="page"{{end}}>加入者</a></li>
-      <li><a href="/clients"{{if eq .Section "clients"}} class="menu-active" aria-current="page"{{end}}>RADIUSクライアント</a></li>
-      <li><a href="/sessions"{{if eq .Section "sessions"}} class="menu-active" aria-current="page"{{end}}>セッション</a></li>
+      {{- range .Nav}}
+      <li><a href="{{.Href}}"{{if .Active $.Section}} class="menu-active" aria-current="page"{{end}}>{{.Label}}</a></li>
+      {{- end}}
     </ul>
   </nav>
   {{- end}}

@@ -1,0 +1,80 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/accounts">アカウント</a></li><li>{{.Data.Account.Email}}</li></ul></div>
+{{template "account-detail" .Data}}
+{{- end}}
+
+{{/* 操作のたびに htmx でこの部分を差し替える。 */}}
+{{define "account-detail" -}}
+<div id="account">
+  <h1 class="text-2xl font-bold mb-4">アカウント {{.Account.Email}}</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-48">役割</th><td>{{.Account.Role.Label}}</td></tr>
+          <tr><th>テナント</th><td>{{or .Account.TenantName "-"}}</td></tr>
+          <tr><th>状態</th><td>{{if .Account.Disabled}}<span class="badge badge-error">無効</span>{{else}}有効{{end}}</td></tr>
+          <tr><th>作成日時</th><td>{{datetime .Account.CreatedAt}}（{{or .Account.CreatedBy "-"}}）</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {{- if .Fixed}}
+  <div role="status" class="alert alert-info"><span>{{.Fixed}}</span></div>
+  {{- else}}
+
+  {{- if .Admin}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">役割とテナントの変更</h2>
+      <form hx-post="/accounts/{{.Account.ID}}/update" hx-target="#account" hx-swap="outerHTML" class="flex flex-wrap items-end gap-2">
+        {{template "account-from" .Account}}
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">役割</legend>
+          <select name="role" class="select{{if .Errors.role}} select-error{{end}}">
+            {{- range .Roles}}
+            <option value="{{.}}"{{if eq (printf "%s" .) $.Role}} selected{{end}}>{{.Label}}</option>
+            {{- end}}
+          </select>
+          {{template "field-error" .Errors.role}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">テナント</legend>
+          {{template "tenant-select" (dict "Value" .Tenant "Tenants" .Tenants)}}
+          {{template "field-error" .Errors.tenant}}
+        </fieldset>
+        <button type="submit" class="btn btn-primary mb-2">変更する</button>
+      </form>
+      <p class="text-sm text-base-content/60">テナントユーザーとテナント管理者はテナントが必須、運用担当とシステム管理者はテナントを持ちません。次の要求から効きます。</p>
+    </div>
+  </div>
+  {{- end}}
+
+  <div class="flex flex-wrap gap-2">
+    {{- if .Account.Disabled}}
+    <form hx-post="/accounts/{{.Account.ID}}/enable" hx-target="#account" hx-swap="outerHTML">
+      {{template "account-from" .Account}}
+      <button type="submit" class="btn">有効にする</button>
+    </form>
+    {{- else}}
+    <form id="account-disable" hx-post="/accounts/{{.Account.ID}}/disable" hx-target="#account" hx-swap="outerHTML">{{template "account-from" .Account}}</form>
+    <button type="button" class="btn btn-warning btn-outline" command="show-modal" commandfor="dialog-disable">無効にする</button>
+    {{- end}}
+    <form id="account-delete" hx-post="/accounts/{{.Account.ID}}/delete" hx-target="#account" hx-swap="outerHTML">{{template "account-from" .Account}}</form>
+    <button type="button" class="btn btn-error btn-outline" command="show-modal" commandfor="dialog-delete">削除</button>
+  </div>
+  {{- if not .Account.Disabled}}
+  {{template "confirm" (dict "ID" "dialog-disable" "Title" "アカウントの無効化" "Form" "account-disable" "Label" "無効にする" "Class" "btn-warning"
+    "Message" (printf "アカウント %s を無効にします。次の要求から、この利用者は画面を使えなくなります。よろしいですか？" .Account.Email))}}
+  {{- end}}
+  {{template "confirm" (dict "ID" "dialog-delete" "Title" "アカウントの削除" "Form" "account-delete" "Label" "削除する" "Class" "btn-error"
+    "Message" (printf "アカウント %s を削除します。監査ログは残ります。よろしいですか？" .Account.Email))}}
+  {{- end}}
+</div>
+{{- end}}
+
+{{/* account-from は画面を開いた時点の役割・テナント（引数はアカウント）。送るときに今と同じかを確かめる（他の操作で変わっていたら断る）。 */}}
+{{define "account-from"}}<input type="hidden" name="from_role" value="{{.Role}}"><input type="hidden" name="from_tenant" value="{{.TenantID}}">{{end}}

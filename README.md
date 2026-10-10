@@ -17,7 +17,7 @@
 
 ## 現在の状態
 
-実装中です（[設計概要](docs/design-overview.md) §16 の 4 のステップ 4 まで）。今は、骨組み（設定、HTTP サーバー、PostgreSQL とスキーマの移行、画面の土台、compose、CI）、Cloudflare Access の JWT による利用者の識別と役割・権限の判定、eapaka-node-provisioner のクライアント（契約テストつき）と、加入者・認可ポリシー・停止と再開・RADIUSクライアント・セッションの画面（テナントの範囲で絞る。[画面仕様](docs/screen-spec.md)）があります。テナント・アカウント・操作の記録・監査ログの画面はこれから加えます。
+実装中です（[設計概要](docs/design-overview.md) §16 の 4 のステップ 5 まで）。今は、骨組み（設定、HTTP サーバー、PostgreSQL とスキーマの移行、画面の土台、compose、CI）、Cloudflare Access の JWT による利用者の識別と役割・権限の判定、eapaka-node-provisioner のクライアント（契約テストつき）と、画面（加入者・認可ポリシー・停止と再開・RADIUSクライアント・セッション・テナント・アカウント・所属の付け替えと点検・操作の記録・監査ログ・ダッシュボード。テナントの範囲で絞る。[画面仕様](docs/screen-spec.md)）があります。cloudflared を含む compose と運用ガイドは、ステップ 6 で加えます。
 
 ## 開発
 

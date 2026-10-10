@@ -1,0 +1,82 @@
+{{define "content" -}}
+<h1 class="text-2xl font-bold mb-4">アカウント</h1>
+{{template "accounts-section" .Data}}
+{{- end}}
+
+{{/* 作成のたびに htmx でこの部分を差し替える。 */}}
+{{define "accounts-section" -}}
+<div id="accounts">
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+
+  {{- if .Filter.Selectable}}
+  <form method="get" action="/accounts" class="flex flex-wrap items-end gap-2 mb-4">
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">テナント</legend>
+      <select name="tenant" class="select">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants)}}</select>
+    </fieldset>
+    <button type="submit" class="btn">絞り込む</button>
+  </form>
+  {{- end}}
+
+  <div class="overflow-x-auto bg-base-100 rounded-box shadow mb-6">
+    <table class="table table-sm">
+      <thead><tr><th>メールアドレス</th><th>役割</th><th>テナント</th><th>状態</th><th>作成日時</th><th>作成者</th></tr></thead>
+      <tbody>
+        {{- range .Rows}}
+        <tr>
+          <td>
+            {{- if .Manageable}}<a class="link" href="/accounts/{{.ID}}">{{.Email}}</a>{{else}}{{.Email}}{{end}}
+            {{- if .Initial}} <span class="badge badge-outline badge-sm">最初のシステム管理者</span>{{end}}
+            {{- if .Self}} <span class="badge badge-outline badge-sm">自分</span>{{end}}
+          </td>
+          <td>{{.Role.Label}}</td>
+          <td>{{or .TenantName "-"}}</td>
+          <td>{{if .Disabled}}<span class="badge badge-error badge-sm">無効</span>{{else}}有効{{end}}</td>
+          <td class="whitespace-nowrap">{{datetime .CreatedAt}}</td>
+          <td>{{or .CreatedBy "-"}}</td>
+        </tr>
+        {{- else}}
+        <tr><td colspan="6" class="text-base-content/60">アカウントはありません。</td></tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+  {{- if not .Admin}}
+  <p class="text-sm text-base-content/60 mb-6">あなたが作成・変更できるのは、このテナントのテナントユーザーだけです。テナント管理者のアカウントは、システム管理者が管理します。</p>
+  {{- end}}
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">作成</h2>
+      <form hx-post="/accounts" hx-target="#accounts" hx-swap="outerHTML" autocomplete="off">
+        <div class="grid gap-x-6 md:grid-cols-3">
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">メールアドレス</legend>
+            <input name="email" type="email" value="{{.Form.Email}}" required maxlength="64" class="input w-full{{if .Form.Errors.email}} input-error{{end}}">
+            {{- if .Form.Errors.email}}{{template "field-error" .Form.Errors.email}}{{else}}<p class="label">Cloudflare Access でログインするメールアドレス</p>{{end}}
+          </fieldset>
+          {{- if .Admin}}
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">役割</legend>
+            <select name="role" class="select w-full{{if .Form.Errors.role}} select-error{{end}}">
+              {{- range .Roles}}
+              <option value="{{.}}"{{if eq (printf "%s" .) $.Form.Role}} selected{{end}}>{{.Label}}</option>
+              {{- end}}
+            </select>
+            {{template "field-error" .Form.Errors.role}}
+          </fieldset>
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">テナント</legend>
+            {{template "tenant-select" (dict "Value" .Form.Tenant "Tenants" .Tenants)}}
+            {{- if .Form.Errors.tenant}}{{template "field-error" .Form.Errors.tenant}}{{else}}<p class="label whitespace-normal">テナントユーザーとテナント管理者は必須。運用担当とシステム管理者は選ばない</p>{{end}}
+          </fieldset>
+          {{- end}}
+        </div>
+        {{- if not .Admin}}<p class="text-sm text-base-content/60 my-2">このテナントのテナントユーザーとして作成します。</p>{{end}}
+        <p class="text-sm text-base-content/60 my-2">メールアドレスは、英数字と . _ - と @ の 64 文字までです（+ などは使えません）。作成した後に、Cloudflare Access のポリシーでもログインを許可してください。</p>
+        <button type="submit" class="btn btn-primary">作成する</button>
+      </form>
+    </div>
+  </div>
+</div>
+{{- end}}

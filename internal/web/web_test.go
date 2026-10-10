@@ -460,3 +460,225 @@ func TestHomeProvisioner(t *testing.T) {
 		t.Error("not provisioner is not shown")
 	}
 }
+
+// ---- fakeDB: テナント・アカウント・監査ログ・所属の記録の点検（ステップ 5） ----
+
+func (f *fakeDB) tenantName(id int64) string {
+	for _, t := range f.tenants {
+		if t.ID == id {
+			return t.Name
+		}
+	}
+	return ""
+}
+
+func (f *fakeDB) summary(t db.Tenant) db.TenantSummary {
+	s := db.TenantSummary{Tenant: t}
+	for _, v := range f.subTenants {
+		if v == t.ID {
+			s.Subscribers++
+		}
+	}
+	for _, v := range f.clientTenants {
+		if v == t.ID {
+			s.Clients++
+		}
+	}
+	for _, a := range f.accounts {
+		if a.TenantID == t.ID {
+			s.Accounts++
+		}
+	}
+	return s
+}
+
+func (f *fakeDB) TenantSummaries(context.Context) ([]db.TenantSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []db.TenantSummary
+	for _, t := range f.tenants {
+		out = append(out, f.summary(t))
+	}
+	return out, f.err
+}
+
+func (f *fakeDB) TenantSummary(_ context.Context, id int64) (db.TenantSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.tenants {
+		if t.ID == id {
+			return f.summary(t), f.err
+		}
+	}
+	return db.TenantSummary{}, cmp.Or(f.err, db.ErrNotFound)
+}
+
+func (f *fakeDB) CreateTenant(_ context.Context, name string) (db.Tenant, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, t := range f.tenants {
+		if t.Name == name {
+			return db.Tenant{}, db.ErrConflict
+		}
+	}
+	t := db.Tenant{ID: int64(100 + len(f.tenants)), Name: name}
+	f.tenants = append(f.tenants, t)
+	return t, f.err
+}
+
+func (f *fakeDB) RenameTenant(_ context.Context, id int64, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := slices.IndexFunc(f.tenants, func(t db.Tenant) bool { return t.ID == id })
+	if i < 0 {
+		return db.ErrNotFound
+	}
+	if slices.ContainsFunc(f.tenants, func(t db.Tenant) bool { return t.Name == name && t.ID != id }) {
+		return db.ErrConflict
+	}
+	f.tenants[i].Name = name
+	return f.err
+}
+
+func (f *fakeDB) DeleteTenant(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := slices.IndexFunc(f.tenants, func(t db.Tenant) bool { return t.ID == id })
+	if i < 0 {
+		return db.ErrNotFound
+	}
+	if s := f.summary(f.tenants[i]); s.Subscribers+s.Clients+s.Accounts > 0 {
+		return db.ErrInUse
+	}
+	f.tenants = slices.Delete(f.tenants, i, i+1)
+	return f.err
+}
+
+func (f *fakeDB) withTenantName(a db.Account) db.Account {
+	a.TenantName = f.tenantName(a.TenantID)
+	return a
+}
+
+func (f *fakeDB) Accounts(_ context.Context, flt db.AccountFilter) ([]db.Account, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []db.Account
+	for _, email := range slices.Sorted(maps.Keys(f.accounts)) {
+		a := f.accounts[email]
+		if flt.All || (flt.NoTenant && a.TenantID == 0) || (!flt.NoTenant && a.TenantID == flt.TenantID) {
+			out = append(out, f.withTenantName(a))
+		}
+	}
+	return out, f.err
+}
+
+func (f *fakeDB) AccountByID(_ context.Context, id int64) (db.Account, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.accounts {
+		if a.ID == id {
+			return f.withTenantName(a), f.err
+		}
+	}
+	return db.Account{}, cmp.Or(f.err, db.ErrNotFound)
+}
+
+func (f *fakeDB) CreateAccount(_ context.Context, email string, role authz.Role, tenantID int64, by string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.accounts[email]; ok {
+		return 0, db.ErrConflict
+	}
+	id := int64(100 + len(f.accounts))
+	f.accounts[email] = db.Account{ID: id, Email: email, Role: role, TenantID: tenantID, CreatedBy: by}
+	return id, f.err
+}
+
+// accountByID は ID のアカウントのメールアドレスを返す（ロックを持って呼ぶ）。
+func (f *fakeDB) emailOf(id int64, from db.AccountState) (string, bool) {
+	for email, a := range f.accounts {
+		if a.ID == id && a.Role == from.Role && a.TenantID == from.TenantID {
+			return email, true
+		}
+	}
+	return "", false
+}
+
+func (f *fakeDB) UpdateAccount(_ context.Context, id int64, from, to db.AccountState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	email, ok := f.emailOf(id, from)
+	if !ok {
+		return db.ErrNotFound
+	}
+	a := f.accounts[email]
+	a.Role, a.TenantID = to.Role, to.TenantID
+	f.accounts[email] = a
+	return f.err
+}
+
+func (f *fakeDB) SetAccountDisabled(_ context.Context, id int64, from db.AccountState, disabled bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	email, ok := f.emailOf(id, from)
+	if !ok {
+		return db.ErrNotFound
+	}
+	a := f.accounts[email]
+	a.Disabled = disabled
+	f.accounts[email] = a
+	return f.err
+}
+
+func (f *fakeDB) DeleteAccount(_ context.Context, id int64, from db.AccountState) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	email, ok := f.emailOf(id, from)
+	if !ok {
+		return db.ErrNotFound
+	}
+	delete(f.accounts, email)
+	return f.err
+}
+
+func (f *fakeDB) ListAudit(_ context.Context, q db.AuditQuery) ([]db.AuditRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []db.AuditRecord
+	for i := len(f.audit) - 1; i >= 0; i-- {
+		e, id := f.audit[i], int64(i+1)
+		switch {
+		case q.NoTenant && e.TenantID != 0, !q.AllTenants && !q.NoTenant && e.TenantID != q.TenantID,
+			q.Action != "" && e.Action != q.Action, q.Before != 0 && id >= q.Before:
+			continue
+		}
+		if len(out) == q.Limit {
+			break
+		}
+		out = append(out, db.AuditRecord{ID: id, ActorEmail: e.ActorEmail, ActorRole: e.ActorRole, TenantID: e.TenantID,
+			Action: e.Action, Target: e.Target, Detail: e.Detail, TraceID: e.TraceID, Remote: e.Remote})
+	}
+	return out, f.err
+}
+
+func (f *fakeDB) SubscriberAssignments(_ context.Context, after string, limit int) ([]db.Assignment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []db.Assignment
+	for _, imsi := range slices.Sorted(maps.Keys(f.subTenants)) {
+		if imsi > after && len(out) < limit {
+			out = append(out, db.Assignment{IMSI: imsi, TenantID: f.subTenants[imsi], AssignedBy: "c@example.com"})
+		}
+	}
+	return out, f.err
+}
+
+func (f *fakeDB) ClientAssignments(context.Context) ([]db.Assignment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []db.Assignment
+	for _, id := range slices.Sorted(maps.Keys(f.clientTenants)) {
+		out = append(out, db.Assignment{ClientID: id, TenantID: f.clientTenants[id]})
+	}
+	return out, f.err
+}

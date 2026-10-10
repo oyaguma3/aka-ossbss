@@ -243,6 +243,18 @@ const (
 	auditClientUpdate       = "client.update"
 	auditClientDelete       = "client.delete"
 	auditClientSecretRead   = "client.secret.read"
+	auditAssignmentUpdate   = "assignment.update"
+	auditAssignmentDelete   = "assignment.delete"
+	auditTenantCreate       = "tenant.create"
+	auditTenantUpdate       = "tenant.update"
+	auditTenantDelete       = "tenant.delete"
+	auditAccountCreate      = "account.create"
+	auditAccountUpdate      = "account.update"
+	auditAccountDisable     = "account.disable"
+	auditAccountEnable      = "account.enable"
+	auditAccountDelete      = "account.delete"
+	auditOperationRetry     = "operation.retry"
+	auditOperationDismiss   = "operation.dismiss"
 )
 
 // record は、成功した操作を本BFF の監査ログに残す。tenant は対象のテナント（テナントなしは 0）。
@@ -258,6 +270,21 @@ func (h *Handler) record(r *http.Request, action, target string, tenant int64, d
 	if err := h.db.InsertAudit(ctx, e); err != nil {
 		h.log.Error("audit log write failed", "action", action, "target", target, "user", u.Email,
 			"trace_id", e.TraceID, "error", err)
+	}
+}
+
+// recordMove は、テナントが from から to に変わる操作（所属の付け替え、アカウントのテナントの変更）を監査ログに残す。
+// 移動元と移動先が別のテナントなら、それぞれのテナントに 1 行ずつ書く（行は対象のテナントを 1 つしか持たないので、
+// 移動元のテナント管理者にも見えるように。テナントなしの側には書かない。§17.5 の 3）。両方テナントなしなら 1 行。
+func (h *Handler) recordMove(r *http.Request, action, target string, from, to int64, detail map[string]any) {
+	switch {
+	case from == to || from == authz.NoTenant:
+		h.record(r, action, target, to, detail)
+	case to == authz.NoTenant:
+		h.record(r, action, target, from, detail)
+	default:
+		h.record(r, action, target, from, detail)
+		h.record(r, action, target, to, detail)
 	}
 }
 

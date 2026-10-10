@@ -2,9 +2,44 @@
 {{$user := .User -}}
 {{with .Data -}}
 <h1 class="text-2xl font-bold mb-4">ダッシュボード</h1>
-<div role="alert" class="alert alert-info mb-6">
-  <span>加入者・RADIUSクライアント・セッションの画面までの段階です（設計概要 §16 の 4 のステップ 4）。テナント・アカウント・操作の記録・監査ログの画面と、ダッシュボードの件数はステップ 5 で加えます。</span>
+
+{{- with .Provisioner}}{{with .Status.Operations}}{{if or .Running .Retrying .Failed}}
+<div role="alert" class="alert alert-warning mb-4">
+  <span>完了していない操作があります（実行中 {{.Running}}、やり直し中 {{.Retrying}}、失敗 {{.Failed}}）。<a class="link" href="/operations">操作の記録を開く</a></span>
 </div>
+{{- end}}{{end}}{{end}}
+
+{{- with .Counts}}
+<div class="stats stats-vertical sm:stats-horizontal bg-base-100 shadow w-full mb-6">
+  {{- if .Staff}}
+  <div class="stat">
+    <div class="stat-title">テナント</div>
+    <div class="stat-value">{{if ge .Tenants 0}}{{.Tenants}}{{else}}-{{end}}</div>
+    {{- if ge .Tenants 0}}<div class="stat-desc"><a class="link" href="/tenants">一覧へ</a></div>{{end}}
+  </div>
+  {{- end}}
+  <div class="stat">
+    <div class="stat-title">加入者</div>
+    <div class="stat-value">{{if ge .Subscribers 0}}{{.Subscribers}}{{else}}-{{end}}</div>
+    <div class="stat-desc">{{if .Staff}}認可ポリシーの数{{else}}自分のテナントの所属の記録の数{{end}}。<a class="link" href="/subscribers">一覧へ</a></div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">停止中</div>
+    {{- /* 停止中の数は、範囲のすべての認可ポリシーを読むので、画面を出した後に読み込む（画面仕様 §6）。 */}}
+    <div class="stat-value" hx-get="/dashboard/suspended" hx-trigger="load" hx-swap="innerHTML"><span class="loading loading-dots loading-md" aria-label="数えています"></span></div>
+    <div class="stat-desc">次の認証から拒否される加入者</div>
+  </div>
+  <div class="stat">
+    <div class="stat-title">RADIUSクライアント</div>
+    <div class="stat-value">{{if ge .Clients 0}}{{.Clients}}{{else}}-{{end}}</div>
+    <div class="stat-desc"><a class="link" href="/clients">一覧へ</a></div>
+  </div>
+</div>
+{{- if or (lt .Subscribers 0) (lt .Clients 0)}}
+<p class="text-sm text-base-content/60 mb-4">「-」の件数は取得できませんでした（provisioner かデータベースに接続できません）。</p>
+{{- end}}
+{{- end}}
+
 <div class="grid gap-6 md:grid-cols-2">
   <div class="card bg-base-100 shadow">
     <div class="card-body">
@@ -57,7 +92,7 @@
           </td></tr>
           {{- end}}
           <tr><th>未完了の操作</th><td>
-            {{- with .Operations}}{{if or .Running .Retrying .Failed}}<span class="badge badge-warning">実行中 {{.Running}}、やり直し中 {{.Retrying}}、失敗 {{.Failed}}</span>
+            {{- with .Operations}}{{if or .Running .Retrying .Failed}}<span class="badge badge-warning">実行中 {{.Running}}、やり直し中 {{.Retrying}}、失敗 {{.Failed}}</span> <a class="link" href="/operations">操作の記録</a>
             {{- else}}なし{{end}}{{else}}-{{end -}}
           </td></tr>
         </tbody>
@@ -68,9 +103,10 @@
   </div>
 </div>
 {{- end}}
-<div class="card bg-base-100 shadow mt-6">
-  <div class="card-body">
-    <h2 class="card-title">できること</h2>
+<div class="collapse collapse-arrow bg-base-100 shadow mt-6">
+  <input type="checkbox" aria-label="できることの表を開く">
+  <div class="collapse-title font-semibold">できること</div>
+  <div class="collapse-content">
     <div class="overflow-x-auto">
       <table class="table table-sm">
         <thead><tr><th>操作</th><th>範囲</th></tr></thead>
@@ -87,4 +123,10 @@
   </div>
 </div>
 {{- end}}
+{{- end}}
+
+{{/* suspended-count は停止中の数（GET /dashboard/suspended の応答。ダッシュボードの欄に差し込む）。 */}}
+{{define "suspended-count" -}}
+{{- if .Error}}<span title="provisioner かデータベースに接続できません">-</span>
+{{- else}}{{.Count}}{{if .Truncated}}<span class="text-sm font-normal text-base-content/60">（10,000 件までを数えました）</span>{{end}}{{end -}}
 {{- end}}

@@ -92,6 +92,10 @@
     </div>
   </div>
 
+  {{- if .CanAssign}}
+  {{template "assign-card" (dict "URL" (printf "/subscribers/%s/tenant" .Sub.IMSI) "Target" "#subscriber" "Current" .Tenant "Tenants" .Tenants "What" "加入者")}}
+  {{- end}}
+
   {{- if and .CanKeys .Sub.Key}}
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">

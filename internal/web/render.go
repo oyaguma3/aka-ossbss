@@ -6,8 +6,10 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 
+	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
 )
 
@@ -44,6 +46,14 @@ var funcs = template.FuncMap{
 	},
 	// add1 は 0 からの番号を 1 からの番号にする。
 	"add1": func(i int) int { return i + 1 },
+	// 操作の記録の状態・種類・手順の名前、provisioner の下流の名前、監査ログの操作の名前と内容。
+	"opStatusLabel":   opStatusLabel,
+	"opKindLabel":     opKindLabel,
+	"stepLabel":       stepLabel,
+	"stepStateLabel":  stepStateLabel,
+	"downstreamLabel": downstreamLabel,
+	"actionLabel":     actionLabel,
+	"detailText":      detailText,
 	// list は引数を並べたスライスを作る。
 	"list": func(v ...string) []string { return v },
 }
@@ -80,7 +90,43 @@ type pageData struct {
 	LogoutURL string
 	// Section はナビゲーションで強調する項目（パスの最初の要素。例 subscribers）。
 	Section string
-	Data    any
+	// Nav は利用者の役割で出すナビゲーションの項目。
+	Nav  []navItem
+	Data any
+}
+
+// navItem はナビゲーションの 1 項目。
+type navItem struct {
+	Label, Href string
+	// Sections は、この項目を強調するパスの最初の要素。
+	Sections []string
+}
+
+// Active は、section の画面でこの項目を強調するか。
+func (n navItem) Active(section string) bool { return slices.Contains(n.Sections, section) }
+
+// navItems は利用者の役割で出すナビゲーションの項目を返す（画面仕様 §1.1）。
+func navItems(a authz.Actor) []navItem {
+	items := []navItem{
+		{"ダッシュボード", "/", []string{"", "dashboard"}},
+		{"加入者", "/subscribers", []string{"subscribers"}},
+		{"RADIUSクライアント", "/clients", []string{"clients"}},
+		{"セッション", "/sessions", []string{"sessions"}},
+	}
+	target := a.TenantID // A・B は自分のテナントのものとして判定する
+	if authz.Allowed(a, authz.TenantManage, target) {
+		items = append(items, navItem{"テナント", "/tenants", []string{"tenants", "assignments"}})
+	}
+	if authz.Allowed(a, authz.AccountManage, target) {
+		items = append(items, navItem{"アカウント", "/accounts", []string{"accounts"}})
+	}
+	if authz.Allowed(a, authz.ProvisionerView, target) {
+		items = append(items, navItem{"操作の記録", "/operations", []string{"operations"}})
+	}
+	if authz.Allowed(a, authz.AuditView, target) {
+		items = append(items, navItem{"監査ログ", "/audit", []string{"audit"}})
+	}
+	return items
 }
 
 // accessLogoutURL は Cloudflare Access のログアウト（公開ホスト名のパス。Access が処理する）。
@@ -105,6 +151,7 @@ func (h *Handler) pageData(r *http.Request, title string, data any) pageData {
 	}
 	if u := userFrom(r.Context()); u.Email != "" {
 		pd.User = &u
+		pd.Nav = navItems(u.Actor())
 	}
 	pd.Section, _, _ = strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	return pd

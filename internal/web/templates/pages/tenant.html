@@ -1,0 +1,45 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/tenants">テナント</a></li><li>{{.Data.Tenant.Name}}</li></ul></div>
+{{template "tenant-detail" .Data}}
+{{- end}}
+
+{{/* 操作のたびに htmx でこの部分を差し替える。 */}}
+{{define "tenant-detail" -}}
+<div id="tenant">
+  <h1 class="text-2xl font-bold mb-4">テナント {{.Tenant.Name}}</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-48">加入者</th><td><a class="link" href="/subscribers?tenant={{.Tenant.ID}}">{{.Tenant.Subscribers}} 件</a></td></tr>
+          <tr><th>RADIUSクライアント</th><td><a class="link" href="/clients?tenant={{.Tenant.ID}}">{{.Tenant.Clients}} 件</a></td></tr>
+          <tr><th>アカウント</th><td><a class="link" href="/accounts?tenant={{.Tenant.ID}}">{{.Tenant.Accounts}} 件</a></td></tr>
+          <tr><th>作成日時</th><td>{{datetime .Tenant.CreatedAt}}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">名前の変更</h2>
+      <form hx-post="/tenants/{{.Tenant.ID}}/rename" hx-target="#tenant" hx-swap="outerHTML" autocomplete="off" class="flex flex-wrap items-end gap-2">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">名前</legend>
+          <input name="name" value="{{.Name}}" required maxlength="100" class="input{{if .NameError}} input-error{{end}}">
+          {{template "field-error" .NameError}}
+        </fieldset>
+        <button type="submit" class="btn btn-primary mb-2">変更する</button>
+      </form>
+    </div>
+  </div>
+
+  <form id="tenant-delete" hx-post="/tenants/{{.Tenant.ID}}/delete" hx-target="#tenant" hx-swap="outerHTML"></form>
+  <button type="button" class="btn btn-error btn-outline" command="show-modal" commandfor="dialog-delete">このテナントを削除</button>
+  {{- if .InUse}}<p class="text-sm text-base-content/60 mt-2">加入者・RADIUSクライアント・アカウントが属している間は削除できません。先に所属を付け替えるか外し、アカウントを移すか削除してください。</p>{{end}}
+  {{template "confirm" (dict "ID" "dialog-delete" "Title" "テナントの削除" "Form" "tenant-delete" "Label" "削除する" "Class" "btn-error"
+    "Message" (printf "テナント「%s」を削除します。監査ログは残ります。よろしいですか？" .Tenant.Name))}}
+</div>
+{{- end}}

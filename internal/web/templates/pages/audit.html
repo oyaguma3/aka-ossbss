@@ -1,0 +1,70 @@
+{{define "content" -}}
+{{with .Data -}}
+<h1 class="text-2xl font-bold mb-4">監査ログ</h1>
+{{template "audit-tabs" .Tabs}}
+<p class="mb-2">本BFF の監査ログ（利用者の変更操作と、秘密の値の表示）。新しい順。{{if not .Filter.Selectable}}あなたのテナントが対象のものだけを出します。{{end}}</p>
+<p class="text-sm text-base-content/60 mb-4">トレースID は、provisioner と下流の監査ログと同じ値です。</p>
+
+<form method="get" action="/audit" class="flex flex-wrap items-end gap-2 mb-4">
+  {{- if .Filter.Selectable}}
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">テナント</legend>
+    <select name="tenant" class="select">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants)}}</select>
+  </fieldset>
+  {{- end}}
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">操作</legend>
+    <select name="action" class="select">
+      <option value=""{{if not .Action}} selected{{end}}>すべて</option>
+      {{- range .Actions}}
+      <option value="{{.Action}}"{{if eq .Action $.Data.Action}} selected{{end}}>{{.Label}}</option>
+      {{- end}}
+    </select>
+  </fieldset>
+  <button type="submit" class="btn">絞り込む</button>
+</form>
+
+{{template "alerts" (dict "Error" .Error)}}
+{{- if .Rows}}
+<div class="overflow-x-auto bg-base-100 rounded-box shadow">
+  <table class="table table-sm">
+    <thead>
+      <tr><th>日時</th><th>操作者</th><th>接続元</th><th>操作</th><th>対象</th><th>テナント</th><th>内容</th><th>トレースID</th></tr>
+    </thead>
+    <tbody id="audit-rows">
+      {{- range .Rows}}{{template "audit-row" (dict "Row" . "Tenants" $.Data.Tenants)}}{{end}}
+    </tbody>
+  </table>
+</div>
+{{template "audit-pager" .}}
+{{- else if not .Error}}
+<p>記録はありません。</p>
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{define "audit-row" -}}
+{{- with .Row}}
+<tr>
+  <td class="whitespace-nowrap">{{datetime .Time}}</td>
+  <td>{{.ActorEmail}}<br><span class="text-sm text-base-content/60">{{.ActorRole.Label}}</span></td>
+  <td class="font-mono text-sm">{{or .Remote "-"}}</td>
+  <td>{{actionLabel .Action}}</td>
+  <td class="font-mono">{{.Target}}</td>
+  <td>{{$.Tenants.Name .TenantID}}</td>
+  <td><code class="break-all text-sm">{{detailText .Detail}}</code></td>
+  <td><code class="break-all text-sm">{{or .TraceID "-"}}</code></td>
+</tr>
+{{- end}}
+{{- end}}
+
+{{define "audit-pager" -}}
+{{template "more-button" (dict "URL" (and .Next (printf "/audit?tenant=%s&action=%s&before=%d" .Filter.Value .Action .Next)))}}
+{{- end}}
+
+{{/* 「さらに古いものを表示」の応答。行を一覧の末尾に足し、ボタンを置き換える。tbody は表の外に単独では置けないので、template で包む。 */}}
+{{define "audit-more" -}}
+{{template "audit-pager" .}}
+{{template "alerts" (dict "Error" .Error)}}
+{{- if .Rows}}<template><tbody hx-swap-oob="beforeend:#audit-rows">{{range .Rows}}{{template "audit-row" (dict "Row" . "Tenants" $.Tenants)}}{{end}}</tbody></template>{{end}}
+{{- end}}

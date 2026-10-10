@@ -1,0 +1,47 @@
+{{define "content" -}}
+<div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+  <h1 class="text-2xl font-bold">テナント</h1>
+  <a class="btn btn-sm" href="/assignments/orphans">下流にない所属の記録を点検する</a>
+</div>
+{{template "tenants-section" .Data}}
+{{- end}}
+
+{{/* 作成のたびに htmx でこの部分を差し替える。 */}}
+{{define "tenants-section" -}}
+<div id="tenants">
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+  <div class="overflow-x-auto bg-base-100 rounded-box shadow mb-6">
+    <table class="table table-sm">
+      <thead><tr><th>名前</th><th>加入者</th><th>RADIUSクライアント</th><th>アカウント</th><th>作成日時</th></tr></thead>
+      <tbody>
+        {{- range .Tenants}}
+        <tr>
+          <td><a class="link" href="/tenants/{{.ID}}">{{.Name}}</a></td>
+          <td><a class="link" href="/subscribers?tenant={{.ID}}">{{.Subscribers}}</a></td>
+          <td><a class="link" href="/clients?tenant={{.ID}}">{{.Clients}}</a></td>
+          <td><a class="link" href="/accounts?tenant={{.ID}}">{{.Accounts}}</a></td>
+          <td class="whitespace-nowrap">{{datetime .CreatedAt}}</td>
+        </tr>
+        {{- else}}
+        <tr><td colspan="5" class="text-base-content/60">テナントはありません。</td></tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+  <p class="text-sm text-base-content/60 mb-6">加入者と RADIUSクライアントの件数は、本BFF の所属の記録の数です（本BFF の外で削除されたものを含むことがあります。「下流にない所属の記録を点検する」で見つけて消せます）。</p>
+
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">作成</h2>
+      <form hx-post="/tenants" hx-target="#tenants" hx-swap="outerHTML" autocomplete="off" class="flex flex-wrap items-end gap-2">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">名前</legend>
+          <input name="name" value="{{.Name}}" required maxlength="100" class="input{{if .NameError}} input-error{{end}}">
+          {{- if .NameError}}{{template "field-error" .NameError}}{{else}}<p class="label">1〜100 文字（画面に出す名前）</p>{{end}}
+        </fieldset>
+        <button type="submit" class="btn btn-primary mb-6">作成する</button>
+      </form>
+    </div>
+  </div>
+</div>
+{{- end}}

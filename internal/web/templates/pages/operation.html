@@ -1,0 +1,83 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/operations">操作の記録</a></li><li class="font-mono">{{.Data.Op.ID}}</li></ul></div>
+{{template "operation-detail" .Data}}
+{{- end}}
+
+{{/* やり直し・閉じるのたびに htmx でこの部分を差し替える。 */}}
+{{define "operation-detail" -}}
+<div id="operation">
+  <h1 class="text-2xl font-bold mb-4">{{opKindLabel .Op.Kind}}（{{opStatusLabel .Op.Status}}）</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-48">操作の ID</th><td><code>{{.Op.ID}}</code></td></tr>
+          <tr><th>IMSI</th><td><a class="link font-mono" href="/subscribers/{{.Op.IMSI}}">{{.Op.IMSI}}</a>（テナント: {{or .Tenant "-"}}、鍵の置き場所: {{keyStoreLabel .Op.KeyStore}}）</td></tr>
+          <tr><th>状態</th><td>{{opStatusLabel .Op.Status}}{{if eq .Op.Status "retrying"}}（次のやり直し {{datetime .Op.NextAttemptAt}}）{{end}}</td></tr>
+          <tr><th>やり直した回数</th><td>{{.Op.Attempts}}</td></tr>
+          <tr><th>操作者</th><td>{{or .Op.Operator "-"}}（管理クライアント {{.Op.MgmtClient}}）</td></tr>
+          <tr><th>作成日時 / 更新日時</th><td>{{datetime .Op.CreatedAt}} / {{datetime .Op.UpdatedAt}}</td></tr>
+          <tr><th>トレースID</th><td><code>{{.Op.TraceID}}</code> <span class="text-sm text-base-content/60">（provisioner と下流のログ・監査ログで同じ値）</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2 class="text-xl font-bold mb-2">手順</h2>
+  <div class="overflow-x-auto bg-base-100 rounded-box shadow mb-6">
+    <table class="table table-sm">
+      <thead><tr><th>手順</th><th>下流</th><th>状態</th><th>最後の失敗</th></tr></thead>
+      <tbody>
+        {{- range .Op.Steps}}
+        <tr>
+          <td>{{stepLabel .Name}}</td>
+          <td>{{downstreamLabel .Downstream}}</td>
+          <td>{{stepStateLabel .State}}</td>
+          <td>{{with .Error}}{{datetime .Time}}: {{if .Status}}{{.Status}} {{end}}{{.Cause}}<br><code class="break-all">{{.Detail}}</code>{{else}}-{{end}}</td>
+        </tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+
+  {{- if .KeyChangeUnknown}}
+  <div role="status" class="alert alert-warning mb-6">
+    <div>
+      <p class="font-bold">鍵の変更が反映されたかどうか分かりません</p>
+      <p class="text-sm">鍵の変更の途中で要求が途切れました。変更前の Ki / OPc は残していないため、provisioner は自動でも手でもやり直しません。
+      加入者の鍵（Ki / OPc 等）を確かめ、必要なら正しい値に変更したうえで「閉じる」を押してください。</p>
+    </div>
+  </div>
+  {{- end}}
+
+  {{- if and .CanAct (or .CanRetry .CanDismiss)}}
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">手での対応</h2>
+      {{- if .CanRetry}}
+      <form hx-post="/operations/{{.Op.ID}}/retry" hx-target="#operation" hx-swap="outerHTML">
+        <input type="hidden" name="idem" value="{{.RetryKey}}">
+        <button type="submit" class="btn btn-primary">やり直す</button>
+        <p class="text-sm text-base-content/60 mt-1">原因（下流の停止など）を直した後に、続き（登録・変更は元に戻す、削除は残りの削除）をその場で 1 回行います。失敗すると「やり直し中」に戻り、自動のやり直しを再開します。</p>
+      </form>
+      {{- end}}
+      {{- if .CanDismiss}}
+      <form id="operation-dismiss" hx-post="/operations/{{.Op.ID}}/dismiss" hx-target="#operation" hx-swap="outerHTML">
+        <input type="hidden" name="idem" value="{{.DismissKey}}">
+      </form>
+      <div>
+        <button type="button" class="btn btn-warning btn-outline" command="show-modal" commandfor="dialog-dismiss">閉じる</button>
+        <p class="text-sm text-base-content/60 mt-1">下流の状態を手で直した後に、この操作を閉じます。閉じるまで、同じ IMSI の加入者の登録・変更・削除と認可ポリシーの保存はできません。</p>
+      </div>
+      {{template "confirm" (dict "ID" "dialog-dismiss" "Title" "操作を閉じる" "Form" "operation-dismiss" "Label" "閉じる" "Class" "btn-warning"
+        "Message" "この操作を閉じます。provisioner は続きを行わなくなります（下流には何もしません）。下流の状態を手で直してから閉じてください。よろしいですか？")}}
+      {{- end}}
+    </div>
+  </div>
+  {{- else if or .CanRetry .CanDismiss}}
+  <p class="text-base-content/60">やり直しと閉じるは、システム管理者が行います。</p>
+  {{- end}}
+</div>
+{{- end}}

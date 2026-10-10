@@ -38,6 +38,20 @@ type DB interface {
 	ClientTenants(ctx context.Context) (map[int64]int64, error)
 	AssignClient(ctx context.Context, clientID, tenantID int64, by string) error
 	InsertAudit(ctx context.Context, e db.AuditEntry) error
+	ListAudit(ctx context.Context, q db.AuditQuery) ([]db.AuditRecord, error)
+	SubscriberAssignments(ctx context.Context, after string, limit int) ([]db.Assignment, error)
+	ClientAssignments(ctx context.Context) ([]db.Assignment, error)
+	TenantSummaries(ctx context.Context) ([]db.TenantSummary, error)
+	TenantSummary(ctx context.Context, id int64) (db.TenantSummary, error)
+	CreateTenant(ctx context.Context, name string) (db.Tenant, error)
+	RenameTenant(ctx context.Context, id int64, name string) error
+	DeleteTenant(ctx context.Context, id int64) error
+	Accounts(ctx context.Context, f db.AccountFilter) ([]db.Account, error)
+	AccountByID(ctx context.Context, id int64) (db.Account, error)
+	CreateAccount(ctx context.Context, email string, role authz.Role, tenantID int64, by string) (int64, error)
+	UpdateAccount(ctx context.Context, id int64, from, to db.AccountState) error
+	SetAccountDisabled(ctx context.Context, id int64, from db.AccountState, disabled bool) error
+	DeleteAccount(ctx context.Context, id int64, from db.AccountState) error
 }
 
 // Provisioner は画面が使う provisioner の操作。*provisioner.Client が満たす。
@@ -58,6 +72,14 @@ type Provisioner interface {
 	DeleteRADIUSClient(ctx context.Context, id int64, idempotencyKey string) error
 	GetRADIUSClientSecret(ctx context.Context, id int64) (string, error)
 	ListSessions(ctx context.Context, p provisioner.SessionParams) (provisioner.SessionList, error)
+	ListPolicies(ctx context.Context, p provisioner.ListParams) (provisioner.PolicyList, error)
+	ListOperations(ctx context.Context, status string, limit int) (provisioner.OperationList, error)
+	GetOperation(ctx context.Context, id string) (provisioner.Operation, error)
+	RetryOperation(ctx context.Context, id, idempotencyKey string) (provisioner.Operation, error)
+	DismissOperation(ctx context.Context, id, idempotencyKey string) (provisioner.Operation, error)
+	ListAuditLogs(ctx context.Context, p provisioner.AuditLogParams) (provisioner.AuditLogList, error)
+	ListProvAuditLogs(ctx context.Context, p provisioner.AuditLogParams) (provisioner.ProvAuditLogList, error)
+	ListAkaAuditLogs(ctx context.Context, p provisioner.AuditLogParams) (provisioner.AkaAuditLogList, error)
 }
 
 // Handler は画面のハンドラー。
@@ -67,8 +89,10 @@ type Handler struct {
 	db      DB
 	ident   auth.Identifier
 	pv      Provisioner
-	pages   pages
-	static  *staticFiles
+	// initialAdmin は最初のシステム管理者のメールアドレス（画面からの削除・降格・無効化を断る）。
+	initialAdmin string
+	pages        pages
+	static       *staticFiles
 }
 
 // Options は Handler の設定。
@@ -81,6 +105,8 @@ type Options struct {
 	Identifier auth.Identifier
 	// Provisioner は eapaka-node-provisioner のクライアント。
 	Provisioner Provisioner
+	// InitialAdminEmail は最初のシステム管理者のメールアドレス（OSSBSS_INITIAL_ADMIN_EMAIL）。
+	InitialAdminEmail string
 }
 
 // New は Handler を作る。テンプレートと静的ファイルはここで読み込む。
@@ -88,7 +114,8 @@ func New(opts Options) (*Handler, error) {
 	if opts.Identifier == nil || opts.Provisioner == nil {
 		return nil, fmt.Errorf("web: identifier and provisioner are required")
 	}
-	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner}
+	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner,
+		initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
 	var err error
 	if h.pages, err = parsePages(); err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -131,6 +158,45 @@ func (h *Handler) Routes() http.Handler {
 
 	// セッション（画面仕様 §5）。
 	mux.HandleFunc("GET /sessions", h.sessions)
+
+	// ダッシュボードの停止中の数（画面仕様 §6）。
+	mux.HandleFunc("GET /dashboard/suspended", h.dashboardSuspended)
+
+	// 所属の付け替えと点検（画面仕様 §7）。
+	mux.HandleFunc("POST /subscribers/{imsi}/tenant", h.subscriberTenantChange)
+	mux.HandleFunc("POST /subscribers/assign", h.subscribersAssign)
+	mux.HandleFunc("POST /clients/{id}/tenant", h.clientTenantChange)
+	mux.HandleFunc("POST /clients/assign", h.clientsAssign)
+	mux.HandleFunc("GET /assignments/orphans", h.orphans)
+	mux.HandleFunc("POST /assignments/orphans/delete", h.orphansDelete)
+
+	// テナント（画面仕様 §8）。
+	mux.HandleFunc("GET /tenants", h.tenantList)
+	mux.HandleFunc("POST /tenants", h.tenantCreate)
+	mux.HandleFunc("GET /tenants/{id}", h.tenant)
+	mux.HandleFunc("POST /tenants/{id}/rename", h.tenantRename)
+	mux.HandleFunc("POST /tenants/{id}/delete", h.tenantDelete)
+
+	// アカウント（画面仕様 §9）。
+	mux.HandleFunc("GET /accounts", h.accounts)
+	mux.HandleFunc("POST /accounts", h.accountCreate)
+	mux.HandleFunc("GET /accounts/{id}", h.account)
+	mux.HandleFunc("POST /accounts/{id}/update", h.accountUpdate)
+	mux.HandleFunc("POST /accounts/{id}/disable", h.accountDisable)
+	mux.HandleFunc("POST /accounts/{id}/enable", h.accountEnable)
+	mux.HandleFunc("POST /accounts/{id}/delete", h.accountDelete)
+
+	// 操作の記録（画面仕様 §10）。
+	mux.HandleFunc("GET /operations", h.operations)
+	mux.HandleFunc("GET /operations/{id}", h.operation)
+	mux.HandleFunc("POST /operations/{id}/retry", h.operationRetry)
+	mux.HandleFunc("POST /operations/{id}/dismiss", h.operationDismiss)
+
+	// 監査ログ（画面仕様 §11）。
+	mux.HandleFunc("GET /audit", h.audit)
+	mux.HandleFunc("GET /audit/provisioner", h.pvAudit)
+	mux.HandleFunc("GET /audit/prov", h.provAudit)
+	mux.HandleFunc("GET /audit/aka", h.akaAudit)
 	mux.HandleFunc("/", h.notFound)
 
 	cop := http.NewCrossOriginProtection()
@@ -156,11 +222,13 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "ok")
 }
 
-// homeData はトップの画面（利用者と、その人ができることの要約、DB と provisioner の状態）に出す値。
+// homeData はトップの画面（ダッシュボード。画面仕様 §6）に出す値。
 type homeData struct {
 	DBReachable   bool
 	SchemaVersion int
 	Permissions   []permission
+	// Counts は利用者の範囲の件数（取得できなかったものは負の値）。
+	Counts dashboardCounts
 	// Provisioner は provisioner の状態（運用担当とシステム管理者だけ。設計概要 §6.2 の「provisioner の状態の閲覧」）。
 	Provisioner *provisionerData
 }
@@ -233,6 +301,7 @@ func (h *Handler) home(w http.ResponseWriter, r *http.Request) {
 	} else {
 		d.DBReachable, d.SchemaVersion = true, v
 	}
+	d.Counts = h.dashboardCounts(r)
 	if authz.Allowed(u.Actor(), authz.ProvisionerView, authz.NoTenant) {
 		d.Provisioner = h.provisionerStatus(r)
 	}

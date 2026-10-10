@@ -363,7 +363,7 @@ func TestSubscriberDelete(t *testing.T) {
 	if w.Code != 500 {
 		t.Errorf("incomplete = %d", w.Code)
 	}
-	mustContain(t, w.Body.String(), "aka-only-server への操作が途中で失敗し、元に戻せませんでした", "操作の記録: <code>op-123</code>")
+	mustContain(t, w.Body.String(), "aka-only-server への操作が途中で失敗し、元に戻せませんでした", `<a class="link" href="/operations/op-123">操作の記録を開く</a>`)
 }
 
 func TestSubscriberStatus(t *testing.T) {

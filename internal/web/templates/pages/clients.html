@@ -18,14 +18,20 @@
   </form>
   {{- end}}
 
+  {{- if and .CanAssign .Rows}}
+  {{template "bulk-assign" (dict "Action" "/clients/assign" "Back" .Back "Tenants" .Tenants "What" "RADIUSクライアント")}}
+  {{- end}}
   <div class="overflow-x-auto bg-base-100 rounded-box shadow mb-6">
     <table class="table table-sm">
       <thead>
-        <tr><th>ID</th><th>IP アドレス</th><th>名前</th><th>ベンダー</th>{{if .Staff}}<th>テナント</th>{{end}}</tr>
+        <tr>{{if .CanAssign}}<th class="w-8"><span class="sr-only">選ぶ</span></th>{{end}}<th>ID</th><th>IP アドレス</th><th>名前</th><th>ベンダー</th>{{if .Staff}}<th>テナント</th>{{end}}</tr>
       </thead>
       <tbody>
         {{- range .Rows}}
         <tr>
+          {{- if $.CanAssign}}
+          <td>{{if not .Missing}}<input type="checkbox" name="id" value="{{.ID}}" form="bulk-assign" class="checkbox checkbox-sm" aria-label="#{{.ID}} を選ぶ">{{end}}</td>
+          {{- end}}
           <td>{{.ID}}</td>
           {{- if .Missing}}
           <td colspan="3"><span class="badge badge-warning badge-sm">下流にない</span> <span class="text-sm text-base-content/60">所属の記録だけが残っています（本BFF の外で削除された可能性があります）</span></td>
@@ -37,7 +43,7 @@
           {{- if $.Staff}}<td>{{$.Tenants.Name .Tenant}}</td>{{end}}
         </tr>
         {{- else}}
-        <tr><td colspan="{{if .Staff}}5{{else}}4{{end}}" class="text-base-content/60">該当する RADIUSクライアントはありません。</td></tr>
+        <tr><td colspan="{{if .CanAssign}}6{{else if .Staff}}5{{else}}4{{end}}" class="text-base-content/60">該当する RADIUSクライアントはありません。</td></tr>
         {{- end}}
       </tbody>
     </table>

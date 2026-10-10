@@ -151,7 +151,8 @@ func serve(ctx context.Context) error {
 	checkAtStartup(checkCtx, log, pv)
 	cancel()
 
-	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv})
+	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv,
+		InitialAdminEmail: cfg.InitialAdminEmail})
 	if err != nil {
 		return err
 	}

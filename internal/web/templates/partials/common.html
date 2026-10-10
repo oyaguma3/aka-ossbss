@@ -6,8 +6,8 @@
 {{- with .Error}}<div role="alert" class="alert alert-error mb-4"><span>{{.}}{{template "op-ref" $.Op}}</span></div>{{end}}
 {{- end}}
 
-{{/* op-ref は provisioner の操作の記録の ID（運用担当・システム管理者にだけ渡す）。操作の記録の画面ができたらリンクにする（ステップ 5）。 */}}
-{{define "op-ref"}}{{with .}}（操作の記録: <code>{{.}}</code>）{{end}}{{end}}
+{{/* op-ref は provisioner の操作の記録へのリンク（引数は操作の ID。運用担当・システム管理者にだけ渡す。空なら何も出さない）。 */}}
+{{define "op-ref"}}{{with .}} <a class="link" href="/operations/{{.}}">操作の記録を開く</a>{{end}}{{end}}
 
 {{/* confirm は確認ダイアログ（画面仕様 §1.4）。開くボタンは command="show-modal" commandfor="ID" を持つ。
      引数は dict で ID、Title、Message、Form（確認のボタンで送るフォームの id）、Label（確認のボタンの文字）、Class（ボタンの色）。 */}}
@@ -89,7 +89,8 @@
 {{define "tenant-choice" -}}
 <fieldset class="fieldset">
   <legend class="fieldset-legend">所属のテナント</legend>
-  <select name="tenant" required class="select w-full{{if .Error}} select-error{{end}}">
+  {{- /* required は付けない（確認ダイアログから送ると、ブラウザの入力の検査の表示がダイアログの裏に隠れるため。サーバーで確かめる）。 */}}
+  <select name="tenant" class="select w-full{{if .Error}} select-error{{end}}">
     <option value=""{{if eq .Value ""}} selected{{end}} disabled>選んでください</option>
     <option value="none"{{if eq .Value "none"}} selected{{end}}>テナントなし</option>
     {{- range .Tenants.List}}
@@ -108,3 +109,66 @@
 
 {{/* field-error は入力の項目の下の誤り（引数は文。空なら何も出さない）。 */}}
 {{define "field-error"}}{{with .}}<p class="label text-error">{{.}}</p>{{end}}{{end}}
+
+{{/* tenant-select は付け替え先のテナントの選択（引数は dict で Value（選んでいる値。"none" はテナントなし）、Tenants、Form（属するフォームの id。空なら付けない））。 */}}
+{{define "tenant-select" -}}
+<select name="tenant" class="select"{{with .Form}} form="{{.}}"{{end}} aria-label="付け替え先のテナント">
+  <option value=""{{if eq .Value ""}} selected{{end}}>付け替え先を選んでください</option>
+  <option value="none"{{if eq .Value "none"}} selected{{end}}>テナントなし</option>
+  {{- range .Tenants.List}}
+  <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Value}} selected{{end}}>{{.Name}}</option>
+  {{- end}}
+</select>
+{{- end}}
+
+{{/* bulk-assign は一覧のまとめての付け替え（システム管理者。画面仕様 §7.1）。引数は dict で Action（送り先）、Back（戻り先）、Tenants、
+     What（「加入者」など）。行のチェックボックスは form="bulk-assign" でこのフォームに属させる。 */}}
+{{define "bulk-assign" -}}
+<form id="bulk-assign" method="post" action="{{.Action}}" class="flex flex-wrap items-center gap-2 mb-2">
+  <input type="hidden" name="back" value="{{.Back}}">
+  <span class="text-sm">チェックした{{.What}}の所属を</span>
+  {{template "tenant-select" (dict "Value" "" "Tenants" .Tenants)}}
+  <span class="text-sm">に</span>
+  <button type="button" class="btn" command="show-modal" commandfor="dialog-bulk">変える</button>
+</form>
+{{template "confirm" (dict "ID" "dialog-bulk" "Title" "所属の付け替え" "Form" "bulk-assign" "Label" "変える" "Class" "btn-primary"
+  "Message" (printf "チェックした%sの所属を、選んだテナントに変えます。provisioner にないものは飛ばします。よろしいですか？" .What))}}
+{{- end}}
+
+{{/* assign-card は詳細の所属の変更（システム管理者。画面仕様 §7.1）。引数は dict で URL（送り先）、Target（差し替える要素）、
+     Current（今のテナントの ID。0 はテナントなし）、Tenants、What。 */}}
+{{define "assign-card" -}}
+<div class="card bg-base-100 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title">所属の変更</h2>
+    <form id="assign-form" hx-post="{{.URL}}" hx-target="{{.Target}}" hx-swap="outerHTML" class="flex flex-wrap items-center gap-2">
+      {{template "tenant-select" (dict "Value" (or (and .Current (printf "%d" .Current)) "none") "Tenants" .Tenants)}}
+      <button type="button" class="btn" command="show-modal" commandfor="dialog-assign">変える</button>
+    </form>
+    <p class="text-sm text-base-content/60">テナントの利用者は、自分のテナントに属するものだけを扱えます。テナントなしのものは、運用担当とシステム管理者だけが扱えます。</p>
+    {{template "confirm" (dict "ID" "dialog-assign" "Title" "所属の変更" "Form" "assign-form" "Label" "変える" "Class" "btn-primary"
+      "Message" (printf "この%sの所属を、選んだテナントに変えます。よろしいですか？" .What))}}
+  </div>
+</div>
+{{- end}}
+
+{{/* audit-tabs は監査ログの種類のタブ（引数は auditTabs）。provisioner と下流のタブはシステム管理者だけ。 */}}
+{{define "audit-tabs" -}}
+{{- if .Downstream}}
+<div role="tablist" class="tabs tabs-border mb-4">
+  <a role="tab" href="/audit" class="tab{{if eq .Current "bff"}} tab-active{{end}}">本BFF</a>
+  <a role="tab" href="/audit/provisioner" class="tab{{if eq .Current "provisioner"}} tab-active{{end}}">provisioner</a>
+  <a role="tab" href="/audit/prov" class="tab{{if eq .Current "prov"}} tab-active{{end}}">provisioning-api</a>
+  <a role="tab" href="/audit/aka" class="tab{{if eq .Current "aka"}} tab-active{{end}}">aka-only-server</a>
+</div>
+{{- end}}
+{{- end}}
+
+{{/* more-button は「さらに古いものを表示」（引数は dict で URL（続きの URL。空なら何も出さない））。 */}}
+{{define "more-button" -}}
+<div id="audit-pager" class="mt-4">
+  {{- with .URL}}
+  <button type="button" class="btn btn-sm" hx-get="{{.}}" hx-target="#audit-pager" hx-swap="outerHTML">さらに古いものを表示</button>
+  {{- end}}
+</div>
+{{- end}}

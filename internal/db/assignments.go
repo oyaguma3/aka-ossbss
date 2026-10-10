@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -155,4 +156,50 @@ func (d *DB) AssignClient(ctx context.Context, clientID, tenantID int64, by stri
 		return fmt.Errorf("assign client: %w", err)
 	}
 	return nil
+}
+
+// Assignment は所属の記録の 1 件（下流にない所属の記録の点検に使う。画面仕様 §7.2）。
+type Assignment struct {
+	// IMSI は加入者の記録、ClientID は RADIUSクライアントの記録（どちらか一方）。
+	IMSI       string
+	ClientID   int64
+	TenantID   int64
+	AssignedAt time.Time
+	AssignedBy string
+}
+
+// SubscriberAssignments は、加入者の所属の記録を IMSI の順に、after より後ろから limit 件まで返す。
+func (d *DB) SubscriberAssignments(ctx context.Context, after string, limit int) ([]Assignment, error) {
+	rows, err := d.Pool.Query(ctx, `
+		SELECT imsi, tenant_id, assigned_at, assigned_by FROM subscriber_tenants
+		WHERE imsi > $1 ORDER BY imsi LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("subscriber assignments: %w", err)
+	}
+	var out []Assignment
+	var a Assignment
+	if _, err := pgx.ForEachRow(rows, []any{&a.IMSI, &a.TenantID, &a.AssignedAt, &a.AssignedBy}, func() error {
+		out = append(out, a)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("subscriber assignments: %w", err)
+	}
+	return out, nil
+}
+
+// ClientAssignments は、RADIUSクライアントの所属の記録をすべて ID の順に返す。
+func (d *DB) ClientAssignments(ctx context.Context) ([]Assignment, error) {
+	rows, err := d.Pool.Query(ctx, "SELECT client_id, tenant_id, assigned_at, assigned_by FROM client_tenants ORDER BY client_id")
+	if err != nil {
+		return nil, fmt.Errorf("client assignments: %w", err)
+	}
+	var out []Assignment
+	var a Assignment
+	if _, err := pgx.ForEachRow(rows, []any{&a.ClientID, &a.TenantID, &a.AssignedAt, &a.AssignedBy}, func() error {
+		out = append(out, a)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("client assignments: %w", err)
+	}
+	return out, nil
 }

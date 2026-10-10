@@ -70,6 +70,9 @@ type clientsData struct {
 	Message      string
 	Error        string
 	Form         clientForm
+	// CanAssign は、行のチェックボックスとまとめての付け替えを出すか（システム管理者。画面仕様 §7.1）。Back は付け替えの後の戻り先。
+	CanAssign bool
+	Back      string
 }
 
 // loadClients は一覧を集める。失敗したらステータスと文を返す（d は登録のフォームを出せる状態にしておく）。
@@ -143,13 +146,17 @@ func (h *Handler) loadClients(r *http.Request, d *clientsData) (int, string) {
 // newClientsData は一覧の画面の値の土台を作る。
 func newClientsData(r *http.Request) clientsData {
 	return clientsData{Staff: isStaff(r), CanCreate: can(r, authz.ClientCreate), ChooseTenant: isStaff(r),
-		Form: clientForm{IdemKey: newIdemKey(), Errors: fieldErrors{}}}
+		Form: clientForm{IdemKey: newIdemKey(), Errors: fieldErrors{}}, CanAssign: can(r, authz.AssignmentUpdate), Back: "/clients"}
 }
 
 func (h *Handler) clients(w http.ResponseWriter, r *http.Request) {
 	d := newClientsData(r)
+	d.Back = r.URL.RequestURI()
+	if d.CanAssign {
+		d.Message, d.Error = bulkResult(r)
+	}
 	status, msg := h.loadClients(r, &d)
-	d.Error = msg
+	d.Error = cmp.Or(msg, d.Error)
 	if id, err := strconv.ParseInt(r.URL.Query().Get("deleted"), 10, 64); err == nil && id > 0 {
 		d.Message = "RADIUSクライアント #" + strconv.FormatInt(id, 10) + " を削除しました。"
 		if r.URL.Query().Get("unassign") == "failed" {
@@ -247,8 +254,11 @@ type clientData struct {
 	Staff, CanEdit bool
 	// UpdateKey と DeleteKey は、変更と削除のフォームの Idempotency-Key。
 	UpdateKey, DeleteKey string
-	Message              string
-	Error                string
+	// CanAssign は所属の変更を出すか（システム管理者）。Tenants はその選択肢。
+	CanAssign bool
+	Tenants   tenantInfo
+	Message   string
+	Error     string
 	// Form は変更の入力（誤りのときに戻す。共有シークレットは戻さない）。
 	Form clientForm
 }
@@ -263,14 +273,16 @@ func clientMissingMessage(id int64, tenant int64) string {
 }
 
 func (h *Handler) loadClient(r *http.Request, id, tenant int64) (clientData, *apiFailure) {
-	d := clientData{Tenant: tenant, Staff: isStaff(r), CanEdit: authz.Allowed(userFrom(r.Context()).Actor(), authz.ClientUpdate, tenant),
-		UpdateKey: newIdemKey(), DeleteKey: newIdemKey(), Form: clientForm{Errors: fieldErrors{}}}
+	a := userFrom(r.Context()).Actor()
+	d := clientData{Tenant: tenant, Staff: isStaff(r), CanEdit: authz.Allowed(a, authz.ClientUpdate, tenant),
+		UpdateKey: newIdemKey(), DeleteKey: newIdemKey(), Form: clientForm{Errors: fieldErrors{}},
+		CanAssign: authz.Allowed(a, authz.AssignmentUpdate, tenant)}
 	if d.Staff {
 		t, err := h.tenants(r)
 		if err != nil {
 			h.log.Error("tenants", "error", err)
 		}
-		d.TenantName = t.Name(tenant)
+		d.TenantName, d.Tenants = t.Name(tenant), t
 	}
 	c, err := h.pv.GetRADIUSClient(r.Context(), id)
 	if err != nil {

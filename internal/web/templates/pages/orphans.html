@@ -1,0 +1,57 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/tenants">テナント</a></li><li>下流にない所属の記録</li></ul></div>
+{{with .Data -}}
+<h1 class="text-2xl font-bold mb-2">下流にない所属の記録</h1>
+<p class="text-sm text-base-content/60 mb-4">本BFF に所属の記録があるのに provisioner にないもの（本BFF の外で削除されたもの）です。チェックして消せます（消す直前に、provisioner にないことをもう一度確かめます）。</p>
+{{template "alerts" (dict "Message" .Message "Error" .Error)}}
+
+<form id="orphans-delete" method="post" action="/assignments/orphans/delete"></form>
+
+<h2 class="text-xl font-bold mb-2">加入者</h2>
+<p class="text-sm mb-2">
+  {{- if .Scanned}}所属の記録を {{.Scanned}} 件調べました（{{if .After}}IMSI {{.After}} の次から {{end}}IMSI {{.Last}} まで）。{{else}}調べた記録はありません。{{end}}
+  {{- if .Next}} <a class="link" href="/assignments/orphans?after={{.Next}}">続きを調べる</a>{{else if .Scanned}} 最後まで調べました。{{end}}
+  {{- if .After}} <a class="link" href="/assignments/orphans">最初から調べる</a>{{end}}
+</p>
+{{template "orphan-table" (dict "Rows" .Subscribers "Name" "imsi" "Kind" "subscriber")}}
+
+<h2 class="text-xl font-bold mt-6 mb-2">RADIUSクライアント</h2>
+<p class="text-sm mb-2">所属の記録のすべてを、provisioner の一覧と突き合わせました。</p>
+{{template "orphan-table" (dict "Rows" .Clients "Name" "client" "Kind" "client")}}
+
+{{- if or .Subscribers .Clients}}
+<button type="button" class="btn btn-error btn-outline mt-4" command="show-modal" commandfor="dialog-orphans">選んだ記録を消す</button>
+{{template "confirm" (dict "ID" "dialog-orphans" "Title" "所属の記録の削除" "Form" "orphans-delete" "Label" "消す" "Class" "btn-error"
+  "Message" "チェックした所属の記録を消します。provisioner にあったものは消しません。よろしいですか？")}}
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{/* orphan-table は下流にない所属の記録の表（引数は dict で Rows、Name（チェックボックスの名前）、Kind（subscriber / client））。 */}}
+{{define "orphan-table" -}}
+{{- if .Rows}}
+<div class="overflow-x-auto bg-base-100 rounded-box shadow">
+  <table class="table table-sm">
+    <thead><tr><th class="w-8"><span class="sr-only">選ぶ</span></th><th>{{if eq .Kind "subscriber"}}IMSI{{else}}ID{{end}}</th><th>テナント</th><th>記録した日時</th><th>記録した利用者</th></tr></thead>
+    <tbody>
+      {{- range .Rows}}
+      <tr>
+        {{- if eq $.Kind "subscriber"}}
+        <td><input type="checkbox" name="imsi" value="{{.IMSI}}" form="orphans-delete" class="checkbox checkbox-sm" aria-label="{{.IMSI}} を選ぶ"></td>
+        <td class="font-mono">{{.IMSI}}</td>
+        {{- else}}
+        <td><input type="checkbox" name="client" value="{{.ClientID}}" form="orphans-delete" class="checkbox checkbox-sm" aria-label="#{{.ClientID}} を選ぶ"></td>
+        <td>#{{.ClientID}}</td>
+        {{- end}}
+        <td>{{.Tenant}}</td>
+        <td class="whitespace-nowrap">{{datetime .AssignedAt}}</td>
+        <td>{{or .AssignedBy "-"}}</td>
+      </tr>
+      {{- end}}
+    </tbody>
+  </table>
+</div>
+{{- else}}
+<p class="text-base-content/60">見つかりませんでした。</p>
+{{- end}}
+{{- end}}
