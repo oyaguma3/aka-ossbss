@@ -1,6 +1,6 @@
 # eapaka-ossbss-sample 設計概要
 
-- 状態: 初版（2026-10-10）。§15 の確認事項はすべて推奨案で合意した。実装は §16 の順に進める。§16 の 1〜3（下流の変更）は完了し、4 のステップ 1（骨組み）とステップ 2（認証と権限の判定）を実装した（§17）。
+- 状態: 初版（2026-10-10）。§15 の確認事項はすべて推奨案で合意した。実装は §16 の順に進める。§16 の 1〜3（下流の変更）は完了し、4 のステップ 1（骨組み）・ステップ 2（認証と権限の判定）・ステップ 3（provisioner のクライアントと契約テスト）を実装した（§17）。
 - 対象: 外部 OSS/BSS のサンプル実装としての統合BFF（コマンド名 `eapaka-ossbss`。以下「本BFF」）。
 - 関連:
   - eapaka-node-provisioner（以下「provisioner」）: `docs/design-overview.md`、`docs/openapi/provisioner-api.yaml`、`docs/operation-guide.md`
@@ -350,3 +350,27 @@ provisioner には所属の概念がないので、A・B の一覧は本BFF の�
 - アカウントを DB で無効にすると、読み直しで 403 と「別のメールアドレスでログインし直す」のボタンが出た（ログに `forbidden user`）。有効に戻すとダッシュボードに戻った。
 - ログアウトのリンク（`/cdn-cgi/access/logout`）は Cloudflare が処理して「You successfully logged out.」を出し（本BFF には届かない）、その後に開き直すとログインを求められた。
 - AUD タグは秘密の値ではない（ログイン画面への 302 の URL にも `kid` として入っている）。Tunnel のトークンは秘密の値なので、会話や compose のファイルには書かず、ファイルで渡す。
+
+### 17.3 ステップ 3: provisioner のクライアントと契約テスト（2026-10-11）
+
+確認事項（2026-10-11 にすべて推奨案で合意）:
+
+| # | 事項 | 決定 |
+|---|---|---|
+| 1 | パッケージの分け方 | 1 つのパッケージ `internal/provisioner` にまとめる。既存の BFF は、本PoCに直接つなぐ場合と provisioner 経由の両方のため `provapi` / `pvapi` に分けているが、本BFF の接続先は provisioner だけなので分けない。直接つなぐための部分（本PoCの加入者の操作、接続先の種類の判定）は持たない |
+| 2 | 停止・再開の `Idempotency-Key` | 送る（§10 のとおり）。既存の BFF は送らない（本PoCに直接つなぐ場合と揃えるため）が、本BFF は provisioner にだけつなぐ |
+| 3 | ステップ 3 で画面に出すもの | トップに provisioner の状態のカード（provisioner と下流 2 つへの接続・版、vector-gateway の AVクライアント、未完了の操作の件数）。運用担当とシステム管理者だけ（§6.2 の「provisioner の状態の閲覧」） |
+| 4 | 証明書のファイル名 | `certs/provisioner-client.pem`（本BFF のクライアント証明書と秘密鍵）、`certs/provisioner-server.pem`（provisioner のサーバー証明書） |
+| 5 | provisioner の版の扱い | `/status` で停止・再開に対応しているかを判定しない（版の文字列は `dev` のこともある）。加入者の `status` がない応答なら、画面で対応していない旨を出す（ステップ 4） |
+| 6 | 確認の方法 | 単体テスト、手元で下流と provisioner をバイナリで起動した契約テスト、`check-provisioner`・トップのカード。simwifi での通し（加入者を作って eapaka_test で認証）は、画面ができるステップ 4 で行う |
+
+| 対象 | 内容 |
+|---|---|
+| クライアント | `internal/provisioner`。既存の BFF の `provapi` と `pvapi` から作った。mTLS（クライアント証明書の提示、provisioner のサーバー証明書の固定とホスト名の検証）、`X-Operator-Id`（利用者のメールアドレス。書き込みと秘密の値の取得は、なければ送らない）、`X-Trace-ID`、`Idempotency-Key`（書き込みはすべて引数で受け取る。空なら送らない）、ProblemDetails（provisioner の拡張項目 `downstream`、`operationId` 等を含む）、接続できないときの原因の見当（`Diagnose`。本BFF の設定の名前で案内する）。1 回の呼び出しの上限は 60 秒、接続の確立は 10 秒 |
+| パスの値 | 要素ごとにエスケープし（`/` もエスケープする）、空・`.`・`..` は送らない（provisioner の `internal/downstream` と同じ作り。既存の BFF は `url.JoinPath` で、要素の中の `/` をエスケープしていなかった） |
+| 呼び出し | §10 のすべて: 状態、加入者の統合操作（一覧・取得・作成・変更・削除・Ki / OPc）、操作の記録（一覧・取得・やり直し・閉じる）、認可ポリシー（一覧・取得・PUT・停止と再開・削除）、RADIUSクライアント（一覧・IP での検索・登録・取得・変更・削除・共有シークレット）、セッション、監査ログ 3 種類（provisioner、provisioning-api、aka-only-server） |
+| コマンド | `gen-client-cert`（provisioner の `.env` の `PROVISIONER_ADMIN_CLIENTS` に貼る行を出す）、`check-provisioner`（下流 2 つ・AVクライアント・PLMN マップ・未完了の操作を表示。つながらなければ原因の見当を出してエラー）。起動時にも provisioner を確かめてログに出す（つながらなくても起動は続ける） |
+| 設定 | `OSSBSS_PROVISIONER_URL`（既定 `https://eapaka-provisioner:9446/admin/v1`）、`OSSBSS_PROVISIONER_CLIENT_CERT`（既定 `/certs/provisioner-client.pem`）、`OSSBSS_PROVISIONER_CLIENT_KEY`、`OSSBSS_PROVISIONER_SERVER_CERT`（既定 `/certs/provisioner-server.pem`）、`OSSBSS_PROVISIONER_TIMEOUT`（既定 60s）。HTTP サーバーの書き出しの上限は、呼び出しの上限＋30 秒（90 秒以上） |
+| compose | `certs/` を読み取り専用でマウントする。同一ホスト用に `compose.eapaka-provisioner.yaml`（provisioner の共有ネットワーク `eapaka-provisioner` に本BFF だけが参加する）を重ねる。`.env.example` の既定は同一ホスト |
+| 画面 | トップの provisioner の状態のカード（上の 3）。aka-only-server に接続できないときは AVクライアントの行を出さない（確かめられていないため）。provisioner に接続できないときは原因の見当を出す。DB の確認の上限時間は呼び出しごとに取る（provisioner の応答を待つ間に使い切らないように。手元の確認で見つけた） |
+| テスト | 単体テスト（偽物の provisioner の mTLS サーバー `provisionertest` で、各操作の要求の中身、操作者の要否、パスのエスケープ、エラー、接続できないとき・サーバー証明書の不一致の原因の見当）。契約テスト（`OSSBSS_TEST_PROVISIONER_*` を与えたときだけ。既存の BFF の契約テストから作り、停止・再開を同じキーで送り直すと最初の応答が返ること、違う内容なら 422 になることを足した）。CI のジョブ「eapaka-node-provisioner との契約テスト」は、provisioner `e96390d`・本PoC `dbd97f5`・aka-only-server `2a6dcf8` を固定のコミットでビルドして相手にする |

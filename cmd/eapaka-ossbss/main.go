@@ -17,6 +17,7 @@ import (
 
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
+	"github.com/oyaguma3/eapaka-ossbss-sample/internal/certs"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/config"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/server"
@@ -32,6 +33,9 @@ commands:
   serve              サーバーを起動する（コマンド省略時の既定）。起動時に DB のスキーマを移行する
   migrate            DB のスキーマを移行して終わる
   healthcheck        動いている本BFF の /healthz を確かめる（compose の healthcheck 用）
+  check-provisioner  eapaka-node-provisioner に接続できるか確かめる
+  gen-client-cert    eapaka-node-provisioner に提示するクライアント証明書と秘密鍵を作る
+                     （eapaka-ossbss gen-client-cert -h で使い方を表示）
 
 設定は環境変数（接頭辞 OSSBSS_）で与える。
 `
@@ -53,6 +57,10 @@ func main() {
 		err = migrate(ctx)
 	case "healthcheck":
 		err = healthcheck(ctx)
+	case "check-provisioner":
+		err = checkProvisioner(ctx)
+	case "gen-client-cert":
+		err = genClientCert(args[1:], os.Stdout, os.Stderr)
 	case "-h", "-help", "--help", "help":
 		fmt.Print(usage)
 	default:
@@ -132,11 +140,24 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident})
+
+	pv, err := newProvisioner(cfg, log)
 	if err != nil {
 		return err
 	}
-	return server.Run(ctx, server.Options{Addr: cfg.Addr, Handler: h.Routes(), Log: log})
+	log.Info("provisioner client", "url", pv.BaseURL(), "client_cert_fingerprint", certs.Fingerprint(pv.ClientCertificate()),
+		"client_cert_not_after", pv.ClientCertificate().NotAfter, "timeout", cfg.Provisioner.Timeout.String())
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	checkAtStartup(checkCtx, log, pv)
+	cancel()
+
+	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv})
+	if err != nil {
+		return err
+	}
+	return server.Run(ctx, server.Options{Addr: cfg.Addr, Handler: h.Routes(), Log: log,
+		// 画面の 1 回の要求で provisioner を何度か呼ぶことがあるので、呼び出しの上限より長くする。
+		WriteTimeout: max(90*time.Second, cfg.Provisioner.Timeout+30*time.Second)})
 }
 
 // newIdentifier は、要求から利用者を決める方法を作る（Cloudflare Access の JWT、または開発用の設定）。

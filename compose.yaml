@@ -21,6 +21,17 @@ services:
       OSSBSS_ACCESS_TEAM_DOMAIN: ${OSSBSS_ACCESS_TEAM_DOMAIN:?.env に OSSBSS_ACCESS_TEAM_DOMAIN を設定してください}
       OSSBSS_ACCESS_AUD: ${OSSBSS_ACCESS_AUD:?.env に OSSBSS_ACCESS_AUD を設定してください}
       OSSBSS_INITIAL_ADMIN_EMAIL: ${OSSBSS_INITIAL_ADMIN_EMAIL:?.env に OSSBSS_INITIAL_ADMIN_EMAIL を設定してください}
+      # eapaka-node-provisioner への接続（設計概要 §10）。URL を空にすると同一ホストの共有ネットワークの名前を使う。
+      OSSBSS_PROVISIONER_URL: ${OSSBSS_PROVISIONER_URL:-https://eapaka-provisioner:9446/admin/v1}
+      OSSBSS_PROVISIONER_CLIENT_CERT: /certs/provisioner-client.pem
+      OSSBSS_PROVISIONER_CLIENT_KEY: ${OSSBSS_PROVISIONER_CLIENT_KEY:-}
+      OSSBSS_PROVISIONER_SERVER_CERT: /certs/provisioner-server.pem
+      OSSBSS_PROVISIONER_TIMEOUT: ${OSSBSS_PROVISIONER_TIMEOUT:-60s}
+    volumes:
+      # provisioner 用の証明書（provisioner-client.pem: gen-client-cert で作った本BFF のクライアント証明書と秘密鍵、
+      # provisioner-server.pem: provisioner の server-cert で取り出したサーバー証明書）。
+      # コンテナは UID 65532 で動くので、ファイルはこの UID で読めるようにする。
+      - ./certs:/certs:ro
     # ホストにポートを公開しない。ブラウザからの要求は、同じ compose の cloudflared から届く（設計概要 §5.4、§12）。
     healthcheck:
       test: ["CMD", "/eapaka-ossbss", "healthcheck"]

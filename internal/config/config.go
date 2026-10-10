@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
 )
@@ -24,6 +26,8 @@ type Config struct {
 
 	// DB は PostgreSQL への接続。
 	DB DB
+	// Provisioner は eapaka-node-provisioner への接続（設計概要 §10）。
+	Provisioner Provisioner
 
 	// AccessTeamDomain は Cloudflare Access のチームのドメイン（例 example.cloudflareaccess.com）。
 	// AccessAUDs は Access のアプリの AUD タグ（カンマ区切りで複数）。両方を与えると Access の JWT で利用者を識別する。
@@ -38,6 +42,20 @@ type Config struct {
 
 // DevMode は開発用の設定で動くか。
 func (c Config) DevMode() bool { return c.DevUserEmail != "" }
+
+// Provisioner は provisioner への接続の設定。
+type Provisioner struct {
+	// URL は provisioner のベース URL。既定は同一ホストの共有ネットワーク（eapaka-provisioner）の名前。
+	URL string
+	// ClientCertFile は本BFF のクライアント証明書（gen-client-cert の出力。秘密鍵も含めてよい）。
+	// ClientKeyFile は秘密鍵（空なら ClientCertFile から読む）。
+	ClientCertFile string
+	ClientKeyFile  string
+	// ServerCertFile は provisioner のサーバー証明書（provisioner の server-cert の出力）。
+	ServerCertFile string
+	// Timeout は 1 回の呼び出しの上限時間。
+	Timeout time.Duration
+}
 
 // DB は PostgreSQL への接続の設定。
 type DB struct {
@@ -54,6 +72,13 @@ type DB struct {
 func Load() (Config, error) {
 	c := Config{
 		Addr: cmp.Or(os.Getenv("OSSBSS_ADDR"), ":8446"),
+		Provisioner: Provisioner{
+			URL:            cmp.Or(os.Getenv("OSSBSS_PROVISIONER_URL"), "https://eapaka-provisioner:9446/admin/v1"),
+			ClientCertFile: cmp.Or(os.Getenv("OSSBSS_PROVISIONER_CLIENT_CERT"), "/certs/provisioner-client.pem"),
+			ClientKeyFile:  os.Getenv("OSSBSS_PROVISIONER_CLIENT_KEY"),
+			ServerCertFile: cmp.Or(os.Getenv("OSSBSS_PROVISIONER_SERVER_CERT"), "/certs/provisioner-server.pem"),
+			Timeout:        60 * time.Second,
+		},
 		DB: DB{
 			Addr:     cmp.Or(os.Getenv("OSSBSS_DB_ADDR"), "postgres:5432"),
 			Name:     cmp.Or(os.Getenv("OSSBSS_DB_NAME"), "ossbss"),
@@ -80,6 +105,16 @@ func Load() (Config, error) {
 			errs = append(errs, errors.New("OSSBSS_DB_MAX_CONNS: must be an integer between 1 and 100"))
 		}
 		c.DB.MaxConns = int32(n)
+	}
+	if u, err := url.Parse(c.Provisioner.URL); err != nil || u.Scheme != "https" || u.Host == "" {
+		errs = append(errs, errors.New("OSSBSS_PROVISIONER_URL: must be an https URL such as https://eapaka-provisioner:9446/admin/v1"))
+	}
+	if v := os.Getenv("OSSBSS_PROVISIONER_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Second || d > 5*time.Minute {
+			errs = append(errs, errors.New("OSSBSS_PROVISIONER_TIMEOUT: must be a duration between 1s and 5m (e.g. 60s)"))
+		}
+		c.Provisioner.Timeout = d
 	}
 	if c.DB.Password == "" {
 		errs = append(errs, errors.New("OSSBSS_DB_PASSWORD is not set"))

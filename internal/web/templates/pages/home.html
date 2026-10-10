@@ -3,7 +3,7 @@
 {{with .Data -}}
 <h1 class="text-2xl font-bold mb-4">ダッシュボード</h1>
 <div role="alert" class="alert alert-info mb-6">
-  <span>認証と権限の判定までの段階です（設計概要 §16 の 4 のステップ 2）。加入者などの画面はステップ 4 以降で加えます。</span>
+  <span>provisioner への接続までの段階です（設計概要 §16 の 4 のステップ 3）。加入者などの画面はステップ 4 以降で加えます。</span>
 </div>
 <div class="grid gap-6 md:grid-cols-2">
   <div class="card bg-base-100 shadow">
@@ -26,6 +26,48 @@
     </div>
   </div>
 </div>
+{{with .Provisioner -}}
+<div class="card bg-base-100 shadow mt-6">
+  <div class="card-body">
+    <h2 class="card-title">provisioner</h2>
+    {{- if .Error}}
+    {{- /* 原因の見当は「provisioner に接続できません。…」のように Error の内容を含むので、あればそれだけを出す。 */}}
+    <div role="alert" class="alert alert-error"><span>{{or .Hint .Error}}</span></div>
+    {{- else}}
+    {{- with .Status}}
+    <div class="overflow-x-auto">
+      <table class="table table-sm">
+        <tbody>
+          <tr><th>provisioner</th><td><span class="badge badge-success">接続できます</span> 版 {{.Version}}</td></tr>
+          <tr><th>本PoCの Provisioning API</th><td>
+            {{- with .Downstreams.Prov}}{{if .Reachable}}<span class="badge badge-success">接続できます</span> 版 {{.Version}}（ノード {{.NodeName}}、加入者 {{.SubscriberCount}}）
+            {{- else}}<span class="badge badge-error">provisioner から接続できません</span> {{.Hint}}{{end}}{{end -}}
+          </td></tr>
+          <tr><th>aka-only-server</th><td>
+            {{- with .Downstreams.Aka}}{{if not .Configured}}<span class="text-base-content/60">設定なし（すべての加入者の鍵を本PoCに置く）</span>
+            {{- else if .Reachable}}<span class="badge badge-success">接続できます</span> 版 {{.Version}}（加入者 {{.SubscriberCount}}）
+            {{- else}}<span class="badge badge-error">provisioner から接続できません</span> {{.Hint}}{{end}}{{end -}}
+          </td></tr>
+          {{- /* aka-only-server に接続できなければ、AVクライアントは確かめられていない（exists が false になる）ので出さない。 */}}
+          {{- if .Downstreams.Aka.Reachable}}
+          <tr><th>vector-gateway の AVクライアント</th><td>
+            {{- with .AVClient}}{{if not .Exists}}<span class="badge badge-warning">ID {{.ID}} がありません</span>
+            {{- else if not .Enabled}}<span class="badge badge-warning">ID {{.ID}}（{{.Name}}）は無効です</span>
+            {{- else}}ID {{.ID}}（{{.Name}}）{{end}}{{end -}}
+          </td></tr>
+          {{- end}}
+          <tr><th>未完了の操作</th><td>
+            {{- with .Operations}}{{if or .Running .Retrying .Failed}}<span class="badge badge-warning">実行中 {{.Running}}、やり直し中 {{.Retrying}}、失敗 {{.Failed}}</span>
+            {{- else}}なし{{end}}{{else}}-{{end -}}
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+    {{- end}}
+    {{- end}}
+  </div>
+</div>
+{{- end}}
 <div class="card bg-base-100 shadow mt-6">
   <div class="card-body">
     <h2 class="card-title">できること</h2>

@@ -7,7 +7,7 @@ CLAUDE.md
 # 環境変数（機密情報）。.env.example は管理する
 .env
 
-# 証明書・秘密鍵
+# 証明書・秘密鍵（certs/ は compose がマウントする provisioner 用の証明書の置き場所）
 *.pem
 *.key
 /certs/

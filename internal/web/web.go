@@ -17,6 +17,7 @@ import (
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
+	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
 )
 
 //go:embed templates static
@@ -29,12 +30,18 @@ type DB interface {
 	AccountByEmail(ctx context.Context, email string) (db.Account, error)
 }
 
+// Provisioner は画面が使う provisioner の操作。*provisioner.Client が満たす。
+type Provisioner interface {
+	Status(ctx context.Context) (provisioner.Status, error)
+}
+
 // Handler は画面のハンドラー。
 type Handler struct {
 	log     *slog.Logger
 	version string
 	db      DB
 	ident   auth.Identifier
+	pv      Provisioner
 	pages   pages
 	static  *staticFiles
 }
@@ -47,14 +54,16 @@ type Options struct {
 	DB      DB
 	// Identifier は要求から利用者を決める（Cloudflare Access の JWT、または開発用の設定）。
 	Identifier auth.Identifier
+	// Provisioner は eapaka-node-provisioner のクライアント。
+	Provisioner Provisioner
 }
 
 // New は Handler を作る。テンプレートと静的ファイルはここで読み込む。
 func New(opts Options) (*Handler, error) {
-	if opts.Identifier == nil {
-		return nil, fmt.Errorf("web: identifier is required")
+	if opts.Identifier == nil || opts.Provisioner == nil {
+		return nil, fmt.Errorf("web: identifier and provisioner are required")
 	}
-	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier}
+	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner}
 	var err error
 	if h.pages, err = parsePages(); err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -96,11 +105,38 @@ func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "ok")
 }
 
-// homeData はトップの画面（ステップ 2 では、利用者と、その人ができることの要約、DB の状態）に出す値。
+// homeData はトップの画面（利用者と、その人ができることの要約、DB と provisioner の状態）に出す値。
 type homeData struct {
 	DBReachable   bool
 	SchemaVersion int
 	Permissions   []permission
+	// Provisioner は provisioner の状態（運用担当とシステム管理者だけ。設計概要 §6.2 の「provisioner の状態の閲覧」）。
+	Provisioner *provisionerData
+}
+
+// provisionerData は provisioner の状態のカードに出す値。
+type provisionerData struct {
+	Status provisioner.Status
+	// Error は provisioner に接続できない・エラーを返したときの文（Hint は原因の見当）。
+	Error, Hint string
+}
+
+// provisionerStatus は provisioner の状態を取得する。下流が止まっていると時間がかかるので、上限を短くする。
+func (h *Handler) provisionerStatus(r *http.Request) *provisionerData {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	st, err := h.pv.Status(ctx)
+	switch {
+	case err != nil && provisioner.IsUnavailable(err):
+		h.log.Warn("provisioner is not available", "error", err)
+		return &provisionerData{Error: "provisioner に接続できません。", Hint: provisioner.Diagnose(err)}
+	case err != nil:
+		h.log.Warn("provisioner status", "error", err)
+		return &provisionerData{Error: "provisioner がエラーを返しました。"}
+	case !st.IsProvisioner():
+		return &provisionerData{Error: "接続先は provisioner ではないようです（本PoCの provisioning-api など）。OSSBSS_PROVISIONER_URL を確かめてください。"}
+	}
+	return &provisionerData{Status: st}
 }
 
 // permission は、利用者ができる操作の 1 行。
@@ -135,15 +171,19 @@ func permissions(a authz.Actor) []permission {
 }
 
 func (h *Handler) home(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
 	u := userFrom(r.Context())
 	d := homeData{Permissions: permissions(u.Actor())}
+	// 上限時間は呼び出しごとに取る（provisioner の応答を待つ間に、DB の確認の時間を使い切らないように）。
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	v, err := h.db.SchemaVersion(ctx)
+	cancel()
 	if err != nil {
 		h.log.Warn("home: db is not reachable", "error", err)
 	} else {
 		d.DBReachable, d.SchemaVersion = true, v
+	}
+	if authz.Allowed(u.Actor(), authz.ProvisionerView, authz.NoTenant) {
+		d.Provisioner = h.provisionerStatus(r)
 	}
 	h.render(w, r, http.StatusOK, "home", "ダッシュボード", d)
 }

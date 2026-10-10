@@ -5,17 +5,20 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access/accesstest"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
+	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
 )
 
 var discard = slog.New(slog.DiscardHandler)
@@ -39,7 +42,10 @@ func newFakeDB() *fakeDB {
 }
 
 func (f *fakeDB) Ping(context.Context) error { return f.err }
-func (f *fakeDB) SchemaVersion(context.Context) (int, error) {
+func (f *fakeDB) SchemaVersion(ctx context.Context) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	return f.version, f.err
 }
 func (f *fakeDB) AccountByEmail(_ context.Context, email string) (db.Account, error) {
@@ -55,9 +61,38 @@ func (f *fakeDB) AccountByEmail(_ context.Context, email string) (db.Account, er
 	return a, nil
 }
 
+// fakePV はテスト用の provisioner。err を設定すると Status がそのエラーを返す。
+type fakePV struct {
+	status provisioner.Status
+	err    error
+	calls  int
+	// delay は Status が応答するまでの時間（provisioner につながらずにタイムアウトする場合）。
+	delay time.Duration
+}
+
+func newFakePV() *fakePV {
+	return &fakePV{status: provisioner.Status{Version: "0.3.0",
+		Downstreams: provisioner.Downstreams{
+			Prov: provisioner.DownstreamStatus{Configured: true, Reachable: true, Version: "0.4.0", NodeName: "poc-01", SubscriberCount: 3},
+			Aka:  provisioner.DownstreamStatus{Configured: true, Reachable: false, Hint: "aka-only-server に接続できません。"},
+		},
+		AVClient:   provisioner.AVClientStatus{ID: 1},
+		Operations: &provisioner.OperationCounts{Failed: 1}}}
+}
+
+func (f *fakePV) Status(context.Context) (provisioner.Status, error) {
+	f.calls++
+	time.Sleep(f.delay)
+	return f.status, f.err
+}
+
 func newHandler(t *testing.T, d *fakeDB, ident auth.Identifier, log *slog.Logger) http.Handler {
+	return newHandlerPV(t, d, ident, log, newFakePV())
+}
+
+func newHandlerPV(t *testing.T, d *fakeDB, ident auth.Identifier, log *slog.Logger, pv *fakePV) http.Handler {
 	t.Helper()
-	h, err := New(Options{Log: log, Version: "test", DB: d, Identifier: ident})
+	h, err := New(Options{Log: log, Version: "test", DB: d, Identifier: ident, Provisioner: pv})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,5 +291,53 @@ func TestPermissions(t *testing.T) {
 	// 一覧の数は操作の数と同じ（表示の漏れがない）。
 	if got := len(permissions(authz.Actor{Role: authz.SystemAdmin})); got != len(authz.Ops()) {
 		t.Errorf("permissions = %d", got)
+	}
+}
+
+// provisioner の状態は、運用担当とシステム管理者にだけ出す（設計概要 §6.2）。
+func TestHomeProvisioner(t *testing.T) {
+	d := newFakeDB()
+	for _, c := range []struct {
+		email string
+		shown bool
+	}{{"a@example.com", false}, {"b@example.com", false}, {"c@example.com", true}, {"d@example.com", true}} {
+		pv := newFakePV()
+		body := do(newHandlerPV(t, d, auth.Dev(c.email), discard, pv), "GET", "/", nil).Body.String()
+		if got := strings.Contains(body, "<h2 class=\"card-title\">provisioner</h2>"); got != c.shown || (pv.calls > 0) != c.shown {
+			t.Errorf("%s: shown %v, calls %d", c.email, got, pv.calls)
+		}
+		if c.shown {
+			mustContain(t, body, "版 0.3.0", "版 0.4.0（ノード poc-01、加入者 3）", "provisioner から接続できません", "aka-only-server に接続できません。",
+				"実行中 0、やり直し中 0、失敗 1")
+			// aka-only-server に接続できなければ、AVクライアントは確かめられていないので出さない。
+			if strings.Contains(body, "AVクライアント") {
+				t.Error("av client is shown while aka-only-server is unreachable")
+			}
+		}
+	}
+
+	// provisioner に接続できなければ、原因の見当を出す（画面は返す）。
+	pv := newFakePV()
+	pv.err = &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	w := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil)
+	if w.Code != 200 || strings.Count(w.Body.String(), "provisioner に接続できません。") != 1 ||
+		!strings.Contains(w.Body.String(), "provisioner が起動しているか") {
+		t.Errorf("unavailable = %d %s", w.Code, w.Body)
+	}
+	// provisioner の応答に時間がかかっても、DB の状態は正しく出す。
+	pv.delay = 3500 * time.Millisecond
+	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "スキーマの版 1") {
+		t.Error("db status is wrong while provisioner is slow")
+	}
+	pv.delay = 0
+	// provisioner がエラーを返した。
+	pv.err = &provisioner.Error{Status: 500}
+	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "provisioner がエラーを返しました。") {
+		t.Error("error is not shown")
+	}
+	// provisioner でない相手（本PoCの provisioning-api など）。
+	pv.err, pv.status = nil, provisioner.Status{Version: "0.4.0"}
+	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "provisioner ではないようです") {
+		t.Error("not provisioner is not shown")
 	}
 }

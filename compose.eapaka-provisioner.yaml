@@ -1,0 +1,15 @@
+# eapaka-node-provisioner（以下「provisioner」）と同じホストで動かすときに重ねる設定（設計概要 §12）。
+# provisioner の compose が作る共有ネットワーク（既定の名前は eapaka-provisioner）に本BFF だけを参加させ、
+# ホスト名 eapaka-provisioner で provisioner に接続する（OSSBSS_PROVISIONER_URL の既定）。PostgreSQL は参加させない。
+# provisioner を先に起動する。.env の COMPOSE_FILE=compose.yaml:compose.eapaka-provisioner.yaml で有効になる。
+# 別のホストの provisioner につなぐときは重ねず、OSSBSS_PROVISIONER_URL を VPN 側のアドレスにする。
+services:
+  eapaka-ossbss:
+    networks:
+      - default
+      - eapaka-provisioner
+
+networks:
+  eapaka-provisioner:
+    external: true
+    name: ${PROVISIONER_SHARED_NETWORK:-eapaka-provisioner}

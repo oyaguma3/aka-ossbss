@@ -1,4 +1,5 @@
-# テスト（PostgreSQL の結合テストを含む）、イメージのビルド（画面の CSS の生成を含む）と compose の設定の確認を行う。
+# テスト（PostgreSQL の結合テストを含む）、イメージのビルド（画面の CSS の生成を含む）と compose の設定の確認、
+# eapaka-node-provisioner との契約テストを行う。
 name: CI
 
 on:
@@ -94,3 +95,154 @@ jobs:
           # 必須の設定が空なら、compose が断る。
           sed -i -e 's|^OSSBSS_ACCESS_AUD=.*|OSSBSS_ACCESS_AUD=|' .env
           ! docker compose config -q 2>/dev/null
+
+  provisioner:
+    name: eapaka-node-provisioner との契約テスト
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # 契約テストの相手にする eapaka-node-provisioner と、その下流（本PoC、aka-only-server）のコミット。
+      # provisioner の API を変えたら、その main のコミットに更新する（下流は provisioner の ci.yml の POC_REF / AKA_REF に合わせる）。
+      PROVISIONER_REF: e96390dea0e0f1a18455ba1fceb1ee7f8299a6c2
+      POC_REF: dbd97f54df2200d18bc0ec977e73d6c86289baf4
+      AKA_REF: 2a6dcf84c82313e5e1b67035ad17083c2ec868c2
+    services:
+      # provisioning-api、aka-only-server、provisioner がそれぞれ使う Valkey（このジョブ専用）。
+      valkey-prov:
+        image: valkey/valkey:9
+        ports:
+          - 16401:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      valkey-aka:
+        image: valkey/valkey:9
+        ports:
+          - 16402:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      valkey-provisioner:
+        image: valkey/valkey:9
+        ports:
+          - 16403:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: oyaguma3/eapaka-node-provisioner
+          ref: ${{ env.PROVISIONER_REF }}
+          path: eapaka-node-provisioner
+      - uses: actions/checkout@v7
+        with:
+          repository: oyaguma3/eapaka-radius-server-poc
+          ref: ${{ env.POC_REF }}
+          path: eapaka-radius-server-poc
+      - uses: actions/checkout@v7
+        with:
+          repository: oyaguma3/aka-only-server
+          ref: ${{ env.AKA_REF }}
+          path: aka-only-server
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: provisioner・下流・eapaka-ossbss のビルド
+        run: |
+          git -C eapaka-node-provisioner log -1 --format='eapaka-node-provisioner: %h %s'
+          git -C eapaka-radius-server-poc log -1 --format='本PoC: %h %s'
+          git -C aka-only-server log -1 --format='aka-only-server: %h %s'
+          (cd eapaka-node-provisioner && go build -o "$RUNNER_TEMP/eapaka-provisioner" ./cmd/eapaka-provisioner)
+          (cd eapaka-radius-server-poc/apps/provisioning-api && go build -o "$RUNNER_TEMP/provisioning-api" .)
+          (cd aka-only-server && go build -o "$RUNNER_TEMP/aka-only-server" ./cmd/aka-only-server)
+          go build -o "$RUNNER_TEMP/eapaka-ossbss" ./cmd/eapaka-ossbss
+      - name: 証明書の作成と起動
+        working-directory: ${{ runner.temp }}
+        run: |
+          # provisioner のクライアント証明書を作り、表示された値で下流 2 つに登録する（provisioner の運用ガイド 2 章と同じ流れ）。
+          ./eapaka-provisioner gen-client-cert -name provisioner-ci > pclient.pem 2> pgen.txt
+          prov_clients=$(sed -n 's/^PROVISIONING_API_ADMIN_CLIENTS=//p' pgen.txt)
+          aka_clients=$(sed -n 's/^AKA_ADMIN_CLIENTS=//p' pgen.txt)
+
+          # provisioning-api。サーバー証明書は本PoCの B-02 §15.2 と同じ手順で作る。
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout prov-server.key -out prov-server.pem -days 825 -subj "/CN=provisioning-api" \
+            -addext "subjectAltName=DNS:provisioning-api,DNS:localhost,IP:127.0.0.1"
+          PROVISIONING_API_LISTEN_ADDR=127.0.0.1:19444 \
+          PROVISIONING_API_TLS_CERT=prov-server.pem PROVISIONING_API_TLS_KEY=prov-server.key \
+          PROVISIONING_API_ADMIN_CLIENTS="$prov_clients" PROVISIONING_API_NODE_NAME=ci-node \
+          REDIS_HOST=127.0.0.1 REDIS_PORT=16401 LOG_LEVEL=INFO \
+            nohup ./provisioning-api > provisioning-api.log 2>&1 &
+
+          # aka-only-server。vector-gateway の AVクライアント（ID 1）を登録しておく。
+          export AKA_VALKEY_ADDR=127.0.0.1:16402
+          ./aka-only-server client gen-cert -name vector-gateway > vector-gateway.pem
+          ./aka-only-server client add -name vector-gateway -cert vector-gateway.pem
+          AKA_ADMIN_ADDR=127.0.0.1:19443 AKA_AV_TLS_ADDR=127.0.0.1:18443 \
+          AKA_ADMIN_TLS_HOSTS=localhost,127.0.0.1 AKA_AV_TLS_HOSTS=localhost,127.0.0.1 \
+          AKA_ADMIN_CLIENTS="$aka_clients" \
+            nohup ./aka-only-server > aka-only-server.log 2>&1 &
+          for i in $(seq 1 30); do
+            ./aka-only-server admin-cert > aka-server.pem 2>/dev/null && grep -q 'BEGIN CERTIFICATE' aka-server.pem && break
+            sleep 1
+          done
+          grep -q 'BEGIN CERTIFICATE' aka-server.pem
+          unset AKA_VALKEY_ADDR
+
+          # 本BFF のクライアント証明書を作り、表示された値で provisioner に登録する。
+          ./eapaka-ossbss gen-client-cert -name ossbss-ci > ossbss.pem 2> ogen.txt
+          cat ogen.txt
+
+          # provisioner。PLMN 00102 を aka-only-server に置く（契約テストは 00102 の加入者で aka-only-server の側を確かめる）。
+          export PROVISIONER_ADDR=127.0.0.1:19446 \
+            PROVISIONER_TLS_CERT="$PWD/pv-tls-cert.pem" PROVISIONER_TLS_KEY="$PWD/pv-tls-key.pem" PROVISIONER_TLS_HOSTS=localhost,127.0.0.1 \
+            PROVISIONER_ADMIN_CLIENTS="$(sed -n 's/^PROVISIONER_ADMIN_CLIENTS=//p' ogen.txt)" \
+            PROVISIONER_CLIENT_CERT="$PWD/pclient.pem" \
+            PROVISIONER_PROV_URL=https://127.0.0.1:19444/admin/v1 PROVISIONER_PROV_SERVER_CERT="$PWD/prov-server.pem" \
+            PROVISIONER_AKA_URL=https://127.0.0.1:19443/admin/v1 PROVISIONER_AKA_SERVER_CERT="$PWD/aka-server.pem" \
+            PROVISIONER_AKA_AV_CLIENT_ID=1 PROVISIONER_PLMN_MAP=00102:01 PROVISIONER_VALKEY_ADDR=127.0.0.1:16403
+          ./eapaka-provisioner server-cert > pv-server.pem
+          nohup ./eapaka-provisioner serve > provisioner.log 2>&1 &
+      - name: provisioner に接続できるまで待つ
+        env:
+          # check-provisioner は設定をすべて読むので、DB と利用者の識別の設定も与える（DB には接続しない）。
+          OSSBSS_ADDR: 127.0.0.1:18446
+          OSSBSS_DB_PASSWORD: unused
+          OSSBSS_INITIAL_ADMIN_EMAIL: admin@example.com
+          OSSBSS_DEV_USER_EMAIL: admin@example.com
+          OSSBSS_PROVISIONER_URL: https://127.0.0.1:19446/admin/v1
+          OSSBSS_PROVISIONER_CLIENT_CERT: ${{ runner.temp }}/ossbss.pem
+          OSSBSS_PROVISIONER_SERVER_CERT: ${{ runner.temp }}/pv-server.pem
+        run: |
+          for i in $(seq 1 30); do
+            "$RUNNER_TEMP/eapaka-ossbss" check-provisioner && exit 0
+            sleep 1
+          done
+          exit 1
+      - name: 契約テスト
+        env:
+          OSSBSS_TEST_PROVISIONER_URL: https://127.0.0.1:19446/admin/v1
+          OSSBSS_TEST_PROVISIONER_CLIENT_CERT: ${{ runner.temp }}/ossbss.pem
+          OSSBSS_TEST_PROVISIONER_SERVER_CERT: ${{ runner.temp }}/pv-server.pem
+        run: |
+          set -o pipefail
+          go test -count=1 -race -run Integration -v ./internal/provisioner/ | tee contract.log
+          # 接続先の指定が漏れると契約テストはスキップされ、テスト自体は成功してしまうので、別に確かめる。
+          if grep -q -- '--- SKIP' contract.log; then
+            echo "契約テストがスキップされました"
+            exit 1
+          fi
+      - name: ログ（失敗時）
+        if: failure()
+        run: |
+          echo "---- provisioner ----"; cat "$RUNNER_TEMP/provisioner.log"
+          echo "---- provisioning-api ----"; cat "$RUNNER_TEMP/provisioning-api.log"
+          echo "---- aka-only-server ----"; cat "$RUNNER_TEMP/aka-only-server.log"
