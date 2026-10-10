@@ -1,0 +1,104 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/subscribers">加入者</a></li><li><a href="/subscribers/{{.Data.IMSI}}">{{.Data.IMSI}}</a></li><li>認可ポリシー</li></ul></div>
+{{template "policy-detail" .Data}}
+{{- end}}
+
+{{/* 編集の操作（ルールの追加・削除・並べ替え、既定の動作の切り替え）・保存・停止と再開のたびに、htmx でこの部分を差し替える。
+     編集の操作はフォーム全体を /edit に送り、操作を施した内容を返してもらう（保存はしない）。 */}}
+{{define "policy-detail" -}}
+<div id="policy">
+  <h1 class="text-2xl font-bold mb-4">認可ポリシー <span class="font-mono">{{.IMSI}}</span></h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error "Op" .ErrorOperation)}}
+  {{- if not .Exists}}<div role="status" class="alert alert-warning mb-4"><span>この加入者の認可ポリシーはまだありません。「保存」で作成します。</span></div>{{end}}
+  {{- if and .Dirty (not .Error)}}<div role="status" class="alert alert-info mb-4"><span>保存していない変更があります。「保存」で反映します。</span></div>{{end}}
+  {{- if and .ShowKey .NoKey}}<div role="status" class="alert alert-warning mb-4"><span>この加入者には鍵（Ki / OPc）が登録されていません（認可ポリシーだけでは認証できません）。</span></div>{{end}}
+
+  {{- if .Exists}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">状態</h2>
+      {{template "policy-status" (dict "IMSI" .IMSI "HasPolicy" true "Status" .Status "Can" true
+        "URL" (printf "/subscribers/%s/policy/status" .IMSI) "Target" "#policy" "Include" "#policy-form" "Key" .StatusKey)}}
+      {{- if .Dirty}}<p class="text-sm text-base-content/60">停止・再開しても、保存していないルールの変更はそのまま残ります（保存はしません）。</p>{{end}}
+    </div>
+  </div>
+  {{- end}}
+
+  <form id="policy-form" class="card bg-base-100 shadow" hx-post="/subscribers/{{.IMSI}}/policy" hx-target="#policy" hx-swap="outerHTML" autocomplete="off">
+    <div class="card-body">
+      {{- if .Exists}}<input type="hidden" name="exists" value="1">{{end}}
+      {{- if .NoKey}}<input type="hidden" name="no_key" value="1">{{end}}
+      <input type="hidden" name="state" value="{{.Status}}">
+      {{- if .Dirty}}<input type="hidden" name="dirty" value="1">{{end}}
+      <input type="hidden" name="idem" value="{{.IdemKey}}">
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">既定の動作（どのルールにも一致しないとき）</legend>
+        <div class="flex gap-6">
+          <label class="label cursor-pointer gap-2">
+            <input type="radio" name="default" value="deny" class="radio"{{if eq .Default "deny"}} checked{{end}} hx-post="/subscribers/{{.IMSI}}/policy/edit" hx-trigger="change">
+            deny（拒否）
+          </label>
+          <label class="label cursor-pointer gap-2">
+            <input type="radio" name="default" value="allow" class="radio"{{if eq .Default "allow"}} checked{{end}} hx-post="/subscribers/{{.IMSI}}/policy/edit" hx-trigger="change">
+            allow（許可）
+          </label>
+        </div>
+        {{template "field-error" .Errors.default}}
+      </fieldset>
+
+      <h2 class="card-title mt-2">ルール</h2>
+      <p class="text-sm text-base-content/60">上から順に評価し、最初に一致したルールを使います。NAS-ID と SSID の * はすべてに一致します。SSID の比較は大文字と小文字を区別しません。</p>
+      {{- range .Rules}}
+      <div class="border border-base-300 rounded-box p-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <strong>ルール {{.No}}</strong>
+          <div class="join">
+            <button type="button" class="btn btn-sm join-item" name="op" value="up:{{.Index}}" hx-post="/subscribers/{{$.IMSI}}/policy/edit"{{if .First}} disabled{{end}} aria-label="ルール {{.No}} を上へ">上へ</button>
+            <button type="button" class="btn btn-sm join-item" name="op" value="down:{{.Index}}" hx-post="/subscribers/{{$.IMSI}}/policy/edit"{{if .Last}} disabled{{end}} aria-label="ルール {{.No}} を下へ">下へ</button>
+            <button type="button" class="btn btn-sm btn-error btn-outline join-item" name="op" value="remove:{{.Index}}" hx-post="/subscribers/{{$.IMSI}}/policy/edit" aria-label="ルール {{.No}} を削除">削除</button>
+          </div>
+        </div>
+        <div class="grid gap-x-6 md:grid-cols-3">
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">NAS-ID</legend>
+            <input name="nas_id" value="{{.NASID}}" maxlength="253" spellcheck="false" class="input w-full font-mono{{if .Errors.nasId}} input-error{{end}}">
+            {{- if .Errors.nasId}}{{template "field-error" .Errors.nasId}}{{else}}<p class="label">AP の NAS-Identifier（* はすべて）</p>{{end}}
+          </fieldset>
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">VLAN ID</legend>
+            <input name="vlan_id" value="{{.VLANID}}" maxlength="4" inputmode="numeric" class="input w-full{{if .Errors.vlanId}} input-error{{end}}">
+            {{- if .Errors.vlanId}}{{template "field-error" .Errors.vlanId}}{{else}}<p class="label">0〜4094。空なら割り当てない</p>{{end}}
+          </fieldset>
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">Session-Timeout（秒）</legend>
+            <input name="session_timeout" value="{{.SessionTimeout}}" maxlength="5" inputmode="numeric" class="input w-full{{if .Errors.sessionTimeout}} input-error{{end}}">
+            {{- if .Errors.sessionTimeout}}{{template "field-error" .Errors.sessionTimeout}}{{else}}<p class="label">0〜86400。空か 0 なら送らない</p>{{end}}
+          </fieldset>
+        </div>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">許可する SSID</legend>
+          <textarea name="ssids" rows="3" spellcheck="false" class="textarea w-full font-mono{{if .Errors.allowedSsids}} textarea-error{{end}}">{{.SSIDs}}</textarea>
+          {{- if .Errors.allowedSsids}}{{template "field-error" .Errors.allowedSsids}}{{else}}<p class="label">1 行に 1 つ（32 バイトまで。* はすべて）</p>{{end}}
+        </fieldset>
+      </div>
+      {{- else}}
+      <p class="text-base-content/60">ルールはありません（すべての接続に既定の動作を使います）。</p>
+      {{- end}}
+      <div><button type="button" class="btn btn-sm" name="op" value="add" hx-post="/subscribers/{{.IMSI}}/policy/edit">ルールを追加</button></div>
+      <div class="card-actions items-center mt-2">
+        {{- if eq .Default "allow"}}
+        <button type="button" class="btn btn-primary" command="show-modal" commandfor="dialog-save">保存</button>
+        {{- else}}
+        <button type="submit" class="btn btn-primary">保存</button>
+        {{- end}}
+        <span class="text-sm text-base-content/60">保存すると、この内容で認可ポリシー全体を置き換えます。すぐに認可に反映されます。状態（停止中かどうか）は変わりません。</span>
+      </div>
+    </div>
+  </form>
+  {{- /* ダイアログの中の form（method="dialog"）は、フォームの入れ子にならないよう外に置く。 */}}
+  {{- if eq .Default "allow"}}
+  {{template "confirm" (dict "ID" "dialog-save" "Title" "既定の動作が allow です" "Form" "policy-form" "Label" "保存する" "Class" "btn-warning"
+    "Message" "既定の動作が allow です。どのルールにも一致しない接続も許可します。保存してよろしいですか？")}}
+  {{- end}}
+</div>
+{{- end}}

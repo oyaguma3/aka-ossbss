@@ -11,6 +11,7 @@ import (
 
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
+	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
 	"github.com/oyaguma3/eapaka-ossbss-sample/internal/trace"
 )
 
@@ -138,6 +139,8 @@ func (h *Handler) authenticate(next http.Handler) http.Handler {
 			h.renderError(w, r, http.StatusServiceUnavailable, "データベースに接続できません。しばらくしてから開き直してください。")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userKey{}, u)))
+		// provisioner には、利用者のメールアドレスを操作者（X-Operator-Id）として渡す（設計概要 §15 の 6）。
+		ctx = provisioner.WithOperator(context.WithValue(r.Context(), userKey{}, u), u.Email)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

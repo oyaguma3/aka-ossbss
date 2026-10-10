@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // staticFiles は static/ のファイルを配信する。
@@ -16,12 +17,13 @@ type staticFiles struct {
 	notFound http.Handler
 }
 
-func newStaticFiles(notFound http.Handler) (*staticFiles, error) {
+// staticHashes は static/ の各ファイルの内容のハッシュ（16 進 32 桁）。ETag と、画面から参照する URL の版（assetURL）に使う。
+var staticHashes = sync.OnceValues(func() (map[string]string, error) {
 	sub, err := fs.Sub(assets, "static")
 	if err != nil {
 		return nil, err
 	}
-	etags := map[string]string{}
+	hashes := map[string]string{}
 	err = fs.WalkDir(sub, ".", func(name string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -31,11 +33,35 @@ func newStaticFiles(notFound http.Handler) (*staticFiles, error) {
 			return err
 		}
 		sum := sha256.Sum256(data)
-		etags[name] = `"` + hex.EncodeToString(sum[:16]) + `"`
+		hashes[name] = hex.EncodeToString(sum[:16])
 		return nil
 	})
+	return hashes, err
+})
+
+// assetURL は、画面から参照する静的ファイルの URL に内容のハッシュを付けたもの（例 /static/app.css?v=…）を返す。
+// 内容が変われば URL も変わるので、途中のキャッシュ（Cloudflare のエッジやブラウザ）に古い版が残っていても使われない
+// （ステップ 4 の Access を通した確認で、古い CSS が使われて画面が崩れたため）。
+func assetURL(name string) string {
+	hashes, _ := staticHashes()
+	if h, ok := hashes[name]; ok {
+		return "/static/" + name + "?v=" + h[:12]
+	}
+	return "/static/" + name
+}
+
+func newStaticFiles(notFound http.Handler) (*staticFiles, error) {
+	hashes, err := staticHashes()
 	if err != nil {
 		return nil, err
+	}
+	sub, err := fs.Sub(assets, "static")
+	if err != nil {
+		return nil, err
+	}
+	etags := make(map[string]string, len(hashes))
+	for name, h := range hashes {
+		etags[name] = `"` + h + `"`
 	}
 	return &staticFiles{files: http.FileServerFS(sub), etags: etags, notFound: notFound}, nil
 }

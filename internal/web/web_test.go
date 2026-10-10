@@ -2,12 +2,16 @@ package web
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,11 +28,19 @@ import (
 var discard = slog.New(slog.DiscardHandler)
 
 // fakeDB はテスト用の DB。err を設定すると、すべての呼び出しがそのエラーを返す。
+// テナントは 10（テナントA）と 20（テナントB）。テナントユーザー a とテナント管理者 b はテナントA に属する。
 type fakeDB struct {
 	mu       sync.Mutex
 	version  int
 	err      error
 	accounts map[string]db.Account
+	tenants  []db.Tenant
+	// subTenants と clientTenants は加入者・RADIUSクライアントの所属の記録。
+	subTenants    map[string]int64
+	clientTenants map[int64]int64
+	// assignErr を設定すると、所属の記録の書き込みだけがそのエラーを返す。auditErr は監査ログの書き込みだけ。
+	assignErr, auditErr error
+	audit               []db.AuditEntry
 }
 
 func newFakeDB() *fakeDB {
@@ -38,7 +50,9 @@ func newFakeDB() *fakeDB {
 		"c@example.com": {ID: 3, Email: "c@example.com", Role: authz.Operator},
 		"d@example.com": {ID: 4, Email: "d@example.com", Role: authz.SystemAdmin},
 		"x@example.com": {ID: 5, Email: "x@example.com", Role: authz.Operator, Disabled: true},
-	}}
+	},
+		tenants:    []db.Tenant{{ID: 10, Name: "テナントA"}, {ID: 20, Name: "テナントB"}},
+		subTenants: map[string]int64{}, clientTenants: map[int64]int64{}}
 }
 
 func (f *fakeDB) Ping(context.Context) error { return f.err }
@@ -60,30 +74,103 @@ func (f *fakeDB) AccountByEmail(_ context.Context, email string) (db.Account, er
 	}
 	return a, nil
 }
-
-// fakePV はテスト用の provisioner。err を設定すると Status がそのエラーを返す。
-type fakePV struct {
-	status provisioner.Status
-	err    error
-	calls  int
-	// delay は Status が応答するまでの時間（provisioner につながらずにタイムアウトする場合）。
-	delay time.Duration
+func (f *fakeDB) Tenants(context.Context) ([]db.Tenant, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.tenants), f.err
+}
+func (f *fakeDB) SubscriberTenant(_ context.Context, imsi string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.subTenants[imsi], f.err
+}
+func (f *fakeDB) SubscriberTenants(_ context.Context, imsis []string) (map[string]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]int64{}
+	for _, imsi := range imsis {
+		if t, ok := f.subTenants[imsi]; ok {
+			out[imsi] = t
+		}
+	}
+	return out, f.err
+}
+func (f *fakeDB) TenantSubscribers(_ context.Context, tenantID int64, prefix, after string, limit int) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, imsi := range slices.Sorted(maps.Keys(f.subTenants)) {
+		if f.subTenants[imsi] == tenantID && strings.HasPrefix(imsi, prefix) && imsi > after && len(out) < limit {
+			out = append(out, imsi)
+		}
+	}
+	return out, f.err
+}
+func (f *fakeDB) CountTenantSubscribers(_ context.Context, tenantID int64, prefix string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for imsi, t := range f.subTenants {
+		if t == tenantID && strings.HasPrefix(imsi, prefix) {
+			n++
+		}
+	}
+	return n, f.err
+}
+func (f *fakeDB) AssignSubscriber(_ context.Context, imsi string, tenantID int64, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := cmp.Or(f.err, f.assignErr); err != nil {
+		return err
+	}
+	if tenantID == 0 {
+		delete(f.subTenants, imsi)
+	} else {
+		f.subTenants[imsi] = tenantID
+	}
+	return nil
+}
+func (f *fakeDB) ClientTenant(_ context.Context, id int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.clientTenants[id], f.err
+}
+func (f *fakeDB) ClientTenants(context.Context) (map[int64]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return maps.Clone(f.clientTenants), f.err
+}
+func (f *fakeDB) AssignClient(_ context.Context, id, tenantID int64, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := cmp.Or(f.err, f.assignErr); err != nil {
+		return err
+	}
+	if tenantID == 0 {
+		delete(f.clientTenants, id)
+	} else {
+		f.clientTenants[id] = tenantID
+	}
+	return nil
+}
+func (f *fakeDB) InsertAudit(_ context.Context, e db.AuditEntry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := cmp.Or(f.err, f.auditErr); err != nil {
+		return err
+	}
+	f.audit = append(f.audit, e)
+	return nil
 }
 
-func newFakePV() *fakePV {
-	return &fakePV{status: provisioner.Status{Version: "0.3.0",
-		Downstreams: provisioner.Downstreams{
-			Prov: provisioner.DownstreamStatus{Configured: true, Reachable: true, Version: "0.4.0", NodeName: "poc-01", SubscriberCount: 3},
-			Aka:  provisioner.DownstreamStatus{Configured: true, Reachable: false, Hint: "aka-only-server に接続できません。"},
-		},
-		AVClient:   provisioner.AVClientStatus{ID: 1},
-		Operations: &provisioner.OperationCounts{Failed: 1}}}
-}
-
-func (f *fakePV) Status(context.Context) (provisioner.Status, error) {
-	f.calls++
-	time.Sleep(f.delay)
-	return f.status, f.err
+// lastAudit は最後の監査ログを返す（なければゼロ値）。
+func (f *fakeDB) lastAudit() db.AuditEntry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.audit) == 0 {
+		return db.AuditEntry{}
+	}
+	return f.audit[len(f.audit)-1]
 }
 
 func newHandler(t *testing.T, d *fakeDB, ident auth.Identifier, log *slog.Logger) http.Handler {
@@ -122,6 +209,28 @@ func do(h http.Handler, method, path string, hdr map[string]string) *httptest.Re
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
+}
+
+// post はフォームを POST する（htmx の要求として送る）。
+func post(h http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "http://ossbss.example"+path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+// get は GET する。
+func get(h http.Handler, path string) *httptest.ResponseRecorder { return do(h, "GET", path, nil) }
+
+func mustNotContain(t *testing.T, body string, unwanted ...string) {
+	t.Helper()
+	for _, s := range unwanted {
+		if strings.Contains(body, s) {
+			t.Errorf("body contains %q", s)
+		}
+	}
 }
 
 func mustContain(t *testing.T, body string, want ...string) {
@@ -269,6 +378,16 @@ func TestNotFoundAndStatic(t *testing.T) {
 	}
 	if w := do(h, "GET", "/static/", nil); w.Code != 404 {
 		t.Errorf("static dir = %d", w.Code)
+	}
+	// 画面は内容のハッシュつきの URL で参照し（app.css は CI のテストでは作らないので htmx で確かめる）、その URL でも配信できる（途中のキャッシュの古い版を使わせない）。
+	body := do(h, "GET", "/", nil).Body.String()
+	url := assetURL("htmx.min.js")
+	if !strings.HasPrefix(url, "/static/htmx.min.js?v=") || !strings.Contains(etag, strings.TrimPrefix(url, "/static/htmx.min.js?v=")) ||
+		!strings.Contains(body, `src="`+url+`"`) {
+		t.Errorf("asset url = %s", url)
+	}
+	if w := do(h, "GET", url, nil); w.Code != 200 || w.Header().Get("ETag") != etag {
+		t.Errorf("versioned static = %d", w.Code)
 	}
 }
 

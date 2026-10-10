@@ -1,0 +1,110 @@
+{{/* 複数の画面で使う部品。すべてのページから使える。 */}}
+
+{{/* alerts は画面の上部の成功とエラーの文。引数は dict で Message、Error、Op（provisioner の操作の記録の ID。空なら出さない）。 */}}
+{{define "alerts" -}}
+{{- with .Message}}<div role="status" class="alert alert-success mb-4"><span>{{.}}</span></div>{{end}}
+{{- with .Error}}<div role="alert" class="alert alert-error mb-4"><span>{{.}}{{template "op-ref" $.Op}}</span></div>{{end}}
+{{- end}}
+
+{{/* op-ref は provisioner の操作の記録の ID（運用担当・システム管理者にだけ渡す）。操作の記録の画面ができたらリンクにする（ステップ 5）。 */}}
+{{define "op-ref"}}{{with .}}（操作の記録: <code>{{.}}</code>）{{end}}{{end}}
+
+{{/* confirm は確認ダイアログ（画面仕様 §1.4）。開くボタンは command="show-modal" commandfor="ID" を持つ。
+     引数は dict で ID、Title、Message、Form（確認のボタンで送るフォームの id）、Label（確認のボタンの文字）、Class（ボタンの色）。 */}}
+{{define "confirm" -}}
+<dialog id="{{.ID}}" class="modal">
+  <div class="modal-box">
+    <h3 class="text-lg font-bold">{{.Title}}</h3>
+    <p class="py-4">{{.Message}}</p>
+    <div class="modal-action">
+      <form method="dialog"><button class="btn">やめる</button></form>
+      <button type="submit" form="{{.Form}}" class="btn {{.Class}}">{{.Label}}</button>
+    </div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button>閉じる</button></form>
+</dialog>
+{{- end}}
+
+{{/* policy-status は加入者の状態（認可ポリシーの状態）と、停止・再開のボタン（画面仕様 §2.4）。引数は dict で、
+     IMSI、HasPolicy（認可ポリシーがあるか）、Status（空なら接続先が停止・再開に対応していない）、Can（停止・再開ができるか）、
+     URL（送り先）、Target（差し替える要素）、Include（一緒に送るフォーム。空なら送らない）、Key（Idempotency-Key）。 */}}
+{{define "policy-status" -}}
+{{- if not .HasPolicy -}}
+<span class="text-base-content/60">認可ポリシーがないため、停止・再開できません（認可ポリシーがない加入者の認証は、もともと拒否されます）。</span>
+{{- else if not .Status -}}
+<span class="text-base-content/60">接続先が停止・再開に対応していません（eapaka-node-provisioner 0.3.0 以降と本PoCの provisioning-api 0.4.0 以降で使えます）。</span>
+{{- else -}}
+<div class="flex flex-wrap items-center gap-2">
+  {{- if eq .Status "active"}}
+  <span class="badge badge-success badge-outline">利用中</span>
+  {{- else if eq .Status "suspended"}}
+  <span class="badge badge-error">停止中</span><span class="text-sm text-base-content/60">（認証を拒否します）</span>
+  {{- else}}
+  <span class="badge badge-warning">{{policyStatusLabel .Status}}</span><span class="text-sm text-base-content/60">（認証を拒否します。停止または再開で正しい状態に戻せます）</span>
+  {{- end}}
+  {{- if .Can}}
+  {{- if ne .Status "suspended"}}
+  <form id="status-suspend" hx-post="{{.URL}}" hx-target="{{.Target}}" hx-swap="outerHTML"{{with .Include}} hx-include="{{.}}"{{end}}>
+    <input type="hidden" name="status" value="suspended">
+    <input type="hidden" name="status_idem" value="{{.Key}}">
+  </form>
+  <button type="button" class="btn btn-sm btn-error btn-outline" command="show-modal" commandfor="dialog-suspend">停止する</button>
+  {{template "confirm" (dict "ID" "dialog-suspend" "Title" "加入者の停止" "Form" "status-suspend" "Label" "停止する" "Class" "btn-error"
+    "Message" (printf "加入者 %s を停止します。次の認証から拒否します（接続中のセッションは切れません）。よろしいですか？" .IMSI))}}
+  {{- end}}
+  {{- if ne .Status "active"}}
+  <form id="status-resume" hx-post="{{.URL}}" hx-target="{{.Target}}" hx-swap="outerHTML"{{with .Include}} hx-include="{{.}}"{{end}}>
+    <input type="hidden" name="status" value="active">
+    <input type="hidden" name="status_idem" value="{{.Key}}">
+  </form>
+  <button type="button" class="btn btn-sm btn-primary btn-outline" command="show-modal" commandfor="dialog-resume">再開する</button>
+  {{template "confirm" (dict "ID" "dialog-resume" "Title" "加入者の再開" "Form" "status-resume" "Label" "再開する" "Class" "btn-primary"
+    "Message" (printf "加入者 %s を再開します。次の認証から認可ポリシーのルールに従います。よろしいですか？" .IMSI))}}
+  {{- end}}
+  {{- end}}
+</div>
+{{- end}}
+{{- end}}
+
+{{/* status-badge は一覧の状態の欄（引数は加入者。認可ポリシーがなければ「-」）。 */}}
+{{define "status-badge" -}}
+{{- if not .Policy}}-
+{{- else if eq .Status "suspended"}}<span class="badge badge-error badge-sm">停止中</span>
+{{- else if eq .Status "active"}}利用中
+{{- else if .Status}}<span class="badge badge-warning badge-sm">{{policyStatusLabel .Status}}</span>
+{{- else}}-{{end -}}
+{{- end}}
+
+{{/* tenant-filter-options はテナントの絞り込みの選択肢（引数は dict で Value（選んでいる値）と Tenants（tenantInfo））。 */}}
+{{define "tenant-filter-options" -}}
+<option value=""{{if eq .Value ""}} selected{{end}}>すべて</option>
+<option value="none"{{if eq .Value "none"}} selected{{end}}>テナントなし</option>
+{{- range .Tenants.List}}
+<option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Value}} selected{{end}}>{{.Name}}</option>
+{{- end}}
+{{- end}}
+
+{{/* tenant-choice は登録のときの所属のテナントの選択（引数は dict で Value、Tenants、Error）。うっかりテナントなしにしないよう、
+     既定は「選んでください」にする（画面仕様 §2.2）。 */}}
+{{define "tenant-choice" -}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">所属のテナント</legend>
+  <select name="tenant" required class="select w-full{{if .Error}} select-error{{end}}">
+    <option value=""{{if eq .Value ""}} selected{{end}} disabled>選んでください</option>
+    <option value="none"{{if eq .Value "none"}} selected{{end}}>テナントなし</option>
+    {{- range .Tenants.List}}
+    <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Value}} selected{{end}}>{{.Name}}</option>
+    {{- end}}
+  </select>
+  {{- if .Error}}<p class="label text-error">{{.Error}}</p>{{else}}<p class="label">テナントなしのものは、運用担当とシステム管理者だけが扱えます</p>{{end}}
+</fieldset>
+{{- end}}
+
+{{/* plmn-map は provisioner の PLMN マップ（引数は []provisioner.PLMNEntry）。 */}}
+{{define "plmn-map" -}}
+{{- if .}}{{range $i, $e := .}}{{if $i}}、{{end}}<code>{{$e.PLMN}}</code> → {{keyStoreLabel $e.KeyStore}}{{end}}。それ以外の PLMN は本PoC
+{{- else}}なし（すべての加入者の鍵を本PoCに置く）{{end -}}
+{{- end}}
+
+{{/* field-error は入力の項目の下の誤り（引数は文。空なら何も出さない）。 */}}
+{{define "field-error"}}{{with .}}<p class="label text-error">{{.}}</p>{{end}}{{end}}

@@ -1,0 +1,72 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/subscribers">加入者</a></li><li>登録</li></ul></div>
+<h1 class="text-2xl font-bold mb-4">加入者の登録</h1>
+{{template "subscriber-form" .Data}}
+{{- end}}
+
+{{/* 既定の動作の切り替えと登録の失敗のたびに、htmx でこの部分を差し替える。 */}}
+{{define "subscriber-form" -}}
+<div id="subscriber-new" class="card bg-base-100 shadow">
+  <div class="card-body">
+    {{template "alerts" (dict "Error" .Error "Op" .ErrorOperation)}}
+    <form id="subscriber-new-form" method="post" action="/subscribers" hx-post="/subscribers" hx-target="#subscriber-new" hx-swap="outerHTML" autocomplete="off">
+      <input type="hidden" name="idem" value="{{.IdemKey}}">
+      <div class="grid gap-x-6 md:grid-cols-2">
+        {{template "tenant-choice" (dict "Value" .Tenant "Tenants" .Tenants "Error" .Errors.tenant)}}
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">IMSI</legend>
+          <input name="imsi" value="{{.IMSI}}" required maxlength="15" inputmode="numeric" pattern="[0-9]{15}" class="input w-full font-mono{{if .Errors.imsi}} input-error{{end}}">
+          {{- if .Errors.imsi}}{{template "field-error" .Errors.imsi}}{{else}}<p class="label">15 桁の数字</p>{{end}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">Ki</legend>
+          <input name="ki" value="{{.Ki}}" required maxlength="32" pattern="[0-9A-Fa-f]{32}" spellcheck="false" class="input w-full font-mono{{if .Errors.ki}} input-error{{end}}">
+          {{- if .Errors.ki}}{{template "field-error" .Errors.ki}}{{else}}<p class="label">16 進 32 桁</p>{{end}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">OPc</legend>
+          <input name="opc" value="{{.OPc}}" required maxlength="32" pattern="[0-9A-Fa-f]{32}" spellcheck="false" class="input w-full font-mono{{if .Errors.opc}} input-error{{end}}">
+          {{- if .Errors.opc}}{{template "field-error" .Errors.opc}}{{else}}<p class="label">16 進 32 桁</p>{{end}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">AMF</legend>
+          <input name="amf" value="{{.AMF}}" required maxlength="4" pattern="[0-9A-Fa-f]{4}" spellcheck="false" class="input w-full font-mono{{if .Errors.amf}} input-error{{end}}">
+          {{- if .Errors.amf}}{{template "field-error" .Errors.amf}}{{else}}<p class="label">16 進 4 桁</p>{{end}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">SQN</legend>
+          <input name="sqn" value="{{.SQN}}" required maxlength="12" pattern="[0-9A-Fa-f]{12}" spellcheck="false" class="input w-full font-mono{{if .Errors.sqn}} input-error{{end}}">
+          {{- if .Errors.sqn}}{{template "field-error" .Errors.sqn}}{{else}}<p class="label">16 進 12 桁</p>{{end}}
+        </fieldset>
+      </div>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">認可ポリシーの既定の動作（どのルールにも一致しないとき）</legend>
+        <div class="flex gap-6">
+          <label class="label cursor-pointer gap-2">
+            <input type="radio" name="default" value="deny" class="radio"{{if eq .Default "deny"}} checked{{end}} hx-post="/subscribers/new/form" hx-trigger="change">
+            deny（拒否）
+          </label>
+          <label class="label cursor-pointer gap-2">
+            <input type="radio" name="default" value="allow" class="radio"{{if eq .Default "allow"}} checked{{end}} hx-post="/subscribers/new/form" hx-trigger="change">
+            allow（許可）
+          </label>
+        </div>
+        <p class="label">認可ポリシーはルールなしで一緒に作ります。ルールは登録の後に認可ポリシーの画面で編集します。</p>
+      </fieldset>
+      <p class="text-sm text-base-content/60 my-2">
+        鍵の置き場所は、IMSI の PLMN と provisioner の PLMN マップで決まります{{if .PLMNKnown}}（{{template "plmn-map" .PLMNMap}}）{{end}}。
+      </p>
+      {{- if eq .Default "allow"}}
+      <button type="button" class="btn btn-primary" command="show-modal" commandfor="dialog-create">登録する</button>
+      {{- else}}
+      <button type="submit" class="btn btn-primary">登録する</button>
+      {{- end}}
+    </form>
+    {{- /* ダイアログの中の form（method="dialog"）は、フォームの入れ子にならないよう外に置く。 */}}
+    {{- if eq .Default "allow"}}
+    {{template "confirm" (dict "ID" "dialog-create" "Title" "既定の動作が allow です" "Form" "subscriber-new-form" "Label" "登録する" "Class" "btn-warning"
+      "Message" "認可ポリシーの既定の動作が allow です。どのルールにも一致しない接続も許可します。登録してよろしいですか？")}}
+    {{- end}}
+  </div>
+</div>
+{{- end}}

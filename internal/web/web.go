@@ -28,11 +28,36 @@ type DB interface {
 	Ping(ctx context.Context) error
 	SchemaVersion(ctx context.Context) (int, error)
 	AccountByEmail(ctx context.Context, email string) (db.Account, error)
+	Tenants(ctx context.Context) ([]db.Tenant, error)
+	SubscriberTenant(ctx context.Context, imsi string) (int64, error)
+	SubscriberTenants(ctx context.Context, imsis []string) (map[string]int64, error)
+	TenantSubscribers(ctx context.Context, tenantID int64, prefix, after string, limit int) ([]string, error)
+	CountTenantSubscribers(ctx context.Context, tenantID int64, prefix string) (int64, error)
+	AssignSubscriber(ctx context.Context, imsi string, tenantID int64, by string) error
+	ClientTenant(ctx context.Context, clientID int64) (int64, error)
+	ClientTenants(ctx context.Context) (map[int64]int64, error)
+	AssignClient(ctx context.Context, clientID, tenantID int64, by string) error
+	InsertAudit(ctx context.Context, e db.AuditEntry) error
 }
 
 // Provisioner は画面が使う provisioner の操作。*provisioner.Client が満たす。
 type Provisioner interface {
 	Status(ctx context.Context) (provisioner.Status, error)
+	ListSubscribers(ctx context.Context, p provisioner.ListParams) (provisioner.SubscriberList, error)
+	GetSubscriber(ctx context.Context, imsi string) (provisioner.Subscriber, error)
+	CreateSubscriber(ctx context.Context, s provisioner.SubscriberCreate, idempotencyKey string) (provisioner.Subscriber, error)
+	UpdateSubscriber(ctx context.Context, imsi string, u provisioner.SubscriberUpdate, idempotencyKey string) (provisioner.Subscriber, error)
+	DeleteSubscriber(ctx context.Context, imsi string, idempotencyKey string) error
+	GetSubscriberKeys(ctx context.Context, imsi string) (provisioner.SubscriberKeys, error)
+	PutPolicy(ctx context.Context, imsi string, p provisioner.PolicyPut, idempotencyKey string) (provisioner.Policy, bool, error)
+	SetPolicyStatus(ctx context.Context, imsi, status, idempotencyKey string) (provisioner.Policy, error)
+	ListRADIUSClients(ctx context.Context) ([]provisioner.RADIUSClient, error)
+	CreateRADIUSClient(ctx context.Context, rc provisioner.RADIUSClientCreate, idempotencyKey string) (provisioner.RADIUSClient, error)
+	GetRADIUSClient(ctx context.Context, id int64) (provisioner.RADIUSClient, error)
+	UpdateRADIUSClient(ctx context.Context, id int64, u provisioner.RADIUSClientUpdate, idempotencyKey string) (provisioner.RADIUSClient, error)
+	DeleteRADIUSClient(ctx context.Context, id int64, idempotencyKey string) error
+	GetRADIUSClientSecret(ctx context.Context, id int64) (string, error)
+	ListSessions(ctx context.Context, p provisioner.SessionParams) (provisioner.SessionList, error)
 }
 
 // Handler は画面のハンドラー。
@@ -80,6 +105,32 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("GET /static/", h.static)
 	mux.HandleFunc("GET /healthz", h.healthz)
 	mux.HandleFunc("GET /{$}", h.home)
+
+	// 加入者・停止と再開・認可ポリシー（画面仕様 §2、§3）。
+	mux.HandleFunc("GET /subscribers", h.subscribers)
+	mux.HandleFunc("GET /subscribers/new", h.subscriberNew)
+	mux.HandleFunc("POST /subscribers/new/form", h.subscriberNewForm)
+	mux.HandleFunc("POST /subscribers", h.subscriberCreate)
+	mux.HandleFunc("GET /subscribers/{imsi}", h.subscriber)
+	mux.HandleFunc("POST /subscribers/{imsi}/keys", h.subscriberKeys)
+	mux.HandleFunc("POST /subscribers/{imsi}/auth", h.subscriberAuth)
+	mux.HandleFunc("POST /subscribers/{imsi}/delete", h.subscriberDelete)
+	mux.HandleFunc("POST /subscribers/{imsi}/status", h.subscriberStatus)
+	mux.HandleFunc("GET /subscribers/{imsi}/policy", h.policy)
+	mux.HandleFunc("POST /subscribers/{imsi}/policy/edit", h.policyEdit)
+	mux.HandleFunc("POST /subscribers/{imsi}/policy", h.policySave)
+	mux.HandleFunc("POST /subscribers/{imsi}/policy/status", h.policyStatus)
+
+	// RADIUSクライアント（画面仕様 §4）。
+	mux.HandleFunc("GET /clients", h.clients)
+	mux.HandleFunc("POST /clients", h.clientCreate)
+	mux.HandleFunc("GET /clients/{id}", h.client)
+	mux.HandleFunc("POST /clients/{id}/update", h.clientUpdate)
+	mux.HandleFunc("POST /clients/{id}/secret", h.clientSecret)
+	mux.HandleFunc("POST /clients/{id}/delete", h.clientDelete)
+
+	// セッション（画面仕様 §5）。
+	mux.HandleFunc("GET /sessions", h.sessions)
 	mux.HandleFunc("/", h.notFound)
 
 	cop := http.NewCrossOriginProtection()

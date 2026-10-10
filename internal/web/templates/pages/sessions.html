@@ -1,0 +1,62 @@
+{{define "content" -}}
+{{with .Data -}}
+<h1 class="text-2xl font-bold mb-4">
+  {{- if .IMSI}}IMSI <span class="font-mono">{{.IMSI}}</span> のアクティブセッション {{.Matched}} 件
+  {{- else}}アクティブセッション <span class="text-base font-normal text-base-content/60">{{.Matched}} 件</span>{{end -}}
+</h1>
+{{template "alerts" (dict "Error" .Error)}}
+
+<form method="get" action="/sessions" class="flex flex-wrap items-end gap-2 mb-4">
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">IMSI</legend>
+    <input name="imsi" value="{{.IMSI}}" maxlength="15" inputmode="numeric" pattern="[0-9]{15}" class="input font-mono" placeholder="15 桁（空ならすべて）">
+  </fieldset>
+  {{- if .Filter.Selectable}}
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">テナント</legend>
+    <select name="tenant" class="select">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants)}}</select>
+  </fieldset>
+  {{- end}}
+  <button type="submit" class="btn">表示</button>
+  {{- if .IMSI}}<a class="btn btn-ghost" href="/sessions">すべてのセッションを表示</a>{{end}}
+</form>
+
+{{- if .Truncated}}
+<div role="status" class="alert alert-info mb-2"><span>接続開始の新しい {{len .Rows}} 件だけを表示しています。{{if not .IMSI}}IMSI で絞り込んでください。{{end}}</span></div>
+{{- end}}
+{{- if .ScanTruncated}}
+<div role="status" class="alert alert-info mb-2"><span>provisioner のセッションの新しい 1000 件の中から絞り込んでいます。</span></div>
+{{- end}}
+
+<div class="overflow-x-auto bg-base-100 rounded-box shadow">
+  <table class="table table-sm">
+    <thead>
+      <tr>
+        <th>接続開始</th><th>IMSI</th>{{if .Staff}}<th>テナント</th>{{end}}<th>NAS</th><th>端末の IP アドレス</th>
+        <th>通信量（入力 / 出力）</th><th>Acct-Session-Id</th><th>セッションID</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{- range .Rows}}
+      <tr>
+        <td class="whitespace-nowrap">{{datetime .StartTime}}</td>
+        <td class="font-mono"><a class="link" href="/subscribers/{{.IMSI}}">{{.IMSI}}</a></td>
+        {{- if $.Data.Staff}}<td>{{$.Data.Tenants.Name .Tenant}}</td>{{end}}
+        <td>{{or .NasIdentifier "-"}}<br><span class="font-mono text-sm text-base-content/60">{{or .NasIP "-"}}</span></td>
+        <td class="font-mono">{{or .ClientIP "-"}}</td>
+        <td class="whitespace-nowrap"><span title="{{.InputOctets}} octets">{{octets .InputOctets}}</span> / <span title="{{.OutputOctets}} octets">{{octets .OutputOctets}}</span></td>
+        <td class="font-mono">{{or .AcctSessionID "-"}}</td>
+        <td class="font-mono text-sm">{{or .ID "-"}}</td>
+      </tr>
+      {{- else}}
+      <tr><td colspan="{{if .Staff}}8{{else}}7{{end}}" class="text-base-content/60">アクティブセッションはありません。</td></tr>
+      {{- end}}
+    </tbody>
+  </table>
+</div>
+<p class="text-sm text-base-content/60 mt-4">
+  アクティブセッションは RADIUS の認証で作られ、Accounting-Stop か有効期限（24 時間。Accounting-Request を受けるたびに延びます）で消えます。
+  端末の IP アドレス、Acct-Session-Id、通信量は、NAS から Accounting-Request を受けるまで空です。ここではセッションを切断できません。
+</p>
+{{- end}}
+{{- end}}
