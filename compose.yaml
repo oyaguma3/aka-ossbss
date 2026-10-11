@@ -5,6 +5,9 @@ services:
       args:
         VERSION: ${OSSBSS_VERSION:-dev}
     restart: unless-stopped
+    # 停止の合図から、処理中の要求を終えてサーバーを閉じ終えるまで最大 10 秒かかる（internal/server の shutdownTimeout）。
+    # Docker の既定の猶予（10 秒）では強制終了と重なるので、長くする。
+    stop_grace_period: 20s
     depends_on:
       postgres:
         condition: service_healthy

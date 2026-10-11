@@ -251,7 +251,7 @@ provisioner には所属の概念がないので、A・B の一覧は本BFF の�
 
 | サービス | 内容 |
 |---|---|
-| `eapaka-ossbss` | 本BFF。ポートは公開しない。provisioner と同じホストなら provisioner の共有ネットワーク（`eapaka-provisioner`）にも参加する |
+| `eapaka-ossbss` | 本BFF。ポートは公開しない。provisioner と同じホストなら provisioner の共有ネットワーク（`eapaka-provisioner`）にも参加する。停止の上限（10 秒）が Docker の既定の猶予と同じなので、`stop_grace_period` を 20 秒にする（PoC セットのステップ 4。2026-10-12） |
 | `postgres` | 本BFF 専用。ポートは公開しない |
 | `cloudflared` | Tunnel のコネクター。トークンはファイルで渡す。ヘルスチェックは付けない（イメージにシェルがない）。本BFF が healthy になってから起動する |
 
