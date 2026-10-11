@@ -90,14 +90,19 @@ jobs:
           docker compose config -q
           docker compose config --services
           # 本BFF・PostgreSQL・cloudflared の 3 つ（運用ガイド 1 章）。
-          [ "$(docker compose config --services | sort | tr '\n' ' ')" = "cloudflared eapaka-ossbss postgres " ]
+          docker compose config --format json > config.json
+          jq -e '.services | keys == ["cloudflared", "eapaka-ossbss", "postgres"]' config.json
           # ホストにポートを公開しない（要求は cloudflared から届く）。開発用の設定は compose には書かない。
-          ! docker compose config | grep -q 'published'
-          ! docker compose config | grep -q 'OSSBSS_DEV_USER_EMAIL'
-          # Tunnel のトークンは環境変数でなくファイルで渡す（ファイルがなければ起動しない）。
-          docker compose config | grep -q -- '--token-file'
-          docker compose config | grep -q 'create_host_path: false'
-          ! docker compose config | grep -qi 'TUNNEL_TOKEN'
+          jq -e '[.services[].ports // [] | .[]] | length == 0' config.json
+          ! grep -q 'OSSBSS_DEV_USER_EMAIL' config.json
+          # Tunnel のトークンは環境変数でなくファイルで渡す。
+          jq -e '.services.cloudflared.command | index("--token-file") != null' config.json
+          jq -e '.services.cloudflared.volumes[] | select(.target == "/etc/cloudflared/token")
+            | .type == "bind" and .read_only == true and (.source | endswith("/secrets/tunnel-token"))' config.json
+          # ファイルがなければ起動しない（create_host_path: false）。config の出力は compose の版によって既定の値を省くので
+          # （省く値が true の版と false の版がある）、compose.yaml そのものを確かめる。
+          grep -q 'create_host_path: false' compose.yaml
+          ! grep -qi 'TUNNEL_TOKEN' config.json
           # 必須の設定が空なら、compose が断る。
           sed -i -e 's|^OSSBSS_ACCESS_AUD=.*|OSSBSS_ACCESS_AUD=|' .env
           ! docker compose config -q 2>/dev/null
