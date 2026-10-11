@@ -22,7 +22,7 @@ jobs:
     services:
       # internal/db の結合テストに使う（テストのたびに public スキーマを作り直す）。
       postgres:
-        image: postgres:18
+        image: postgres:18.6
         env:
           POSTGRES_DB: ossbss_test
           POSTGRES_USER: ossbss
@@ -114,13 +114,13 @@ jobs:
     env:
       # 契約テストの相手にする eapaka-node-provisioner と、その下流（本PoC、aka-only-server）のコミット。
       # provisioner の API を変えたら、その main のコミットに更新する（下流は provisioner の ci.yml の POC_REF / AKA_REF に合わせる）。
-      PROVISIONER_REF: e96390dea0e0f1a18455ba1fceb1ee7f8299a6c2
+      PROVISIONER_REF: 51c9eee492a3c2a3fb6679016a28b8d89784fdb7
       POC_REF: dbd97f54df2200d18bc0ec977e73d6c86289baf4
-      AKA_REF: 2a6dcf84c82313e5e1b67035ad17083c2ec868c2
+      AKA_REF: b003b11d5f0c2227fa78613b0620f6836419d3f8
     services:
       # provisioning-api、aka-only-server、provisioner がそれぞれ使う Valkey（このジョブ専用）。
       valkey-prov:
-        image: valkey/valkey:9
+        image: valkey/valkey:9.1.2
         ports:
           - 16401:6379
         options: >-
@@ -129,7 +129,7 @@ jobs:
           --health-timeout 3s
           --health-retries 10
       valkey-aka:
-        image: valkey/valkey:9
+        image: valkey/valkey:9.1.2
         ports:
           - 16402:6379
         options: >-
@@ -138,7 +138,7 @@ jobs:
           --health-timeout 3s
           --health-retries 10
       valkey-provisioner:
-        image: valkey/valkey:9
+        image: valkey/valkey:9.1.2
         ports:
           - 16403:6379
         options: >-

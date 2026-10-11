@@ -55,7 +55,7 @@ EAP-AKA の加入者を運用する事業者の、外部 OSS/BSS（運用・業�
 
 既存の BFF と同じ流儀にそろえる。
 
-- 言語: Go 1.27.1。標準ライブラリを優先する（`net/http` のメソッドつき ServeMux、`html/template`、`embed`、`log/slog`、`encoding/json/v2`、`crypto`）。
+- 言語: Go 1.27.2。標準ライブラリを優先する（`net/http` のメソッドつき ServeMux、`html/template`、`embed`、`log/slog`、`encoding/json/v2`、`crypto`）。
 - 外部依存（Go）: `github.com/jackc/pgx/v5`（PostgreSQL のドライバー）だけ（§15 の 8）。JWT の検証（RS256）、JWKS の取得、DB のスキーマの移行は自前で書く。
 - 画面: htmx は既存の BFF と同じくファイルを同梱する。daisyUI は Tailwind CSS v4 のプラグインとして使い、CSS は Docker のビルドの段で Tailwind のスタンドアロン CLI（Node.js は使わない）で生成して `embed` で同梱する（§15 の 9。`scripts/build-css.sh`）。JavaScript は書かない（daisyUI のコンポーネントは CSS だけで動くものを使い、確認ダイアログは HTML の Invoker Commands で開く。§17.4 の 4）。静的ファイルは内容のハッシュつきの URL で参照する（途中のキャッシュの古い版を使わせない。§17.4）。
 - module パス: `github.com/oyaguma3/eapaka-ossbss-sample`。コマンド名は `eapaka-ossbss`。設定は環境変数だけで受け取り、接頭辞は `OSSBSS_` とする。
@@ -271,6 +271,7 @@ provisioner には所属の概念がないので、A・B の一覧は本BFF の�
 - 単体テスト: provisioner と DB の偽物と、テスト用の鍵で作った JWT で、権限とテナントの範囲の判定を網羅する（役割 × 操作 × 自テナント / 他テナント / テナントなし。範囲の外は 404、役割にない操作は 403 で、provisioner への書き込みも監査ログもないこと）。主な保護は、外すとテストが失敗することも確かめた（§17.4、§17.5）。
 - DB の結合テスト: 接続先を環境変数で指定したときだけ、実際の PostgreSQL で行う（CI ではサービスコンテナ。スキップされたら CI を失敗させる）。
 - 契約テスト: provisioner と下流を固定のコミットでビルド・起動して行う（既存の BFF の CI と同じ作り。CI のジョブ「eapaka-node-provisioner との契約テスト」）。
+- 脆弱性: 依存と標準ライブラリの既知の脆弱性を、別のワークフローが push と pull request のたびと毎週 govulncheck で調べる。
 - 画面: 手元で provisioner と下流をバイナリで起動し、playwright で役割ごとに確かめた（確認ダイアログは Chromium・Firefox・WebKit）。
 - 実機: 検証機（simwifi）で、Cloudflare の Tunnel と Access を通した通し（本物の JWT、画面からの登録・停止・再開と eapaka_test での認証）を確かめた（§17.2、§17.4、§17.6）。
 

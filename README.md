@@ -1,5 +1,8 @@
 # eapaka-ossbss-sample
 
+[![CI](https://github.com/oyaguma3/eapaka-ossbss-sample/actions/workflows/ci.yml/badge.svg)](https://github.com/oyaguma3/eapaka-ossbss-sample/actions/workflows/ci.yml)
+[![govulncheck](https://github.com/oyaguma3/eapaka-ossbss-sample/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/oyaguma3/eapaka-ossbss-sample/actions/workflows/govulncheck.yml)
+
 外部 OSS/BSS（運用・業務支援システム）のサンプル実装としての統合BFF（コマンド名 `eapaka-ossbss`）です。[eapaka-node-provisioner](https://github.com/oyaguma3/eapaka-node-provisioner) の API を使って、[EAP-AKA RADIUS PoC](https://github.com/oyaguma3/eapaka-radius-server-poc) と [aka-only-server](https://github.com/oyaguma3/aka-only-server) の加入者・RADIUSクライアント・認可ポリシーを、テナントと役割に基づく権限で操作します。
 
 ```
@@ -38,7 +41,7 @@ Docker Compose（統合BFF、PostgreSQL、cloudflared）で動かします。ホ
 
 ## 開発
 
-Go 1.27.1 と Docker（compose プラグイン）を使います。
+Go 1.27.2 と Docker（compose プラグイン）を使います。
 
 画面の CSS（`internal/web/static/app.css`）はリポジトリに入れていないので、最初に作ります。Tailwind CSS のスタンドアロン CLI と daisyUI のプラグインを、版を固定して取得し、SHA-256 を確かめてから使います（Node.js は使いません。Linux の x86_64 / arm64 だけ）。取得したファイルは `.cache/css/` に置いて使い回します。テンプレートのクラスを変えたら作り直します。
 
@@ -49,7 +52,7 @@ sh scripts/build-css.sh
 テスト。PostgreSQL の結合テストは、接続先を環境変数で与えたときだけ動きます。テストのたびに public スキーマを作り直すので、名前に `test` を含む DB を使います（既定 `ossbss_test`）。
 
 ```bash
-docker run -d --name ossbss-it-pg -p 127.0.0.1:25432:5432 -e POSTGRES_USER=ossbss -e POSTGRES_PASSWORD=it-pass -e POSTGRES_DB=ossbss_test postgres:18
+docker run -d --name ossbss-it-pg -p 127.0.0.1:25432:5432 -e POSTGRES_USER=ossbss -e POSTGRES_PASSWORD=it-pass -e POSTGRES_DB=ossbss_test postgres:18.6
 ```
 
 ```bash
@@ -77,6 +80,8 @@ OSSBSS_ADDR=127.0.0.1:8446 OSSBSS_DB_ADDR=127.0.0.1:25432 OSSBSS_DB_PASSWORD=it-
 ```
 
 provisioner に接続できるかは、同じ環境変数で `./eapaka-ossbss check-provisioner` を実行して確かめられます。provisioner との契約テストは、`OSSBSS_TEST_PROVISIONER_URL`、`OSSBSS_TEST_PROVISIONER_CLIENT_CERT`、`OSSBSS_TEST_PROVISIONER_SERVER_CERT` を与えたときだけ動きます（`go test -run Integration ./internal/provisioner/`。CI のジョブ「eapaka-node-provisioner との契約テスト」と同じ手順で、下流と provisioner を手元で動かせます）。
+
+依存と標準ライブラリの既知の脆弱性は、`.github/workflows/govulncheck.yml` が push と pull request のたびと、毎週月曜に govulncheck で調べます。
 
 `http://127.0.0.1:8446/` を開きます。最初のシステム管理者（`OSSBSS_INITIAL_ADMIN_EMAIL`）は起動時に作られます。役割ごとの表示は、DB でこの利用者のアカウントの役割とテナントを付け替えて確かめます（起動し直すと、最初のシステム管理者はシステム管理者に戻ります）。
 
