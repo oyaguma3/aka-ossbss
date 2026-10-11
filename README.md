@@ -15,9 +15,26 @@
 
 個人利用・検証用途のサンプルです。
 
-## 現在の状態
+## 機能
 
-実装中です（[設計概要](docs/design-overview.md) §16 の 4 のステップ 5 まで）。今は、骨組み（設定、HTTP サーバー、PostgreSQL とスキーマの移行、画面の土台、compose、CI）、Cloudflare Access の JWT による利用者の識別と役割・権限の判定、eapaka-node-provisioner のクライアント（契約テストつき）と、画面（加入者・認可ポリシー・停止と再開・RADIUSクライアント・セッション・テナント・アカウント・所属の付け替えと点検・操作の記録・監査ログ・ダッシュボード。テナントの範囲で絞る。[画面仕様](docs/screen-spec.md)）があります。cloudflared を含む compose と運用ガイドは、ステップ 6 で加えます。
+| 画面 | 内容 | 使える役割 |
+|---|---|---|
+| ダッシュボード | 自分の範囲の加入者・停止中・RADIUSクライアントの数、provisioner と下流の状態 | 全員 |
+| 加入者 | 一覧・登録・詳細・変更・削除、Ki / OPc の表示、停止・再開、認可ポリシーの編集 | 全員（操作は役割による） |
+| RADIUSクライアント | 一覧・登録・詳細・変更・削除、共有シークレットの表示 | 全員（操作は役割による） |
+| セッション | テナントの範囲のアクティブセッション | 全員 |
+| テナント | 作成・名前の変更・削除、所属の付け替え、下流にない所属の記録の点検 | システム管理者 |
+| アカウント | 作成・役割とテナントの変更・無効化・削除 | テナント管理者（自分のテナントのテナントユーザー）・システム管理者 |
+| 操作の記録 | provisioner の未完了の操作、やり直し・閉じる | 運用担当・システム管理者 |
+| 監査ログ | 本BFF の監査ログ（テナントの範囲）、provisioner と下流の監査ログ | テナント管理者・運用担当・システム管理者 |
+
+役割はテナントユーザー・テナント管理者・運用担当・システム管理者の 4 つです。権限の詳細は [設計概要](docs/design-overview.md) §6、画面の詳細は [画面仕様](docs/screen-spec.md) を参照してください。
+
+## 導入と運用
+
+Docker Compose（統合BFF、PostgreSQL、cloudflared）で動かします。ホストの受信のポートは開けません（cloudflared が外向きに Cloudflare へ接続します）。eapaka-node-provisioner が導入済みで、Cloudflare に公開ホスト名に使うドメインのゾーンと Zero Trust があることが前提です。
+
+導入（Cloudflare Access / Tunnel の準備、provisioner との証明書のやり取り、起動）、アカウントの運用、バックアップ、更新、障害時の確認は [運用ガイド](docs/operation-guide.md) を参照してください。
 
 ## 開発
 
@@ -63,9 +80,7 @@ provisioner に接続できるかは、同じ環境変数で `./eapaka-ossbss ch
 
 `http://127.0.0.1:8446/` を開きます。最初のシステム管理者（`OSSBSS_INITIAL_ADMIN_EMAIL`）は起動時に作られます。役割ごとの表示は、DB でこの利用者のアカウントの役割とテナントを付け替えて確かめます（起動し直すと、最初のシステム管理者はシステム管理者に戻ります）。
 
-compose（`compose.yaml`）は本番の構成で、Cloudflare Access の設定（`OSSBSS_ACCESS_TEAM_DOMAIN`、`OSSBSS_ACCESS_AUD`）と `OSSBSS_INITIAL_ADMIN_EMAIL` が必須です。本BFF はホストにポートを公開しません。provisioner 用の証明書は `certs/provisioner-client.pem` と `certs/provisioner-server.pem` に置きます。provisioner と同じホストでは `compose.eapaka-provisioner.yaml` を重ねます（`.env.example` の既定）。
-
-本番の構成（cloudflared を含む）と運用の手順は、設計概要 §16 の 4 のステップ 6 で運用ガイドにまとめます。
+compose（`compose.yaml`）は本番の構成です（運用ガイド）。開発用の設定は compose では使えません。
 
 ## ライセンス
 

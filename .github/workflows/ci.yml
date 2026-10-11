@@ -89,9 +89,15 @@ jobs:
             -e 's|^OSSBSS_INITIAL_ADMIN_EMAIL=.*|OSSBSS_INITIAL_ADMIN_EMAIL=admin@example.com|' .env
           docker compose config -q
           docker compose config --services
+          # 本BFF・PostgreSQL・cloudflared の 3 つ（運用ガイド 1 章）。
+          [ "$(docker compose config --services | sort | tr '\n' ' ')" = "cloudflared eapaka-ossbss postgres " ]
           # ホストにポートを公開しない（要求は cloudflared から届く）。開発用の設定は compose には書かない。
           ! docker compose config | grep -q 'published'
           ! docker compose config | grep -q 'OSSBSS_DEV_USER_EMAIL'
+          # Tunnel のトークンは環境変数でなくファイルで渡す（ファイルがなければ起動しない）。
+          docker compose config | grep -q -- '--token-file'
+          docker compose config | grep -q 'create_host_path: false'
+          ! docker compose config | grep -qi 'TUNNEL_TOKEN'
           # 必須の設定が空なら、compose が断る。
           sed -i -e 's|^OSSBSS_ACCESS_AUD=.*|OSSBSS_ACCESS_AUD=|' .env
           ! docker compose config -q 2>/dev/null

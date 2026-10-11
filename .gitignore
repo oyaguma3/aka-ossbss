@@ -11,6 +11,8 @@ CLAUDE.md
 *.pem
 *.key
 /certs/
+# Cloudflare Tunnel のトークン（compose の cloudflared がマウントする）
+/secrets/
 
 # リポジトリ直下で go build したときの成果物
 /eapaka-ossbss

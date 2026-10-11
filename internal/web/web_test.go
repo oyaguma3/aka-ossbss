@@ -252,7 +252,7 @@ func TestHomeByRole(t *testing.T) {
 	body := w.Body.String()
 	mustContain(t, body, "<title>ダッシュボード | EAP-AKA OSS/BSS サンプル</title>", "a@example.com", "テナントユーザー", "テナントA",
 		"<td>加入者の停止・再開</td>\n            <td>自分のテナントのもの</td>",
-		"<td>加入者の登録</td>\n            <td>できない</td>", "開発用の設定", "接続できます", "スキーマの版 1")
+		"<td>加入者の登録</td>\n            <td>できない</td>", "開発用の設定", `<span class="badge badge-success">接続中</span> スキーマのバージョン 1`)
 	// 開発用の設定ではログアウトのリンクを出さない（Access を通らないため）。
 	if strings.Contains(body, accessLogoutURL) {
 		t.Error("dev mode shows the access logout link")
@@ -426,7 +426,7 @@ func TestHomeProvisioner(t *testing.T) {
 			t.Errorf("%s: shown %v, calls %d", c.email, got, pv.calls)
 		}
 		if c.shown {
-			mustContain(t, body, "版 0.3.0", "版 0.4.0（ノード poc-01、加入者 3）", "provisioner から接続できません", "aka-only-server に接続できません。",
+			mustContain(t, body, "バージョン 0.3.0", "バージョン 0.4.0（ノード poc-01、加入者 3）", `<span class="badge badge-error">切断</span> aka-only-server に接続できません。`,
 				"実行中 0、やり直し中 0、失敗 1")
 			// aka-only-server に接続できなければ、AVクライアントは確かめられていないので出さない。
 			if strings.Contains(body, "AVクライアント") {
@@ -445,7 +445,7 @@ func TestHomeProvisioner(t *testing.T) {
 	}
 	// provisioner の応答に時間がかかっても、DB の状態は正しく出す。
 	pv.delay = 3500 * time.Millisecond
-	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "スキーマの版 1") {
+	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "スキーマのバージョン 1") {
 		t.Error("db status is wrong while provisioner is slow")
 	}
 	pv.delay = 0

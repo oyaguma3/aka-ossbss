@@ -33,12 +33,37 @@ services:
       # コンテナは UID 65532 で動くので、ファイルはこの UID で読めるようにする。
       - ./certs:/certs:ro
     # ホストにポートを公開しない。ブラウザからの要求は、同じ compose の cloudflared から届く（設計概要 §5.4、§12）。
+    # 接続元のアドレスは、cloudflared が付ける Cf-Connecting-IP を使う（§17.2 の 4）。
     healthcheck:
       test: ["CMD", "/eapaka-ossbss", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 30s
+    networks:
+      - default
+
+  cloudflared:
+    # Cloudflare Tunnel のコネクター（設計概要 §5.4、§12）。外向きに Cloudflare へ接続し、公開ホスト名への要求を
+    # 本BFF（http://eapaka-ossbss:8446。Tunnel の公開ホスト名の向け先に書く）に届ける。ホストの受信のポートは開けない。
+    image: cloudflare/cloudflared:2026.9.3
+    restart: unless-stopped
+    depends_on:
+      eapaka-ossbss:
+        condition: service_healthy
+    command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/etc/cloudflared/token"]
+    volumes:
+      # Tunnel のトークン（秘密の値）はファイルで渡す（.env に書くと docker compose config の出力やコンテナの環境変数に出るため）。
+      # コンテナは UID 65532 で動くので、ファイルはこの UID で読めるようにする（chmod 600。運用ガイド 2.6）。
+      # ファイルがなければ起動しない（ディレクトリを作らせない）。
+      - type: bind
+        source: ./secrets/tunnel-token
+        target: /etc/cloudflared/token
+        read_only: true
+        bind:
+          create_host_path: false
+    # ヘルスチェックは付けない（イメージにシェルや curl がない）。状態は docker compose logs cloudflared と
+    # Cloudflare のダッシュボードの Tunnel の状態で確かめる（運用ガイド 10 章）。
     networks:
       - default
 

@@ -55,8 +55,8 @@
     <div class="card-body">
       <h2 class="card-title">データベース（PostgreSQL）</h2>
       <p>
-        {{- if .DBReachable}}<span class="badge badge-success">接続できます</span> スキーマの版 {{.SchemaVersion}}
-        {{- else}}<span class="badge badge-error">接続できません</span> 本BFF のログを確かめてください{{end -}}
+        {{- if .DBReachable}}<span class="badge badge-success">接続中</span> スキーマのバージョン {{.SchemaVersion}}
+        {{- else}}<span class="badge badge-error">切断</span> 接続できません。本BFF のログを確かめてください{{end -}}
       </p>
     </div>
   </div>
@@ -66,22 +66,23 @@
   <div class="card-body">
     <h2 class="card-title">provisioner</h2>
     {{- if .Error}}
-    {{- /* 原因の見当は「provisioner に接続できません。…」のように Error の内容を含むので、あればそれだけを出す。 */}}
+    {{- /* 状態のバッジは「接続中」「切断」（「接続できます」は、まだ接続していない状態とも読めるため）。
+         原因の見当は「provisioner に接続できません。…」のように Error の内容を含むので、あればそれだけを出す。 */}}
     <div role="alert" class="alert alert-error"><span>{{or .Hint .Error}}</span></div>
     {{- else}}
     {{- with .Status}}
     <div class="overflow-x-auto">
       <table class="table table-sm">
         <tbody>
-          <tr><th>provisioner</th><td><span class="badge badge-success">接続できます</span> 版 {{.Version}}</td></tr>
+          <tr><th>provisioner</th><td><span class="badge badge-success">接続中</span> バージョン {{.Version}}</td></tr>
           <tr><th>本PoCの Provisioning API</th><td>
-            {{- with .Downstreams.Prov}}{{if .Reachable}}<span class="badge badge-success">接続できます</span> 版 {{.Version}}（ノード {{.NodeName}}、加入者 {{.SubscriberCount}}）
-            {{- else}}<span class="badge badge-error">provisioner から接続できません</span> {{.Hint}}{{end}}{{end -}}
+            {{- with .Downstreams.Prov}}{{if .Reachable}}<span class="badge badge-success">接続中</span> バージョン {{.Version}}（ノード {{.NodeName}}、加入者 {{.SubscriberCount}}）
+            {{- else}}<span class="badge badge-error">切断</span> {{or .Hint "provisioner から接続できません。"}}{{end}}{{end -}}
           </td></tr>
           <tr><th>aka-only-server</th><td>
             {{- with .Downstreams.Aka}}{{if not .Configured}}<span class="text-base-content/60">設定なし（すべての加入者の鍵を本PoCに置く）</span>
-            {{- else if .Reachable}}<span class="badge badge-success">接続できます</span> 版 {{.Version}}（加入者 {{.SubscriberCount}}）
-            {{- else}}<span class="badge badge-error">provisioner から接続できません</span> {{.Hint}}{{end}}{{end -}}
+            {{- else if .Reachable}}<span class="badge badge-success">接続中</span> バージョン {{.Version}}（加入者 {{.SubscriberCount}}）
+            {{- else}}<span class="badge badge-error">切断</span> {{or .Hint "provisioner から接続できません。"}}{{end}}{{end -}}
           </td></tr>
           {{- /* aka-only-server に接続できなければ、AVクライアントは確かめられていない（exists が false になる）ので出さない。 */}}
           {{- if .Downstreams.Aka.Reachable}}

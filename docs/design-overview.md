@@ -1,6 +1,6 @@
 # eapaka-ossbss-sample 設計概要
 
-- 状態: 初版（2026-10-10）。§15 の確認事項はすべて推奨案で合意した。実装は §16 の順に進める。§16 の 1〜3（下流の変更）は完了し、4 のステップ 1（骨組み）・ステップ 2（認証と権限の判定）・ステップ 3（provisioner のクライアントと契約テスト）・ステップ 4（加入者などの画面）・ステップ 5（テナント・アカウントなどの画面）を実装した（§17）。
+- 状態: 初版（2026-10-10）。§15 の確認事項はすべて推奨案で合意した。実装は §16 の順に進める。§16 の 1〜3（下流の変更）は完了し、4 のステップ 1（骨組み）・ステップ 2（認証と権限の判定）・ステップ 3（provisioner のクライアントと契約テスト）・ステップ 4（加入者などの画面）・ステップ 5（テナント・アカウントなどの画面）・ステップ 6（compose・運用ガイド・実機での確認）を実装した（§17）。導入と運用の手順は `docs/operation-guide.md`。
 - 対象: 外部 OSS/BSS のサンプル実装としての統合BFF（コマンド名 `eapaka-ossbss`。以下「本BFF」）。
 - 関連:
   - eapaka-node-provisioner（以下「provisioner」）: `docs/design-overview.md`、`docs/openapi/provisioner-api.yaml`、`docs/operation-guide.md`
@@ -91,8 +91,8 @@ EAP-AKA の加入者を運用する事業者の、外部 OSS/BSS（運用・業�
 | 項目 | 内容 |
 |---|---|
 | ドメイン | 公開ホスト名には Cloudflare に置いた DNS のゾーンが要る（未取得。これが前提） |
-| Tunnel | ダッシュボードで作り、トークンで動かす（remotely-managed）。公開ホスト名を `http://eapaka-ossbss:8446`（compose のネットワークの中の本BFF）に向ける |
-| cloudflared | 本BFF と同じ compose のコンテナとして動かす。トークンは `.env` の `TUNNEL_TOKEN` |
+| Tunnel | ダッシュボードで作り、トークンで動かす（remotely-managed）。公開ホスト名を `http://eapaka-ossbss:8446`（compose のネットワークの中の本BFF）に向ける（運用ガイド 2.2） |
+| cloudflared | 本BFF と同じ compose のコンテナとして動かす。トークンはファイル `secrets/tunnel-token`（§17.6 の 1。当初の案の `.env` の `TUNNEL_TOKEN` はやめた） |
 | 本BFF の待ち受け | compose のネットワークの中だけ（ホストにポートを公開しない）。ホストの受信は閉じたままでよい（Tunnel は外向きに接続する） |
 | Access のアプリ | 公開ホスト名の self-hosted アプリ。ログイン方法はワンタイム PIN、ポリシーで許可するメールアドレス（またはドメイン）を決める。AUD タグとチームのドメインを本BFF の設定に渡す |
 | プラン | Zero Trust の Free プラン（50 人まで） |
@@ -245,7 +245,7 @@ provisioner には所属の概念がないので、A・B の一覧は本BFF の�
 |---|---|
 | `eapaka-ossbss` | 本BFF。ポートは公開しない。provisioner と同じホストなら provisioner の共有ネットワーク（`eapaka-provisioner`）にも参加する |
 | `postgres` | 本BFF 専用。ポートは公開しない |
-| `cloudflared` | Tunnel のコネクター。トークンで動く |
+| `cloudflared` | Tunnel のコネクター。トークンはファイルで渡す。ヘルスチェックは付けない（イメージにシェルがない）。本BFF が healthy になってから起動する |
 
 - 重ねる compose ファイルで、provisioner が同一ホストか別ホストかを選ぶ（既存の BFF と同じ作り）。
 - 開発用の設定（§15 の 10）は compose では使えない（ループバックで待ち受けるバイナリだけ。§17.2）。compose はいつも Cloudflare Access の設定で動く。
@@ -456,3 +456,34 @@ simwifi での確認（2026-10-11）:
 - provisioner は削除の前に下流 2 つを確かめるので、aka-only-server を止めても未完了の操作はできなかった。そのため provisioner の Valkey に失敗の操作の記録を置いて確かめた。一覧（テナント名つき）、同じ IMSI の操作の 409（D には操作の記録へのリンク、テナント管理者には「運用担当に対応を依頼してください」）、詳細からのやり直し（完了になり、監査ログの対象のテナントは IMSI の所属）。
 - テナント管理者の監査ログに自分のテナントのもの（テナントA から移したアカウントの変更を含む）だけが出て、provisioner と下流のタブが出ないこと。D の 3 つのタブ。
 - ダッシュボード（D: テナント・加入者・停止中・RADIUSクライアント、provisioner のカード。テナントユーザー: 自分のテナントの件数、ダーク）。
+
+### 17.6 ステップ 6: compose（cloudflared）・運用ガイド・README・実機での確認（2026-10-11）
+
+確認事項（2026-10-11 にすべて推奨案で合意）:
+
+| # | 事項 | 決定 |
+|---|---|---|
+| 1 | Tunnel のトークンの渡し方 | `.env` の `TUNNEL_TOKEN` ではなく、ファイル `secrets/tunnel-token`（`chmod 600`、所有者は UID 65532）を cloudflared に読み取り専用でマウントし、`--token-file` で渡す（`.env` だと `docker compose config` の出力やコンテナの環境変数に出るため）。ファイルがなければ起動しない（`create_host_path: false`） |
+| 2 | 公開ホスト名の向け先 | `http://eapaka-ossbss:8446`（compose のネットワークの中の本BFF）。検証の `ossbss-dev.simauth.link` もこの向け先に変えた（ユーザーがダッシュボードで変更） |
+| 3 | cloudflared のヘルスチェック | 付けない（イメージにシェルや curl がない）。状態は `docker compose logs cloudflared` と Cloudflare のダッシュボードで確かめる |
+| 4 | 監査ログの保持 | 自動では消さない。運用ガイドに古い行を消す SQL と、先にバックアップを取る手順を書く |
+| 5 | 運用ガイドの Cloudflare の手順 | ステップ 2 で行った手順を元に書き、新規作成からの通しは行わない（公開ホスト名の向け先の変更だけを確かめた） |
+| 6 | simwifi での確認の分担 | 私: compose での導入（運用ガイドどおり）、ヘルスチェック、ポートを公開しないこと、移行、最初のシステム管理者、`check-provisioner`、JWT なしの要求の 401、バックアップと復元、更新。ユーザー: Access でのログインと画面の操作（テナント・RADIUSクライアント・加入者 2 人の登録、停止・再開、監査ログ、ダッシュボード） |
+
+| 対象 | 内容 |
+|---|---|
+| compose | `compose.yaml` に `cloudflared`（`cloudflare/cloudflared:2026.9.3`、`tunnel --no-autoupdate run --token-file /etc/cloudflared/token`、本BFF が healthy になってから起動、ポートを公開しない）を加えた |
+| 運用ガイド | `docs/operation-guide.md`（構成、導入（Cloudflare の準備、`.env`、provisioner との証明書のやり取り、Tunnel のトークン、起動、最初のログイン）、別ホストの provisioner、公開範囲と安全性、アカウントの運用、テナントと所属の運用、ログと監査ログ、バックアップと復元、更新、障害時の確認、環境変数） |
+| README | 機能（画面と役割の表）、導入と運用（運用ガイドへの案内）、開発 |
+| CI | compose の設定の検査に、サービスが 3 つ（本BFF・PostgreSQL・cloudflared）であること、トークンをファイルで渡すこと（`--token-file`、`create_host_path: false`、`TUNNEL_TOKEN` がないこと）を加えた |
+| 画面の表記 | ユーザーの確認での指摘で、ダッシュボードの状態のバッジを「接続できます」→「接続中」、「接続できません」「provisioner から接続できません」→「切断」（続けて原因の見当）に、「版」→「バージョン」（「スキーマのバージョン」）に変えた（「接続できます」は、まだ接続していないがいつでも接続できる状態とも読めるため） |
+
+simwifi での確認（2026-10-11）:
+
+- 本PoC（`dbd97f5`。vector-gateway を aka-only-server に接続、PLMN `44010` を aka-only-server）・aka-only-server（`2a6dcf8`）・provisioner（`e96390d`）を compose で導入した後、本BFF を運用ガイド 2 章の手順どおりに compose で導入した（作業ツリーを tar で転送）。
+- 導入の途中で、provisioner は管理クライアントがないと起動しないことと、本BFF の `COMPOSE_FILE` の外部ネットワーク（`eapaka-provisioner`）がないとビルドと `docker compose run` が失敗することに合わせて、手順を「`-f compose.yaml` でビルドと証明書の作成 → provisioner に登録して起動 → サーバー証明書の取り出し」の順に直した。
+- 本BFF・PostgreSQL が healthy、cloudflared が Cloudflare に 4 本接続し、ホストにポートを公開していないこと（`ss` でも 8446 の待ち受けなし）。起動ログの移行・最初のシステム管理者・Access の公開鍵（2 つ）・provisioner の確認。`check-provisioner` で下流 2 つ・AVクライアント・PLMN マップ。
+- JWT なしの要求: compose のネットワークと `eapaka-provisioner` のネットワークのコンテナから 401（偽の JWT と `Cf-Access-Authenticated-User-Email` を付けても 401）、`/healthz` は 200。インターネットからはログインしていなければ Access のログイン画面へ 302。
+- ユーザーがブラウザで Access を通してログインし（最初のシステム管理者）、テナント・RADIUSクライアント（compose のネットワークのゲートウェイ）・加入者 2 人（本PoC、aka-only-server。既定 allow の確認ダイアログ）を登録し、`440200000000001` を停止すると eapaka_test で Access-Reject（aka-only-server の加入者は Accept）、再開すると Accept。本BFF の監査ログに操作者・役割・テナント・接続元（`Cf-Connecting-IP`）つきで記録された。監査ログ（下流のタブを含む）とダッシュボードの件数も期待どおり。
+- バックアップ（`pg_dump -Fc`）の後に変更（テナントの追加、所属の記録の削除）してから復元（`pg_restore --clean --if-exists`）すると元に戻った。バックアップのファイルが 664 になったので、運用ガイドの手順を `umask 077` つきに直した。
+- 更新（作業ツリーを転送して `OSSBSS_VERSION=… docker compose up -d --build`）で、本BFF だけが作り直され（移行は不要で `applied` は空）、cloudflared は接続を保った。
