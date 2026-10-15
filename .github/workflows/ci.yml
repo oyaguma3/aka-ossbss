@@ -114,9 +114,9 @@ jobs:
     env:
       # 契約テストの相手にする eapaka-node-provisioner と、その下流（本PoC、aka-only-server）のコミット。
       # provisioner の API を変えたら、その main のコミットに更新する（下流は provisioner の ci.yml の POC_REF / AKA_REF に合わせる）。
-      PROVISIONER_REF: 1c5205898e78ad0cd15ed255ff395a9d9ac53c95
-      POC_REF: 0d5f53e0087ec9b93c0a379e709ba083133b1dc9
-      AKA_REF: 157ff8a45ee0c2667ee514e447263880d35bdd9e
+      PROVISIONER_REF: 82e363700a12f0f4a65488fb680d16c62ba358fc
+      POC_REF: 3744e0c6743af566a91480dea28c9ba8e2315590
+      AKA_REF: c17c24b203d4730bdfe6b6b4eee79e4cf880a317
     services:
       # provisioning-api、aka-only-server、provisioner がそれぞれ使う Valkey（このジョブ専用）。
       valkey-prov:
