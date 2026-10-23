@@ -43,7 +43,7 @@ Docker Compose（統合BFF、PostgreSQL、cloudflared）で動かします。ホ
 
 ## 開発
 
-Go 1.27.2 と Docker（compose プラグイン）を使います。
+Go 1.27.3 と Docker（compose プラグイン）を使います。
 
 画面の CSS（`internal/web/static/app.css`）はリポジトリに入れていないので、最初に作ります。Tailwind CSS のスタンドアロン CLI と daisyUI のプラグインを、版を固定して取得し、SHA-256 を確かめてから使います（Node.js は使いません。Linux の x86_64 / arm64 だけ）。取得したファイルは `.cache/css/` に置いて使い回します。テンプレートのクラスを変えたら作り直します。
 

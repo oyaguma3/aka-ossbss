@@ -49,7 +49,7 @@ services:
   cloudflared:
     # Cloudflare Tunnel のコネクター（設計概要 §5.4、§12）。外向きに Cloudflare へ接続し、公開ホスト名への要求を
     # 本BFF（http://eapaka-ossbss:8446。Tunnel の公開ホスト名の向け先に書く）に届ける。ホストの受信のポートは開けない。
-    image: cloudflare/cloudflared:2026.9.3
+    image: cloudflare/cloudflared:2026.10.3
     restart: unless-stopped
     depends_on:
       eapaka-ossbss:

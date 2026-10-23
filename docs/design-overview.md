@@ -55,7 +55,7 @@ EAP-AKA の加入者を運用する事業者の、外部 OSS/BSS（運用・業�
 
 既存の BFF と同じ流儀にそろえる。
 
-- 言語: Go 1.27.2。標準ライブラリを優先する（`net/http` のメソッドつき ServeMux、`html/template`、`embed`、`log/slog`、`encoding/json/v2`、`crypto`）。
+- 言語: Go 1.27.3。標準ライブラリを優先する（`net/http` のメソッドつき ServeMux、`html/template`、`embed`、`log/slog`、`encoding/json/v2`、`crypto`）。
 - 外部依存（Go）: `github.com/jackc/pgx/v5`（PostgreSQL のドライバー）だけ（§15 の 8）。JWT の検証（RS256）、JWKS の取得、DB のスキーマの移行は自前で書く。
 - 画面: htmx は既存の BFF と同じくファイルを同梱する。daisyUI は Tailwind CSS v4 のプラグインとして使い、CSS は Docker のビルドの段で Tailwind のスタンドアロン CLI（Node.js は使わない）で生成して `embed` で同梱する（§15 の 9。`scripts/build-css.sh`）。JavaScript は書かない（daisyUI のコンポーネントは CSS だけで動くものを使い、確認ダイアログは HTML の Invoker Commands で開く。§17.4 の 4）。静的ファイルは内容のハッシュつきの URL で参照する（途中のキャッシュの古い版を使わせない。§17.4）。
 - module パス: `github.com/oyaguma3/eapaka-ossbss-sample`。コマンド名は `eapaka-ossbss`。設定は環境変数だけで受け取り、接頭辞は `OSSBSS_` とする。
