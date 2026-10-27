@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/auth"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // テナントの利用者の一覧は、自分のテナントの所属の記録から作り、鍵の情報を出さない。
@@ -66,7 +66,7 @@ func TestSubscribersStaff(t *testing.T) {
 	e := newTestEnv()
 	h := e.handler(t, "c@example.com")
 	body := get(h, "/subscribers").Body.String()
-	mustContain(t, body, imsiOwn, imsiOther, imsiNone, imsiAka, "テナントA", "テナントB", "テナントなし", "aka-only-server",
+	mustContain(t, body, imsiOwn, imsiOther, imsiNone, imsiAka, "テナントA", "テナントB", "テナントなし", "aka-vecgen",
 		"000000000020", "加入者の登録")
 	if e.pv.listCalls != 1 || e.pv.lastList.Limit != subscribersPerPage {
 		t.Errorf("list = %d %+v", e.pv.listCalls, e.pv.lastList)
@@ -133,7 +133,7 @@ func TestSubscriberCreate(t *testing.T) {
 	// 登録の画面: テナントの選択（既定は「選んでください」）と PLMN マップ。
 	body := get(h, "/subscribers/new").Body.String()
 	mustContain(t, body, `<option value="" selected disabled>選んでください</option>`, "テナントA", "テナントB",
-		"<code>00102</code> → aka-only-server", `name="idem" value="`)
+		"<code>00102</code> → aka-vecgen", `name="idem" value="`)
 
 	form := url.Values{"imsi": {"001010000000050"}, "ki": {strings.Repeat("A", 32)}, "opc": {strings.Repeat("b", 32)},
 		"amf": {"8000"}, "sqn": {"000000000000"}, "default": {"deny"}, "idem": {"KEYKEYKEYKEYKEYKEYKEYKEYKE"}}
@@ -247,7 +247,7 @@ func TestSubscriberDetailByRole(t *testing.T) {
 		mustContain(t, w.Body.String(), c.wantShown...)
 		mustNotContain(t, w.Body.String(), c.wantHidden...)
 	}
-	// aka-only-server の加入者は、システム管理者に SQN の増加タイプと平文HTTP の許可を出す。
+	// aka-vecgen の加入者は、システム管理者に SQN の増加タイプと平文HTTP の許可を出す。
 	body := get(e.handler(t, "d@example.com"), "/subscribers/"+imsiAka).Body.String()
 	mustContain(t, body, `name="sqn_type"`, `name="allow_plain"`, "許可するクライアントID")
 	// 食い違いは運用担当・システム管理者にだけ出す。
@@ -363,7 +363,7 @@ func TestSubscriberDelete(t *testing.T) {
 	if w.Code != 500 {
 		t.Errorf("incomplete = %d", w.Code)
 	}
-	mustContain(t, w.Body.String(), "aka-only-server への操作が途中で失敗し、元に戻せませんでした", `<a class="link" href="/operations/op-123">操作の記録を開く</a>`)
+	mustContain(t, w.Body.String(), "aka-vecgen への操作が途中で失敗し、元に戻せませんでした", `<a class="link" href="/operations/op-123">操作の記録を開く</a>`)
 }
 
 func TestSubscriberStatus(t *testing.T) {

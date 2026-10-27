@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // 加入者の画面（画面仕様 §2）。加入者は provisioner の統合リソース（IMSI＋鍵の置き場所＋認可ポリシー＋停止の状態）として扱い、
@@ -403,7 +403,7 @@ type subscriberData struct {
 // missingMessage は、provisioner に加入者がないときの文。所属の記録があれば、本BFF の外で削除されたものと分かる。
 func missingMessage(imsi string, tenant int64) string {
 	if tenant != authz.NoTenant {
-		return "加入者 " + imsi + " は provisioner（本PoC・aka-only-server）にありません。本BFF の外で削除された可能性があります。所属の記録はシステム管理者が消します。"
+		return "加入者 " + imsi + " は provisioner（本PoC・aka-vecgen）にありません。本BFF の外で削除された可能性があります。所属の記録はシステム管理者が消します。"
 	}
 	return notFoundMessage("加入者 " + imsi)
 }
@@ -508,7 +508,7 @@ func (h *Handler) subscriberKeys(w http.ResponseWriter, r *http.Request) {
 // authOnlyFields は、AMF / SQN などの変更（システム管理者だけ）のフォームの項目。運用担当が送ってきたら断る。
 var authOnlyFields = []string{"amf", "sqn", "sqn_type", "allow_plain"}
 
-// subscriberAuth は鍵の属性を変更する。運用担当は Ki / OPc だけ、システム管理者は AMF / SQN（aka-only-server の加入者は
+// subscriberAuth は鍵の属性を変更する。運用担当は Ki / OPc だけ、システム管理者は AMF / SQN（aka-vecgen の加入者は
 // SQN の増加タイプ・平文HTTP の許可も）も変えられる（設計概要 §6.2）。入力のあった Ki / OPc と、値が変わった項目だけを送る。
 func (h *Handler) subscriberAuth(w http.ResponseWriter, r *http.Request) {
 	imsi, ok := h.pathIMSI(w, r)

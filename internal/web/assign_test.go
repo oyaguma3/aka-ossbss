@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // provisioner_failedOp は失敗（手での対応が必要）の操作の記録を作る。
@@ -271,7 +271,7 @@ func TestAuditView(t *testing.T) {
 		t.Errorf("bad before = %d", w.Code)
 	}
 	e.pv.errs["ListAkaAuditLogs"] = &provisioner.Error{Status: 404, Problem: provisioner.Problem{Cause: provisioner.CauseDownstreamNotConfigured}}
-	mustContain(t, get(hd, "/audit/aka").Body.String(), "aka-only-server を扱わない設定です")
+	mustContain(t, get(hd, "/audit/aka").Body.String(), "aka-vecgen を扱わない設定です")
 }
 
 func TestDashboard(t *testing.T) {

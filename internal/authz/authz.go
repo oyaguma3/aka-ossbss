@@ -73,7 +73,7 @@ const (
 	SubscriberKeysView                   // 加入者の Ki / OPc の表示
 	SubscriberPolicyUpdate               // 加入者の変更: 認可ポリシー
 	SubscriberKeysUpdate                 // 加入者の変更: Ki / OPc
-	SubscriberAuthUpdate                 // 加入者の変更: AMF / SQN（aka-only-server の加入者は SQN の増加タイプ・平文HTTP の許可も）
+	SubscriberAuthUpdate                 // 加入者の変更: AMF / SQN（aka-vecgen の加入者は SQN の増加タイプ・平文HTTP の許可も）
 	SubscriberDelete                     // 加入者の削除
 	SubscriberSuspend                    // 加入者の停止・再開
 	ClientCreate                         // RADIUSクライアントの登録

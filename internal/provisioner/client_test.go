@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner/provisionertest"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/trace"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner/provisionertest"
+	"github.com/oyaguma3/aka-ossbss/internal/trace"
 )
 
 // captured は偽物の provisioner が受け取った要求。

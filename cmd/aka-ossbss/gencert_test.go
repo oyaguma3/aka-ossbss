@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/certs"
+	"github.com/oyaguma3/aka-ossbss/internal/certs"
 )
 
 func TestGenClientCertStdout(t *testing.T) {

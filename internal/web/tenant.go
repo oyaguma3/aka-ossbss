@@ -8,8 +8,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
 )
 
 // テナントの画面（画面仕様 §8。システム管理者だけ）。

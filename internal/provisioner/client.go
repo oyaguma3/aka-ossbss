@@ -1,5 +1,5 @@
-// Package provisioner は eapaka-node-provisioner（以下「provisioner」）の API のクライアント（設計概要 §10）。
-// API 仕様は eapaka-node-provisioner のリポジトリの docs/openapi/provisioner-api.yaml（0.3.0）を参照。
+// Package provisioner は aka-provisioner（以下「provisioner」）の API のクライアント（設計概要 §10）。
+// API 仕様は aka-provisioner のリポジトリの docs/openapi/provisioner-api.yaml（0.3.0）を参照。
 // 既存の BFF（web-gui-for-eapaka-radius）の internal/provapi と internal/pvapi を、1 つにまとめて手直ししたもの
 // （本BFF の接続先は provisioner だけなので、本PoCの Provisioning API に直接つなぐための部分は持たない）。
 //
@@ -11,7 +11,7 @@
 // ErrNoOperator を返し、リクエストを送らない。
 //
 // トレースID（internal/trace）がコンテキストに入っていれば X-Trace-ID ヘッダーで渡す。入っていなければ呼び出しごとに採番する。
-// provisioner はそれを下流（本PoCの provisioning-api、aka-only-server）にも渡すので、監査ログを突き合わせられる。
+// provisioner はそれを下流（本PoCの provisioning-api、aka-vecgen）にも渡すので、監査ログを突き合わせられる。
 package provisioner
 
 import (
@@ -34,7 +34,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/trace"
+	"github.com/oyaguma3/aka-ossbss/internal/trace"
 )
 
 const (
@@ -61,7 +61,7 @@ var (
 
 // Options はクライアントの設定。
 type Options struct {
-	// BaseURL は provisioner のベース URL（例: https://eapaka-provisioner:9446/admin/v1）。
+	// BaseURL は provisioner のベース URL（例: https://aka-provisioner:9446/admin/v1）。
 	BaseURL string
 	// ClientCertFile は本BFF のクライアント証明書（PEM）。
 	ClientCertFile string

@@ -79,12 +79,12 @@
             {{- with .Downstreams.Prov}}{{if .Reachable}}<span class="badge badge-success">接続中</span> バージョン {{.Version}}（ノード {{.NodeName}}、加入者 {{.SubscriberCount}}）
             {{- else}}<span class="badge badge-error">切断</span> {{or .Hint "provisioner から接続できません。"}}{{end}}{{end -}}
           </td></tr>
-          <tr><th>aka-only-server</th><td>
+          <tr><th>aka-vecgen</th><td>
             {{- with .Downstreams.Aka}}{{if not .Configured}}<span class="text-base-content/60">設定なし（すべての加入者の鍵を本PoCに置く）</span>
             {{- else if .Reachable}}<span class="badge badge-success">接続中</span> バージョン {{.Version}}（加入者 {{.SubscriberCount}}）
             {{- else}}<span class="badge badge-error">切断</span> {{or .Hint "provisioner から接続できません。"}}{{end}}{{end -}}
           </td></tr>
-          {{- /* aka-only-server に接続できなければ、AVクライアントは確かめられていない（exists が false になる）ので出さない。 */}}
+          {{- /* aka-vecgen に接続できなければ、AVクライアントは確かめられていない（exists が false になる）ので出さない。 */}}
           {{- if .Downstreams.Aka.Reachable}}
           <tr><th>vector-gateway の AVクライアント</th><td>
             {{- with .AVClient}}{{if not .Exists}}<span class="badge badge-warning">ID {{.ID}} がありません</span>

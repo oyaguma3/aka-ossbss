@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/certs"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/certs"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // Discard はログを捨てる Logger。

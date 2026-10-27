@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
 // ErrNotFound は対象の行がないことを表す。

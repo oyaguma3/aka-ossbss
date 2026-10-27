@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
 // AuditEntry は本BFF の監査ログの 1 件（設計概要 §13）。Detail に秘密の値（Ki / OPc、共有シークレット）を入れてはならない。

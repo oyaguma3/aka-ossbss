@@ -32,7 +32,7 @@
 {{- if not .HasPolicy -}}
 <span class="text-base-content/60">認可ポリシーがないため、停止・再開できません（認可ポリシーがない加入者の認証は、もともと拒否されます）。</span>
 {{- else if not .Status -}}
-<span class="text-base-content/60">接続先が停止・再開に対応していません（eapaka-node-provisioner 0.3.0 以降と本PoCの provisioning-api 0.4.0 以降で使えます）。</span>
+<span class="text-base-content/60">接続先が停止・再開に対応していません（aka-provisioner 0.3.0 以降と本PoCの provisioning-api 0.4.0 以降で使えます）。</span>
 {{- else -}}
 <div class="flex flex-wrap items-center gap-2">
   {{- if eq .Status "active"}}
@@ -159,7 +159,7 @@
   <a role="tab" href="/audit" class="tab{{if eq .Current "bff"}} tab-active{{end}}">本BFF</a>
   <a role="tab" href="/audit/provisioner" class="tab{{if eq .Current "provisioner"}} tab-active{{end}}">provisioner</a>
   <a role="tab" href="/audit/prov" class="tab{{if eq .Current "prov"}} tab-active{{end}}">provisioning-api</a>
-  <a role="tab" href="/audit/aka" class="tab{{if eq .Current "aka"}} tab-active{{end}}">aka-only-server</a>
+  <a role="tab" href="/audit/aka" class="tab{{if eq .Current "aka"}} tab-active{{end}}">aka-vecgen</a>
 </div>
 {{- end}}
 {{- end}}

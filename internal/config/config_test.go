@@ -25,7 +25,7 @@ func TestLoadDefaults(t *testing.T) {
 	if c.Addr != ":8446" || c.LogLevel != slog.LevelInfo || c.DB != (DB{Addr: "postgres:5432", Name: "ossbss", User: "ossbss", Password: "pw", MaxConns: 10}) {
 		t.Errorf("config = %+v", c)
 	}
-	if c.Provisioner != (Provisioner{URL: "https://eapaka-provisioner:9446/admin/v1", ClientCertFile: "/certs/provisioner-client.pem",
+	if c.Provisioner != (Provisioner{URL: "https://aka-provisioner:9446/admin/v1", ClientCertFile: "/certs/provisioner-client.pem",
 		ServerCertFile: "/certs/provisioner-server.pem", Timeout: 60 * time.Second}) {
 		t.Errorf("provisioner = %+v", c.Provisioner)
 	}
@@ -86,7 +86,7 @@ func TestLoadErrors(t *testing.T) {
 	t.Setenv("OSSBSS_DB_ADDR", "postgres")
 	t.Setenv("OSSBSS_DB_MAX_CONNS", "0")
 	t.Setenv("OSSBSS_DB_PASSWORD", "")
-	t.Setenv("OSSBSS_PROVISIONER_URL", "http://eapaka-provisioner:9446/admin/v1")
+	t.Setenv("OSSBSS_PROVISIONER_URL", "http://aka-provisioner:9446/admin/v1")
 	t.Setenv("OSSBSS_PROVISIONER_TIMEOUT", "0s")
 	_, err := Load()
 	if err == nil {

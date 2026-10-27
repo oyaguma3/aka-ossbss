@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // ダッシュボードの件数（画面仕様 §6）。

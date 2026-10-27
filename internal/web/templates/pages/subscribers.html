@@ -86,7 +86,7 @@
   {{- if .Next}}<a class="btn btn-sm" href="/subscribers?prefix={{.Prefix}}&tenant={{.Filter.Value}}&cursor={{.Next}}">{{if .ScanStopped}}続きを探す{{else}}次のページ{{end}}</a>{{end}}
 </div>
 {{- if and .Staff .Filter.All}}
-<p class="text-sm text-base-content/60 mt-4">一覧では、鍵を本PoCに置く加入者について aka-only-server 側を調べません（「置き場所でない方にも鍵があります」は詳細でだけ分かる場合があります）。</p>
+<p class="text-sm text-base-content/60 mt-4">一覧では、鍵を本PoCに置く加入者について aka-vecgen 側を調べません（「置き場所でない方にも鍵があります」は詳細でだけ分かる場合があります）。</p>
 {{- end}}
 {{- end}}
 {{- end}}

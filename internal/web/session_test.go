@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 func TestSessions(t *testing.T) {

@@ -36,7 +36,7 @@ func (p ListParams) query() url.Values {
 	return q
 }
 
-// AuditLogParams は監査ログ（provisioner、provisioning-api、aka-only-server の 3 種類で共通）の一覧の条件。
+// AuditLogParams は監査ログ（provisioner、provisioning-api、aka-vecgen の 3 種類で共通）の一覧の条件。
 // ゼロ値の項目は指定しない。
 type AuditLogParams struct {
 	// Before は前のページの NextBefore（このエントリID より古いものを返す）。
@@ -60,7 +60,7 @@ type KeyStore string
 const (
 	// KeyStorePoC は本PoCの Vector API（接続方式 00。provisioning-api の加入者）。
 	KeyStorePoC KeyStore = "poc"
-	// KeyStoreAKA は aka-only-server（接続方式 01。aka-only-server の加入者）。
+	// KeyStoreAKA は aka-vecgen（接続方式 01。aka-vecgen の加入者）。
 	KeyStoreAKA KeyStore = "aka"
 )
 
@@ -90,7 +90,7 @@ type Downstreams struct {
 
 // DownstreamStatus は下流 1 つへの接続の状態。
 type DownstreamStatus struct {
-	// Configured は接続先を設定しているか（aka-only-server を使わない設定なら aka は false）。
+	// Configured は接続先を設定しているか（aka-vecgen を使わない設定なら aka は false）。
 	Configured      bool   `json:"configured"`
 	URL             string `json:"url"`
 	Reachable       bool   `json:"reachable"`
@@ -104,7 +104,7 @@ type DownstreamStatus struct {
 
 // AVClientStatus は vector-gateway の AVクライアント（provisioner の PROVISIONER_AKA_AV_CLIENT_ID）の確認結果。
 type AVClientStatus struct {
-	// ID は設定の ID（aka-only-server を使わない設定なら 0）。
+	// ID は設定の ID（aka-vecgen を使わない設定なら 0）。
 	ID      int64  `json:"id"`
 	Exists  bool   `json:"exists"`
 	Enabled bool   `json:"enabled"`
@@ -145,13 +145,13 @@ const (
 	IssuePolicyMissing Issue = "POLICY_MISSING"
 	// IssueKeyInOtherStore は、置き場所でない方にも同じ IMSI の加入者があること。
 	IssueKeyInOtherStore Issue = "KEY_IN_OTHER_STORE"
-	// IssueAVClientNotAllowed は、aka-only-server の加入者が vector-gateway の AVクライアントを許可していないこと。
+	// IssueAVClientNotAllowed は、aka-vecgen の加入者が vector-gateway の AVクライアントを許可していないこと。
 	IssueAVClientNotAllowed Issue = "AV_CLIENT_NOT_ALLOWED"
 	// IssueOtherStoreUnreachable は、置き場所でない方の下流に接続できず、KEY_IN_OTHER_STORE を確かめられなかったこと。
 	IssueOtherStoreUnreachable Issue = "OTHER_STORE_UNREACHABLE"
 )
 
-// Key は置き場所の加入者の属性（Ki と OPc は含まない）。SQNType 以降は aka-only-server の加入者だけ。
+// Key は置き場所の加入者の属性（Ki と OPc は含まない）。SQNType 以降は aka-vecgen の加入者だけ。
 type Key struct {
 	AMF              string    `json:"amf"`
 	SQN              string    `json:"sqn"`
@@ -187,7 +187,7 @@ type SubscriberCreate struct {
 	// AMF と SQN は省略すれば 8000、000000000000。
 	AMF string `json:"amf,omitempty"`
 	SQN string `json:"sqn,omitempty"`
-	// SQNType と AllowPlain は aka-only-server の加入者だけ指定できる。
+	// SQNType と AllowPlain は aka-vecgen の加入者だけ指定できる。
 	SQNType    string    `json:"sqnType,omitempty"`
 	AllowPlain *bool     `json:"allowPlain,omitempty"`
 	Policy     PolicyPut `json:"policy"`
@@ -199,7 +199,7 @@ type SubscriberUpdate struct {
 	OPc string `json:"opc,omitempty"`
 	AMF string `json:"amf,omitempty"`
 	SQN string `json:"sqn,omitempty"`
-	// SQNType と AllowPlain は aka-only-server の加入者だけ指定できる。
+	// SQNType と AllowPlain は aka-vecgen の加入者だけ指定できる。
 	SQNType    string `json:"sqnType,omitempty"`
 	AllowPlain *bool  `json:"allowPlain,omitempty"`
 	// Policy は認可ポリシー全体を置き換える（ない場合は作成する）。
@@ -632,7 +632,7 @@ func (c *Client) ListProvAuditLogs(ctx context.Context, p AuditLogParams) (ProvA
 	return c.call[ProvAuditLogList](ctx, request{method: http.MethodGet, path: []string{"prov", "audit-logs"}, query: p.query()})
 }
 
-// AkaAuditLogEntry は aka-only-server の監査ログの 1 件（aka-only-server の管理API の形）。
+// AkaAuditLogEntry は aka-vecgen の監査ログの 1 件（aka-vecgen の管理API の形）。
 type AkaAuditLogEntry struct {
 	ID         string    `json:"id"`
 	Time       time.Time `json:"time"`
@@ -645,14 +645,14 @@ type AkaAuditLogEntry struct {
 	Detail map[string]any `json:"detail"`
 }
 
-// AkaAuditLogList は aka-only-server の監査ログの 1 ページ。
+// AkaAuditLogList は aka-vecgen の監査ログの 1 ページ。
 type AkaAuditLogList struct {
 	Items      []AkaAuditLogEntry `json:"items"`
 	NextBefore string             `json:"nextBefore"`
 }
 
-// ListAkaAuditLogs は aka-only-server の監査ログ（provisioner の中継）を取得する。
-// provisioner が aka-only-server を扱わない設定なら 404（DOWNSTREAM_NOT_CONFIGURED）。
+// ListAkaAuditLogs は aka-vecgen の監査ログ（provisioner の中継）を取得する。
+// provisioner が aka-vecgen を扱わない設定なら 404（DOWNSTREAM_NOT_CONFIGURED）。
 func (c *Client) ListAkaAuditLogs(ctx context.Context, p AuditLogParams) (AkaAuditLogList, error) {
 	return c.call[AkaAuditLogList](ctx, request{method: http.MethodGet, path: []string{"aka", "audit-logs"}, query: p.query()})
 }

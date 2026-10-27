@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
 )
 
 // pages はページごとのテンプレート（layout.html と部品に、ページのファイルを重ねたもの）。

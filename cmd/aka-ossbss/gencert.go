@@ -11,15 +11,15 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/certs"
+	"github.com/oyaguma3/aka-ossbss/internal/certs"
 )
 
 // clientNamePattern は provisioner の PROVISIONER_ADMIN_CLIENTS の識別名の形式。
 var clientNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-const genClientCertUsage = `usage: eapaka-ossbss gen-client-cert -name <識別名> [-days 825] [-out-cert <file>] [-out-key <file>]
+const genClientCertUsage = `usage: aka-ossbss gen-client-cert -name <識別名> [-days 825] [-out-cert <file>] [-out-key <file>]
 
-eapaka-node-provisioner に提示するクライアント証明書（自己署名、ECDSA P-256）と秘密鍵を作る。
+aka-provisioner に提示するクライアント証明書（自己署名、ECDSA P-256）と秘密鍵を作る。
 出力先を省略すると、証明書と秘密鍵を続けて標準出力に出す（1 つの PEM ファイルとして使える）。
 フィンガープリントと、provisioner の .env に書く値（PROVISIONER_ADMIN_CLIENTS）を標準エラーに出す。
 

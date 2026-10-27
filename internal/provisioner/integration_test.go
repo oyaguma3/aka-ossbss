@@ -9,26 +9,26 @@ import (
 	"slices"
 	"testing"
 
-	. "github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner/provisionertest"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/trace"
+	. "github.com/oyaguma3/aka-ossbss/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner/provisionertest"
+	"github.com/oyaguma3/aka-ossbss/internal/trace"
 )
 
-// 実際の eapaka-node-provisioner を相手にした契約テスト。次の環境変数を指定したときだけ実行する。
+// 実際の aka-provisioner を相手にした契約テスト。次の環境変数を指定したときだけ実行する。
 //
 //	OSSBSS_TEST_PROVISIONER_URL          provisioner のベース URL（例: https://127.0.0.1:19446/admin/v1）
 //	OSSBSS_TEST_PROVISIONER_CLIENT_CERT  本BFF のクライアント証明書の PEM（秘密鍵も含める）。
 //	                                            provisioner の PROVISIONER_ADMIN_CLIENTS に登録しておく
-//	OSSBSS_TEST_PROVISIONER_SERVER_CERT  provisioner のサーバー証明書の PEM（eapaka-provisioner server-cert の出力）
+//	OSSBSS_TEST_PROVISIONER_SERVER_CERT  provisioner のサーバー証明書の PEM（aka-provisioner server-cert の出力）
 //
 // 鍵を本PoCに置く加入者は IMSI 00101 で始まるテスト用の番号を使う。provisioner の PLMN マップで
-// 00102 を 01（aka-only-server）にしてあれば、00102 で始まる加入者で aka-only-server の側も確かめる。
+// 00102 を 01（aka-vecgen）にしてあれば、00102 で始まる加入者で aka-vecgen の側も確かめる。
 // RADIUSクライアントは文書用のアドレス（198.51.100.0/24）を使う。作ったものは終わったら削除する。
 
 // integrationOperator は操作者（本BFF は利用者のメールアドレスを渡す）。
 const integrationOperator = "it-alice@example.com"
 
-// akaPLMN は、aka-only-server の側を確かめるときの PLMN（provisioner の PLMN マップで 01 にしておく）。
+// akaPLMN は、aka-vecgen の側を確かめるときの PLMN（provisioner の PLMN マップで 01 にしておく）。
 const akaPLMN = "00102"
 
 // newIntegrationClients は provisioner のクライアントを返す（既存の BFF のテストと同じ形にするため、同じものを 2 つ返す）。
@@ -214,7 +214,7 @@ func TestIntegrationSubscriberAka(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !st.Downstreams.Aka.Configured || !slices.Contains(st.PLMNMap, PLMNEntry{PLMN: akaPLMN, KeyStore: KeyStoreAKA}) {
-		t.Skipf("provisioner does not map %s to aka-only-server", akaPLMN)
+		t.Skipf("provisioner does not map %s to aka-vecgen", akaPLMN)
 	}
 	imsi := testIMSI(akaPLMN)
 	cleanupSubscriber(t, pv, imsi)
@@ -225,7 +225,7 @@ func TestIntegrationSubscriberAka(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// aka-only-server の加入者は、vector-gateway の AVクライアントを許可する。SQN の増加タイプ等は aka-only-server の既定。
+	// aka-vecgen の加入者は、vector-gateway の AVクライアントを許可する。SQN の増加タイプ等は aka-vecgen の既定。
 	if sub.KeyStore != KeyStoreAKA || sub.Key == nil || sub.Key.SQNType != "inc32" || sub.Key.AllowPlain == nil || *sub.Key.AllowPlain ||
 		!slices.Equal(sub.Key.AllowedClientIDs, []int64{st.AVClient.ID}) || len(sub.Issues) != 0 {
 		t.Errorf("create = %+v (key %+v)", sub, sub.Key)
@@ -238,7 +238,7 @@ func TestIntegrationSubscriberAka(t *testing.T) {
 	if err := pv.DeleteSubscriber(ctx, imsi, ""); err != nil {
 		t.Fatal(err)
 	}
-	// aka-only-server の監査ログ（中継）に同じトレースID で残る。
+	// aka-vecgen の監査ログ（中継）に同じトレースID で残る。
 	akaLogs, err := pv.ListAkaAuditLogs(ctx, AuditLogParams{Limit: 50})
 	if err != nil {
 		t.Fatal(err)

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
 func TestAssignments(t *testing.T) {

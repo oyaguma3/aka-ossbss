@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // 認可ポリシーの編集の画面（画面仕様 §3）。加入者の詳細から開き、認可ポリシーだけの一覧・作成・削除は持たない（§17.4 の 1）。

@@ -14,10 +14,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/auth"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 //go:embed templates static
@@ -103,7 +103,7 @@ type Options struct {
 	DB      DB
 	// Identifier は要求から利用者を決める（Cloudflare Access の JWT、または開発用の設定）。
 	Identifier auth.Identifier
-	// Provisioner は eapaka-node-provisioner のクライアント。
+	// Provisioner は aka-provisioner のクライアント。
 	Provisioner Provisioner
 	// InitialAdminEmail は最初のシステム管理者のメールアドレス（OSSBSS_INITIAL_ADMIN_EMAIL）。
 	InitialAdminEmail string

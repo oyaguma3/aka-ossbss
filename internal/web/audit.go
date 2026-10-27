@@ -5,9 +5,9 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // 監査ログの画面（画面仕様 §11）。本BFF の監査ログはテナントの範囲で見せる（テナント管理者は自分のテナントの分だけ。
@@ -149,9 +149,9 @@ func (h *Handler) provAudit(w http.ResponseWriter, r *http.Request) {
 		})
 }
 
-// akaAudit は provisioner が中継する、aka-only-server の監査ログ。
+// akaAudit は provisioner が中継する、aka-vecgen の監査ログ。
 func (h *Handler) akaAudit(w http.ResponseWriter, r *http.Request) {
-	downstreamAudit(h, w, r, "aka", "audit_aka", "監査ログ（aka-only-server）",
+	downstreamAudit(h, w, r, "aka", "audit_aka", "監査ログ（aka-vecgen）",
 		func(r *http.Request, p provisioner.AuditLogParams) (provisioner.AkaAuditLogList, error) {
 			return h.pv.ListAkaAuditLogs(r.Context(), p)
 		},

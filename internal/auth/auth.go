@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"net/netip"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/access"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
 // Identifier は要求から利用者を決める。

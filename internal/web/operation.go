@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"slices"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // provisioner の操作の記録の画面（画面仕様 §10）。2 つのノードにまたがる加入者の登録・変更・削除の、手順ごとの状態を見る。

@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // 入力の形式（provisioner と下流の検証、本PoCの pkg/validation と同じ）。provisioner に送る前に本BFF でも確かめ、誤りを日本語で示す。
@@ -203,7 +203,7 @@ func apiErrorFor(err error, notFound string, staff bool) apiFailure {
 	case provisioner.CauseIdempotencyKeyMismatch:
 		return apiFailure{Status: http.StatusConflict, Message: "送信の内容が前回と違います。画面を開き直してから、もう一度操作してください。"}
 	case provisioner.CauseDownstreamNotConfigured:
-		return apiFailure{Status: http.StatusNotFound, Message: "provisioner は aka-only-server を扱わない設定です。"}
+		return apiFailure{Status: http.StatusNotFound, Message: "provisioner は aka-vecgen を扱わない設定です。"}
 	}
 	if apiErr.Status == http.StatusBadRequest && len(p.InvalidParams) > 0 {
 		var names []string
@@ -219,12 +219,12 @@ func apiErrorFor(err error, notFound string, staff bool) apiFailure {
 }
 
 // downstreamLabels は provisioner の下流の名前。
-var downstreamLabels = map[string]string{"prov": "本PoCの Provisioning API", "aka": "aka-only-server"}
+var downstreamLabels = map[string]string{"prov": "本PoCの Provisioning API", "aka": "aka-vecgen"}
 
 // downstreamLabel は provisioner の下流（prov / aka）の画面の名前を返す。
 func downstreamLabel(name string) string { return cmp.Or(downstreamLabels[name], name) }
 
-// spaceBeforeASCII は、英数字で始まる語の前に空白を入れる（「provisioner から aka-only-server」「provisioner から本PoC」）。
+// spaceBeforeASCII は、英数字で始まる語の前に空白を入れる（「provisioner から aka-vecgen」「provisioner から本PoC」）。
 func spaceBeforeASCII(s string) string {
 	if s != "" && s[0] < 0x80 {
 		return " " + s
@@ -234,7 +234,7 @@ func spaceBeforeASCII(s string) string {
 
 // conflictPlaces は、provisioner が SUBSCRIBER_ALREADY_EXISTS で返した場所（poc / aka / policy）を画面の言葉にする。
 func conflictPlaces(places []string) string {
-	labels := map[string]string{"poc": "本PoCの鍵", "aka": "aka-only-server の鍵", "policy": "認可ポリシー"}
+	labels := map[string]string{"poc": "本PoCの鍵", "aka": "aka-vecgen の鍵", "policy": "認可ポリシー"}
 	var out []string
 	for _, p := range places {
 		out = append(out, cmp.Or(labels[p], p))

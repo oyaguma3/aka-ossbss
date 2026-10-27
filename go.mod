@@ -1,4 +1,4 @@
-module github.com/oyaguma3/eapaka-ossbss-sample
+module github.com/oyaguma3/aka-ossbss
 
 go 1.27.3
 

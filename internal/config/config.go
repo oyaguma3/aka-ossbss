@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
 // Config は本BFF の設定。
@@ -26,7 +26,7 @@ type Config struct {
 
 	// DB は PostgreSQL への接続。
 	DB DB
-	// Provisioner は eapaka-node-provisioner への接続（設計概要 §10）。
+	// Provisioner は aka-provisioner への接続（設計概要 §10）。
 	Provisioner Provisioner
 
 	// AccessTeamDomain は Cloudflare Access のチームのドメイン（例 example.cloudflareaccess.com）。
@@ -45,7 +45,7 @@ func (c Config) DevMode() bool { return c.DevUserEmail != "" }
 
 // Provisioner は provisioner への接続の設定。
 type Provisioner struct {
-	// URL は provisioner のベース URL。既定は同一ホストの共有ネットワーク（eapaka-provisioner）の名前。
+	// URL は provisioner のベース URL。既定は同一ホストの共有ネットワーク（aka-provisioner）の名前。
 	URL string
 	// ClientCertFile は本BFF のクライアント証明書（gen-client-cert の出力。秘密鍵も含めてよい）。
 	// ClientKeyFile は秘密鍵（空なら ClientCertFile から読む）。
@@ -73,7 +73,7 @@ func Load() (Config, error) {
 	c := Config{
 		Addr: cmp.Or(os.Getenv("OSSBSS_ADDR"), ":8446"),
 		Provisioner: Provisioner{
-			URL:            cmp.Or(os.Getenv("OSSBSS_PROVISIONER_URL"), "https://eapaka-provisioner:9446/admin/v1"),
+			URL:            cmp.Or(os.Getenv("OSSBSS_PROVISIONER_URL"), "https://aka-provisioner:9446/admin/v1"),
 			ClientCertFile: cmp.Or(os.Getenv("OSSBSS_PROVISIONER_CLIENT_CERT"), "/certs/provisioner-client.pem"),
 			ClientKeyFile:  os.Getenv("OSSBSS_PROVISIONER_CLIENT_KEY"),
 			ServerCertFile: cmp.Or(os.Getenv("OSSBSS_PROVISIONER_SERVER_CERT"), "/certs/provisioner-server.pem"),
@@ -107,7 +107,7 @@ func Load() (Config, error) {
 		c.DB.MaxConns = int32(n)
 	}
 	if u, err := url.Parse(c.Provisioner.URL); err != nil || u.Scheme != "https" || u.Host == "" {
-		errs = append(errs, errors.New("OSSBSS_PROVISIONER_URL: must be an https URL such as https://eapaka-provisioner:9446/admin/v1"))
+		errs = append(errs, errors.New("OSSBSS_PROVISIONER_URL: must be an https URL such as https://aka-provisioner:9446/admin/v1"))
 	}
 	if v := os.Getenv("OSSBSS_PROVISIONER_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)

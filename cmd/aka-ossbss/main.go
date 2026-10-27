@@ -1,4 +1,4 @@
-// eapaka-ossbss は外部 OSS/BSS のサンプル実装としての統合BFF（eapaka-node-provisioner の管理クライアント）。
+// aka-ossbss は外部 OSS/BSS のサンプル実装としての統合BFF（aka-provisioner の管理クライアント）。
 package main
 
 import (
@@ -15,27 +15,27 @@ import (
 	// distroless のイメージにはタイムゾーンのデータがないので、埋め込んで環境変数 TZ を効かせる。
 	_ "time/tzdata"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/certs"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/config"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/server"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/web"
+	"github.com/oyaguma3/aka-ossbss/internal/access"
+	"github.com/oyaguma3/aka-ossbss/internal/auth"
+	"github.com/oyaguma3/aka-ossbss/internal/certs"
+	"github.com/oyaguma3/aka-ossbss/internal/config"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/server"
+	"github.com/oyaguma3/aka-ossbss/internal/web"
 )
 
 // version はビルド時に -ldflags "-X main.version=..." で埋め込む。
 var version = "dev"
 
-const usage = `usage: eapaka-ossbss <command>
+const usage = `usage: aka-ossbss <command>
 
 commands:
   serve              サーバーを起動する（コマンド省略時の既定）。起動時に DB のスキーマを移行する
   migrate            DB のスキーマを移行して終わる
   healthcheck        動いている本BFF の /healthz を確かめる（compose の healthcheck 用）
-  check-provisioner  eapaka-node-provisioner に接続できるか確かめる
-  gen-client-cert    eapaka-node-provisioner に提示するクライアント証明書と秘密鍵を作る
-                     （eapaka-ossbss gen-client-cert -h で使い方を表示）
+  check-provisioner  aka-provisioner に接続できるか確かめる
+  gen-client-cert    aka-provisioner に提示するクライアント証明書と秘密鍵を作る
+                     （aka-ossbss gen-client-cert -h で使い方を表示）
 
 設定は環境変数（接頭辞 OSSBSS_）で与える。
 `

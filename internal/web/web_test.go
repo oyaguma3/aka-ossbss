@@ -17,12 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access/accesstest"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/access"
+	"github.com/oyaguma3/aka-ossbss/internal/access/accesstest"
+	"github.com/oyaguma3/aka-ossbss/internal/auth"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 var discard = slog.New(slog.DiscardHandler)
@@ -426,11 +426,11 @@ func TestHomeProvisioner(t *testing.T) {
 			t.Errorf("%s: shown %v, calls %d", c.email, got, pv.calls)
 		}
 		if c.shown {
-			mustContain(t, body, "バージョン 0.3.0", "バージョン 0.4.0（ノード poc-01、加入者 3）", `<span class="badge badge-error">切断</span> aka-only-server に接続できません。`,
+			mustContain(t, body, "バージョン 0.3.0", "バージョン 0.4.0（ノード poc-01、加入者 3）", `<span class="badge badge-error">切断</span> aka-vecgen に接続できません。`,
 				"実行中 0、やり直し中 0、失敗 1")
-			// aka-only-server に接続できなければ、AVクライアントは確かめられていないので出さない。
+			// aka-vecgen に接続できなければ、AVクライアントは確かめられていないので出さない。
 			if strings.Contains(body, "AVクライアント") {
-				t.Error("av client is shown while aka-only-server is unreachable")
+				t.Error("av client is shown while aka-vecgen is unreachable")
 			}
 		}
 	}

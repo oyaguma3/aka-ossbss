@@ -59,7 +59,7 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 	// 同じホストの compose のネットワークの中だけで使うので、TLS は使わない。
 	cc.TLSConfig = nil
 	cc.Fallbacks = nil
-	cc.RuntimeParams["application_name"] = "eapaka-ossbss"
+	cc.RuntimeParams["application_name"] = "aka-ossbss"
 	cc.RuntimeParams["timezone"] = "UTC"
 	if opts.MaxConns > 0 {
 		cfg.MaxConns = opts.MaxConns

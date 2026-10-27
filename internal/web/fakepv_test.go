@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // fakePV はテスト用の provisioner。加入者・RADIUSクライアント・セッションをメモリに持ち、
@@ -55,7 +55,7 @@ func newFakePV() *fakePV {
 		PLMNMap: []provisioner.PLMNEntry{{PLMN: "00102", KeyStore: provisioner.KeyStoreAKA}},
 		Downstreams: provisioner.Downstreams{
 			Prov: provisioner.DownstreamStatus{Configured: true, Reachable: true, Version: "0.4.0", NodeName: "poc-01", SubscriberCount: 3},
-			Aka:  provisioner.DownstreamStatus{Configured: true, Reachable: false, Hint: "aka-only-server に接続できません。"},
+			Aka:  provisioner.DownstreamStatus{Configured: true, Reachable: false, Hint: "aka-vecgen に接続できません。"},
 		},
 		AVClient:   provisioner.AVClientStatus{ID: 1},
 		Operations: &provisioner.OperationCounts{Failed: 1}},
@@ -86,7 +86,7 @@ func (f *fakePV) lastOp() string {
 	return f.ops[len(f.ops)-1]
 }
 
-// addSubscriber は加入者（鍵を本PoC、または 00102 なら aka-only-server に置き、認可ポリシーは利用中）を加える。
+// addSubscriber は加入者（鍵を本PoC、または 00102 なら aka-vecgen に置き、認可ポリシーは利用中）を加える。
 func (f *fakePV) addSubscriber(imsi string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

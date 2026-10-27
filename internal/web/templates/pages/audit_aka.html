@@ -2,8 +2,8 @@
 {{with .Data -}}
 <h1 class="text-2xl font-bold mb-4">監査ログ</h1>
 {{template "audit-tabs" .Tabs}}
-<p class="mb-2">aka-only-server の監査ログ（provisioner が中継する）。新しい順。テナントでは絞れません。</p>
-<p class="text-sm text-base-content/60 mb-4">変更は「変更前 → 変更後」の形で出します。provisioner が aka-only-server を扱わない設定なら、記録は出ません。</p>
+<p class="mb-2">aka-vecgen の監査ログ（provisioner が中継する）。新しい順。テナントでは絞れません。</p>
+<p class="text-sm text-base-content/60 mb-4">変更は「変更前 → 変更後」の形で出します。provisioner が aka-vecgen を扱わない設定なら、記録は出ません。</p>
 {{template "alerts" (dict "Error" .Error)}}
 {{- if .Rows}}
 <div class="overflow-x-auto bg-base-100 rounded-box shadow">

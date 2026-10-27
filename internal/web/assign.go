@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
 )
 
 // 所属の付け替えと、下流にない所属の記録の点検（画面仕様 §7。システム管理者だけ）。

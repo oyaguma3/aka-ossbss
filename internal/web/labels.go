@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // 画面に出す名前と、値の表示の形。
@@ -31,8 +31,8 @@ var issueHelps = map[provisioner.Issue]string{
 	provisioner.IssuePolicyMissing: "認可ポリシーがないため、本PoCは認証を拒否します。認可ポリシーを作成してください。",
 	provisioner.IssueKeyInOtherStore: "PLMN マップで決まる置き場所でない方にも、同じ IMSI の加入者があります。" +
 		"本PoCと provisioner の PLMN マップが一致しているか、Admin TUI などで登録していないかを確かめ、要らない方を削除してください。",
-	provisioner.IssueAVClientNotAllowed: "aka-only-server の加入者が、本PoCの vector-gateway の AVクライアントを許可していないため、認証できません。" +
-		"aka-only-server の管理 GUI などで、許可するクライアントに加えてください。",
+	provisioner.IssueAVClientNotAllowed: "aka-vecgen の加入者が、本PoCの vector-gateway の AVクライアントを許可していないため、認証できません。" +
+		"aka-vecgen の管理 GUI などで、許可するクライアントに加えてください。",
 	provisioner.IssueOtherStoreUnreachable: "provisioner が置き場所でない方の下流に接続できず、そちらに同じ IMSI の加入者がないかを確かめられませんでした。" +
 		"ダッシュボードで接続の状態を確かめてください。",
 }
@@ -46,7 +46,7 @@ func keyStoreLabel(ks provisioner.KeyStore) string {
 	case provisioner.KeyStorePoC:
 		return "本PoC"
 	case provisioner.KeyStoreAKA:
-		return "aka-only-server"
+		return "aka-vecgen"
 	}
 	return string(ks)
 }
@@ -184,7 +184,7 @@ func knownAction(action string) bool {
 }
 
 // detailText は監査ログの内容（JSON のオブジェクト）を、項目の名前の順に「名前: 値」で並べた 1 行にする。
-// aka-only-server の変更の { "from": …, "to": … } は「変更前 → 変更後」にする。
+// aka-vecgen の変更の { "from": …, "to": … } は「変更前 → 変更後」にする。
 func detailText(m map[string]any) string {
 	var parts []string
 	for _, k := range slices.Sorted(maps.Keys(m)) {

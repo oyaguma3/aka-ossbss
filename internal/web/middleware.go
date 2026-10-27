@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/trace"
+	"github.com/oyaguma3/aka-ossbss/internal/access"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/trace"
 )
 
 // contentSecurityPolicy は画面の CSP。スクリプトとスタイルは同梱のファイルだけを許可する。

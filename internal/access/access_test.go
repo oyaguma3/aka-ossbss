@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access/accesstest"
+	"github.com/oyaguma3/aka-ossbss/internal/access/accesstest"
 )
 
 // clock はテストで進める時計。

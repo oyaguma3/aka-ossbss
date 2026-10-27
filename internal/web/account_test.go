@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/auth"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
 )
 
 const testOperationID = "11111111-2222-4333-8444-555555555555"

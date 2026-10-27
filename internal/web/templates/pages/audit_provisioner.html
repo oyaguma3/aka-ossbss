@@ -2,8 +2,8 @@
 {{with .Data -}}
 <h1 class="text-2xl font-bold mb-4">監査ログ</h1>
 {{template "audit-tabs" .Tabs}}
-<p class="mb-2">eapaka-node-provisioner の監査ログ（provisioner を通した変更操作と秘密の値の取得、操作の記録への操作と自動のやり直し）。新しい順。テナントでは絞れません。</p>
-<p class="text-sm text-base-content/60 mb-4">加入者の登録・変更・削除には、操作の記録の ID と手順ごとの結果が入ります。トレースID は、本BFF と下流（provisioning-api、aka-only-server）の監査ログと同じ値です。</p>
+<p class="mb-2">aka-provisioner の監査ログ（provisioner を通した変更操作と秘密の値の取得、操作の記録への操作と自動のやり直し）。新しい順。テナントでは絞れません。</p>
+<p class="text-sm text-base-content/60 mb-4">加入者の登録・変更・削除には、操作の記録の ID と手順ごとの結果が入ります。トレースID は、本BFF と下流（provisioning-api、aka-vecgen）の監査ログと同じ値です。</p>
 {{template "alerts" (dict "Error" .Error)}}
 {{- if .Rows}}
 <div class="overflow-x-auto bg-base-100 rounded-box shadow">

@@ -1,14 +1,16 @@
-# eapaka-ossbss-sample
+# aka-ossbss
 
-[![CI](https://github.com/oyaguma3/eapaka-ossbss-sample/actions/workflows/ci.yml/badge.svg)](https://github.com/oyaguma3/eapaka-ossbss-sample/actions/workflows/ci.yml)
-[![govulncheck](https://github.com/oyaguma3/eapaka-ossbss-sample/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/oyaguma3/eapaka-ossbss-sample/actions/workflows/govulncheck.yml)
+[![CI](https://github.com/oyaguma3/aka-ossbss/actions/workflows/ci.yml/badge.svg)](https://github.com/oyaguma3/aka-ossbss/actions/workflows/ci.yml)
+[![govulncheck](https://github.com/oyaguma3/aka-ossbss/actions/workflows/govulncheck.yml/badge.svg)](https://github.com/oyaguma3/aka-ossbss/actions/workflows/govulncheck.yml)
 
-> このリポジトリは、4 つのソフトウェア（[本PoC](https://github.com/oyaguma3/eapaka-radius-server-poc)、[aka-only-server](https://github.com/oyaguma3/aka-only-server)、[eapaka-node-provisioner](https://github.com/oyaguma3/eapaka-node-provisioner)、[eapaka-ossbss-sample](https://github.com/oyaguma3/eapaka-ossbss-sample)）を組み合わせを確かめて提供する **PoC セット**（[eapaka-pocset](https://github.com/oyaguma3/eapaka-pocset)）の一部です。組み合わせ（各リポジトリのコミット）、変更の記録（CHANGELOG）、1 台への導入の案内、4 つを通した試験は eapaka-pocset にあります。
+> このリポジトリは、VPS に分けて置いて顧客を収容する **MVP セット**（[aka-mvpset](https://github.com/oyaguma3/aka-mvpset)）の、運用者とテナントの利用者が使う画面と管理面の業務の処理を受け持つノードです。PoC セット（[eapaka-pocset](https://github.com/oyaguma3/eapaka-pocset) の `pocset-v1.0.1`）の [eapaka-ossbss-sample](https://github.com/oyaguma3/eapaka-ossbss-sample) の履歴を引き継いで作りました（もとのコミット `d970d48`）。
+>
+> いまは名前を変えただけで、作りは eapaka-ossbss-sample と同じです（コマンドは `aka-ossbss`。相手は改名した [aka-provisioner](https://github.com/oyaguma3/aka-provisioner) で、API は PoC のまま）。MVP のための改修（加入者の台帳と突き合わせ、一括投入、課金レコード、RadSec の受け口の管理など）は、[設計概要](docs/design-overview.md)のとおりに MVP セットの段階 3・4 で行います。今の作りの説明は [PoC の設計概要](docs/poc/design-overview.md)、[画面仕様](docs/screen-spec.md)、[運用ガイド](docs/operation-guide.md)にあります。
 
-外部 OSS/BSS（運用・業務支援システム）のサンプル実装としての統合BFF（コマンド名 `eapaka-ossbss`）です。[eapaka-node-provisioner](https://github.com/oyaguma3/eapaka-node-provisioner) の API を使って、[EAP-AKA RADIUS PoC](https://github.com/oyaguma3/eapaka-radius-server-poc) と [aka-only-server](https://github.com/oyaguma3/aka-only-server) の加入者・RADIUSクライアント・認可ポリシーを、テナントと役割に基づく権限で操作します。
+外部 OSS/BSS（運用・業務支援システム）のサンプル実装としての統合BFF（コマンド名 `aka-ossbss`）です。[aka-provisioner](https://github.com/oyaguma3/aka-provisioner) の API を使って、[EAP-AKA RADIUS PoC](https://github.com/oyaguma3/aka-radius) と [aka-vecgen](https://github.com/oyaguma3/aka-vecgen) の加入者・RADIUSクライアント・認可ポリシーを、テナントと役割に基づく権限で操作します。
 
 ```
-[ブラウザ] ─> Cloudflare Access（メール認証）─ Tunnel ─> 統合BFF ─> eapaka-node-provisioner ─> RADIUS PoC / aka-only-server
+[ブラウザ] ─> Cloudflare Access（メール認証）─ Tunnel ─> 統合BFF ─> aka-provisioner ─> RADIUS PoC / aka-vecgen
                                                           │
                                                      PostgreSQL
 ```
@@ -33,11 +35,11 @@
 | 操作の記録 | provisioner の未完了の操作、やり直し・閉じる | 運用担当・システム管理者 |
 | 監査ログ | 本BFF の監査ログ（テナントの範囲）、provisioner と下流の監査ログ | テナント管理者・運用担当・システム管理者 |
 
-役割はテナントユーザー・テナント管理者・運用担当・システム管理者の 4 つです。権限の詳細は [設計概要](docs/design-overview.md) §6、画面の詳細は [画面仕様](docs/screen-spec.md) を参照してください。
+役割はテナントユーザー・テナント管理者・運用担当・システム管理者の 4 つです。権限の詳細は [PoC の設計概要](docs/poc/design-overview.md) §6、画面の詳細は [画面仕様](docs/screen-spec.md) を参照してください。
 
 ## 導入と運用
 
-Docker Compose（統合BFF、PostgreSQL、cloudflared）で動かします。ホストの受信のポートは開けません（cloudflared が外向きに Cloudflare へ接続します）。eapaka-node-provisioner が導入済みで、Cloudflare に公開ホスト名に使うドメインのゾーンと Zero Trust があることが前提です。
+Docker Compose（統合BFF、PostgreSQL、cloudflared）で動かします。ホストの受信のポートは開けません（cloudflared が外向きに Cloudflare へ接続します）。aka-provisioner が導入済みで、Cloudflare に公開ホスト名に使うドメインのゾーンと Zero Trust があることが前提です。
 
 導入（Cloudflare Access / Tunnel の準備、provisioner との証明書のやり取り、起動）、アカウントの運用、バックアップ、更新、障害時の確認は [運用ガイド](docs/operation-guide.md) を参照してください。
 
@@ -68,20 +70,20 @@ docker exec ossbss-it-pg createdb -U ossbss ossbss
 ```
 
 ```bash
-go build -o eapaka-ossbss ./cmd/eapaka-ossbss
+go build -o aka-ossbss ./cmd/aka-ossbss
 ```
 
 provisioner に提示するクライアント証明書を作り、標準エラーに出る `PROVISIONER_ADMIN_CLIENTS=` の行を provisioner の `.env` に登録します。provisioner のサーバー証明書は、provisioner の `server-cert` で取り出します（provisioner の運用ガイド 2.8）。
 
 ```bash
-./eapaka-ossbss gen-client-cert -name ossbss-dev > provisioner-client.pem
+./aka-ossbss gen-client-cert -name ossbss-dev > provisioner-client.pem
 ```
 
 ```bash
-OSSBSS_ADDR=127.0.0.1:8446 OSSBSS_DB_ADDR=127.0.0.1:25432 OSSBSS_DB_PASSWORD=it-pass OSSBSS_INITIAL_ADMIN_EMAIL=admin@example.com OSSBSS_DEV_USER_EMAIL=admin@example.com OSSBSS_PROVISIONER_URL=https://127.0.0.1:9446/admin/v1 OSSBSS_PROVISIONER_CLIENT_CERT=provisioner-client.pem OSSBSS_PROVISIONER_SERVER_CERT=provisioner-server.pem ./eapaka-ossbss
+OSSBSS_ADDR=127.0.0.1:8446 OSSBSS_DB_ADDR=127.0.0.1:25432 OSSBSS_DB_PASSWORD=it-pass OSSBSS_INITIAL_ADMIN_EMAIL=admin@example.com OSSBSS_DEV_USER_EMAIL=admin@example.com OSSBSS_PROVISIONER_URL=https://127.0.0.1:9446/admin/v1 OSSBSS_PROVISIONER_CLIENT_CERT=provisioner-client.pem OSSBSS_PROVISIONER_SERVER_CERT=provisioner-server.pem ./aka-ossbss
 ```
 
-provisioner に接続できるかは、同じ環境変数で `./eapaka-ossbss check-provisioner` を実行して確かめられます。provisioner との契約テストは、`OSSBSS_TEST_PROVISIONER_URL`、`OSSBSS_TEST_PROVISIONER_CLIENT_CERT`、`OSSBSS_TEST_PROVISIONER_SERVER_CERT` を与えたときだけ動きます（`go test -run Integration ./internal/provisioner/`。CI のジョブ「eapaka-node-provisioner との契約テスト」と同じ手順で、下流と provisioner を手元で動かせます）。
+provisioner に接続できるかは、同じ環境変数で `./aka-ossbss check-provisioner` を実行して確かめられます。provisioner との契約テストは、`OSSBSS_TEST_PROVISIONER_URL`、`OSSBSS_TEST_PROVISIONER_CLIENT_CERT`、`OSSBSS_TEST_PROVISIONER_SERVER_CERT` を与えたときだけ動きます（`go test -run Integration ./internal/provisioner/`。CI のジョブ「aka-provisioner との契約テスト」と同じ手順で、下流と provisioner を手元で動かせます）。
 
 依存と標準ライブラリの既知の脆弱性は、`.github/workflows/govulncheck.yml` が push と pull request のたびと、毎週月曜に govulncheck で調べます。
 

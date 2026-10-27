@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
 func TestAccountByEmail(t *testing.T) {

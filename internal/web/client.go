@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // RADIUSクライアントの画面（画面仕様 §4）。provisioner（本PoCの Provisioning API の中継）の全件を取り、

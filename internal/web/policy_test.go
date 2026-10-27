@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // policyForm は認可ポリシーの編集のフォーム（ルールは nas_id 等の並び）。

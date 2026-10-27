@@ -26,7 +26,7 @@ func TestSelfSigned(t *testing.T) {
 		t.Errorf("fingerprint = %q", fp)
 	}
 
-	certPEM, _, err = SelfSigned("server", []string{"127.0.0.1", "eapaka-provisioner"}, time.Hour)
+	certPEM, _, err = SelfSigned("server", []string{"127.0.0.1", "aka-provisioner"}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestSelfSigned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.IPAddresses) != 1 || len(c.DNSNames) != 1 || c.DNSNames[0] != "eapaka-provisioner" || c.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+	if len(c.IPAddresses) != 1 || len(c.DNSNames) != 1 || c.DNSNames[0] != "aka-provisioner" || c.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
 		t.Errorf("server cert SAN = %v %v", c.IPAddresses, c.DNSNames)
 	}
 }

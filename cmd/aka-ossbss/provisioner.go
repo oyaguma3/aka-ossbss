@@ -9,9 +9,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/certs"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/config"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/certs"
+	"github.com/oyaguma3/aka-ossbss/internal/config"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // notProvisioner は、provisioner でない相手（本PoCの provisioning-api など）につながったときの文。
@@ -85,14 +85,14 @@ func printProvisionerStatus(ctx context.Context, pv *provisioner.Client) error {
 	fmt.Printf("接続できました。provisioner %s\n", st.Version)
 	printDownstream("本PoCの Provisioning API", st.Downstreams.Prov)
 	if !st.Downstreams.Aka.Configured {
-		fmt.Println("  aka-only-server: 設定なし（すべての加入者の鍵を本PoCに置く）")
+		fmt.Println("  aka-vecgen: 設定なし（すべての加入者の鍵を本PoCに置く）")
 	} else {
-		printDownstream("aka-only-server", st.Downstreams.Aka)
-		// aka-only-server に接続できなければ、AVクライアントは確かめられていない（exists が false になる）ので出さない。
+		printDownstream("aka-vecgen", st.Downstreams.Aka)
+		// aka-vecgen に接続できなければ、AVクライアントは確かめられていない（exists が false になる）ので出さない。
 		switch av := st.AVClient; {
 		case !st.Downstreams.Aka.Reachable:
 		case !av.Exists:
-			fmt.Printf("  vector-gateway の AVクライアント（ID %d）が aka-only-server にありません。\n", av.ID)
+			fmt.Printf("  vector-gateway の AVクライアント（ID %d）が aka-vecgen にありません。\n", av.ID)
 		case !av.Enabled:
 			fmt.Printf("  vector-gateway の AVクライアント: ID %d（%s）は無効になっています。\n", av.ID, av.Name)
 		default:

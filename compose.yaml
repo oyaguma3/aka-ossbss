@@ -1,5 +1,5 @@
 services:
-  eapaka-ossbss:
+  aka-ossbss:
     build:
       context: .
       args:
@@ -24,8 +24,8 @@ services:
       OSSBSS_ACCESS_TEAM_DOMAIN: ${OSSBSS_ACCESS_TEAM_DOMAIN:?.env に OSSBSS_ACCESS_TEAM_DOMAIN を設定してください}
       OSSBSS_ACCESS_AUD: ${OSSBSS_ACCESS_AUD:?.env に OSSBSS_ACCESS_AUD を設定してください}
       OSSBSS_INITIAL_ADMIN_EMAIL: ${OSSBSS_INITIAL_ADMIN_EMAIL:?.env に OSSBSS_INITIAL_ADMIN_EMAIL を設定してください}
-      # eapaka-node-provisioner への接続（設計概要 §10）。URL を空にすると同一ホストの共有ネットワークの名前を使う。
-      OSSBSS_PROVISIONER_URL: ${OSSBSS_PROVISIONER_URL:-https://eapaka-provisioner:9446/admin/v1}
+      # aka-provisioner への接続（設計概要 §10）。URL を空にすると同一ホストの共有ネットワークの名前を使う。
+      OSSBSS_PROVISIONER_URL: ${OSSBSS_PROVISIONER_URL:-https://aka-provisioner:9446/admin/v1}
       OSSBSS_PROVISIONER_CLIENT_CERT: /certs/provisioner-client.pem
       OSSBSS_PROVISIONER_CLIENT_KEY: ${OSSBSS_PROVISIONER_CLIENT_KEY:-}
       OSSBSS_PROVISIONER_SERVER_CERT: /certs/provisioner-server.pem
@@ -38,7 +38,7 @@ services:
     # ホストにポートを公開しない。ブラウザからの要求は、同じ compose の cloudflared から届く（設計概要 §5.4、§12）。
     # 接続元のアドレスは、cloudflared が付ける Cf-Connecting-IP を使う（§17.2 の 4）。
     healthcheck:
-      test: ["CMD", "/eapaka-ossbss", "healthcheck"]
+      test: ["CMD", "/aka-ossbss", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -48,11 +48,11 @@ services:
 
   cloudflared:
     # Cloudflare Tunnel のコネクター（設計概要 §5.4、§12）。外向きに Cloudflare へ接続し、公開ホスト名への要求を
-    # 本BFF（http://eapaka-ossbss:8446。Tunnel の公開ホスト名の向け先に書く）に届ける。ホストの受信のポートは開けない。
+    # 本BFF（http://aka-ossbss:8446。Tunnel の公開ホスト名の向け先に書く）に届ける。ホストの受信のポートは開けない。
     image: cloudflare/cloudflared:2026.10.3
     restart: unless-stopped
     depends_on:
-      eapaka-ossbss:
+      aka-ossbss:
         condition: service_healthy
     command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/etc/cloudflared/token"]
     volumes:

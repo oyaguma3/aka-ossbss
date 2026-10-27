@@ -15,7 +15,7 @@ CLAUDE.md
 /secrets/
 
 # リポジトリ直下で go build したときの成果物
-/eapaka-ossbss
+/aka-ossbss
 
 # 生成した CSS（Docker のビルドの段で作る）
 /internal/web/static/app.css

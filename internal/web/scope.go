@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/db"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/trace"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/trace"
 )
 
 // テナントの範囲の判定、所属の表示、二重送信の防止、監査ログ（画面仕様 §1）。
@@ -311,7 +311,7 @@ func forEachConcurrently(n, limit int, f func(i int)) {
 }
 
 // isNotFound は、provisioner が対象（加入者・RADIUSクライアント・認可ポリシー）がないと返したか
-// （aka-only-server を扱わない設定の 404 は含めない）。
+// （aka-vecgen を扱わない設定の 404 は含めない）。
 func isNotFound(err error) bool {
 	e, ok := errors.AsType[*provisioner.Error](err)
 	return ok && e.Status == http.StatusNotFound && e.Problem.Cause != provisioner.CauseDownstreamNotConfigured

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/auth"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/auth"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
 // テスト用の加入者と RADIUSクライアント。own はテナントA（a・b のテナント）、other はテナントB、none はテナントなし。

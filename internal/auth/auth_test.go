@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/access"
+	"github.com/oyaguma3/aka-ossbss/internal/access"
 )
 
 type fakeVerifier struct {

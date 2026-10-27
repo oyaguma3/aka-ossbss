@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/authz"
-	"github.com/oyaguma3/eapaka-ossbss-sample/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // セッションの画面（画面仕様 §5）。provisioner が中継する本PoCのアクティブセッションを、所属で絞って出す。
