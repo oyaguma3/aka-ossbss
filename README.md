@@ -5,41 +5,39 @@
 
 > このリポジトリは、VPS に分けて置いて顧客を収容する **MVP セット**（[aka-mvpset](https://github.com/oyaguma3/aka-mvpset)）の、運用者とテナントの利用者が使う画面と管理面の業務の処理を受け持つノードです。PoC セット（[eapaka-pocset](https://github.com/oyaguma3/eapaka-pocset) の `pocset-v1.0.1`）の [eapaka-ossbss-sample](https://github.com/oyaguma3/eapaka-ossbss-sample) の履歴を引き継いで作りました（もとのコミット `d970d48`）。
 >
-> いまは名前を変えただけで、作りは eapaka-ossbss-sample と同じです（コマンドは `aka-ossbss`。相手は改名した [aka-provisioner](https://github.com/oyaguma3/aka-provisioner) で、API は PoC のまま）。MVP のための改修（加入者の台帳と突き合わせ、一括投入、課金レコード、RadSec の受け口の管理など）は、[設計概要](docs/design-overview.md)のとおりに MVP セットの段階 3・4 で行います。今の作りの説明は [PoC の設計概要](docs/poc/design-overview.md)、[画面仕様](docs/screen-spec.md)、[運用ガイド](docs/operation-guide.md)にあります。
+> MVP のための改修は、[設計概要](docs/design-overview.md)のとおりに MVP セットの段階 3・4 で行っています。段階 3-1（加入者の台帳、[aka-provisioner](https://github.com/oyaguma3/aka-provisioner) 2.0.0 の型つきのクライアント、加入者の画面、認可ポリシーの編集、セッション）を終えました（設計概要 §19.2 の「段階 3-1 で決めたこと」）。一括投入（3-2）、突き合わせ（3-3）、課金レコード（3-4）、RadSec の受け口の管理（段階 4）はこれからです。[画面仕様](docs/screen-spec.md)と[運用ガイド](docs/operation-guide.md)は段階 3-5 で書き直すまで PoC の作りのままです。
 
-外部 OSS/BSS（運用・業務支援システム）のサンプル実装としての統合BFF（コマンド名 `aka-ossbss`）です。[aka-provisioner](https://github.com/oyaguma3/aka-provisioner) の API を使って、[EAP-AKA RADIUS PoC](https://github.com/oyaguma3/aka-radius) と [aka-vecgen](https://github.com/oyaguma3/aka-vecgen) の加入者・RADIUSクライアント・認可ポリシーを、テナントと役割に基づく権限で操作します。
+運用者とテナントの利用者が使う画面と、管理面の業務の処理（加入者の台帳など）を受け持つノード（コマンド名 `aka-ossbss`）です。aka-provisioner 2.0.0 を通して、[aka-vecgen](https://github.com/oyaguma3/aka-vecgen)（vecgen 側: 鍵・SQN・状態）と [aka-radius](https://github.com/oyaguma3/aka-radius)（radius 側: 状態・取得先・認可ポリシーのルール）の加入者を、テナントと役割に基づく権限で別々に操作します。
 
 ```
-[ブラウザ] ─> Cloudflare Access（メール認証）─ Tunnel ─> 統合BFF ─> aka-provisioner ─> RADIUS PoC / aka-vecgen
-                                                          │
-                                                     PostgreSQL
+[ブラウザ] ─> Cloudflare Access（メール認証）─ Tunnel ─> aka-ossbss ─mTLS─> aka-provisioner ─> aka-vecgen / aka-radius
+                                                            │
+                                                       PostgreSQL（テナント・アカウント・台帳・状態の事実・監査ログ）
 ```
 
-- 加入者と RADIUSクライアントをテナントに属させ、テナントの利用者は自分のテナントのものだけを扱います（テナントに属さないものも扱えます）。
-- 認証は Cloudflare Access / Tunnel（メールのワンタイム PIN）で行い、統合BFF は Access の JWT を検証して利用者を識別します。
-- 加入者を登録したまま一時的に使えなくする（停止・再開）ことができます。
+- すべての加入者（IMSI）はどれか 1 つのテナントに属し、テナントの利用者は自分のテナントのものだけを扱います。
+- 加入者の台帳（所属、両側の有無と状態、取得先）は、aka-provisioner を通した操作が成功したときだけ書き、課金レコードの状態の事実と同じトランザクションで書きます。結果が分からない操作は印を付け、その場で下流を読み直して台帳を直します。
+- 認証は Cloudflare Access / Tunnel（メールのワンタイム PIN）で行い、aka-ossbss は Access の JWT を検証して利用者を識別します。
 - 画面は Go + htmx + daisyUI です。
-
-個人利用・検証用途のサンプルです。
 
 ## 機能
 
 | 画面 | 内容 | 使える役割 |
 |---|---|---|
-| ダッシュボード | 自分の範囲の加入者・停止中・RADIUSクライアントの数、provisioner と下流の状態 | 全員 |
-| 加入者 | 一覧・登録・詳細・変更・削除、Ki / OPc の表示、停止・再開、認可ポリシーの編集 | 全員（操作は役割による） |
-| RADIUSクライアント | 一覧・登録・詳細・変更・削除、共有シークレットの表示 | 全員（操作は役割による） |
-| セッション | テナントの範囲のアクティブセッション | 全員 |
-| テナント | 作成・名前の変更・削除、所属の付け替え、下流にない所属の記録の点検 | システム管理者 |
+| ダッシュボード | 台帳の件数（全体・食い違い・結果を確かめているもの・側と状態ごと）、aka-provisioner と下流の状態（運用担当・システム管理者） | 全員 |
+| 加入者 | 台帳の一覧と絞り込み、vecgen 側と radius 側を並べた詳細、状態の変更（側ごと・両方）、解約からの戻し、物理削除、vecgen 側の変更、取得先の変更、所属の付け替え | 全員（操作は役割による） |
+| 加入者の登録 | vecgen 側（鍵の入力）、radius 側（取得先と最初のルール）、削除済みの IMSI の登録し直しの承認 | 運用担当（radius 側）・システム管理者 |
+| 認可ポリシー | ルールの編集（テナントは所属のテナント） | テナント管理者・運用担当・システム管理者 |
+| セッション | テナント（刻印のテナント）か IMSI で絞った aka-radius のセッション | 全員 |
+| テナント | 作成・名前の変更・削除 | システム管理者 |
 | アカウント | 作成・役割とテナントの変更・無効化・削除 | テナント管理者（自分のテナントのテナントユーザー）・システム管理者 |
-| 操作の記録 | provisioner の未完了の操作、やり直し・閉じる | 運用担当・システム管理者 |
-| 監査ログ | 本BFF の監査ログ（テナントの範囲）、provisioner と下流の監査ログ | テナント管理者・運用担当・システム管理者 |
+| 監査ログ | aka-ossbss の監査ログ（テナントの範囲）、aka-provisioner・aka-vecgen・aka-radius の監査ログ | テナント管理者（aka-ossbss の分）・運用担当・システム管理者 |
 
-役割はテナントユーザー・テナント管理者・運用担当・システム管理者の 4 つです。権限の詳細は [PoC の設計概要](docs/poc/design-overview.md) §6、画面の詳細は [画面仕様](docs/screen-spec.md) を参照してください。
+役割はテナントユーザー・テナント管理者・運用担当・システム管理者の 4 つです。権限の詳細は [設計概要](docs/design-overview.md) §5 を参照してください。
 
 ## 導入と運用
 
-Docker Compose（統合BFF、PostgreSQL、cloudflared）で動かします。ホストの受信のポートは開けません（cloudflared が外向きに Cloudflare へ接続します）。aka-provisioner が導入済みで、Cloudflare に公開ホスト名に使うドメインのゾーンと Zero Trust があることが前提です。
+Docker Compose（aka-ossbss、PostgreSQL、cloudflared）で動かします。ログを管理面の Fluent Bit（aka-provisioner の compose が動かす）に送るときは `compose.fluent-bit.yaml` を重ねます。監査ログの日ごとのファイルは `audit/`（UID 65532 で書けるようにする）に書きます。ホストの受信のポートは開けません（cloudflared が外向きに Cloudflare へ接続します）。aka-provisioner が導入済みで、Cloudflare に公開ホスト名に使うドメインのゾーンと Zero Trust があることが前提です。
 
 導入（Cloudflare Access / Tunnel の準備、provisioner との証明書のやり取り、起動）、アカウントの運用、バックアップ、更新、障害時の確認は [運用ガイド](docs/operation-guide.md) を参照してください。
 
@@ -73,21 +71,23 @@ docker exec ossbss-it-pg createdb -U ossbss ossbss
 go build -o aka-ossbss ./cmd/aka-ossbss
 ```
 
-provisioner に提示するクライアント証明書を作り、標準エラーに出る `PROVISIONER_ADMIN_CLIENTS=` の行を provisioner の `.env` に登録します。provisioner のサーバー証明書は、provisioner の `server-cert` で取り出します（provisioner の運用ガイド 2.8）。
+aka-provisioner に提示するクライアント証明書を作り、標準エラーに出る「識別名=フィンガープリント」の行を aka-provisioner の管理クライアントのピンのファイルに書いて、aka-provisioner に `SIGHUP` を送ります。aka-provisioner のサーバー証明書は、aka-provisioner の `server-cert` で取り出します。
 
 ```bash
 ./aka-ossbss gen-client-cert -name ossbss-dev > provisioner-client.pem
 ```
 
 ```bash
-OSSBSS_ADDR=127.0.0.1:8446 OSSBSS_DB_ADDR=127.0.0.1:25432 OSSBSS_DB_PASSWORD=it-pass OSSBSS_INITIAL_ADMIN_EMAIL=admin@example.com OSSBSS_DEV_USER_EMAIL=admin@example.com OSSBSS_PROVISIONER_URL=https://127.0.0.1:9446/admin/v1 OSSBSS_PROVISIONER_CLIENT_CERT=provisioner-client.pem OSSBSS_PROVISIONER_SERVER_CERT=provisioner-server.pem ./aka-ossbss
+OSSBSS_ADDR=127.0.0.1:8446 OSSBSS_DB_ADDR=127.0.0.1:25432 OSSBSS_DB_PASSWORD=it-pass OSSBSS_INITIAL_ADMIN_EMAIL=admin@example.com OSSBSS_DEV_USER_EMAIL=admin@example.com OSSBSS_PROVISIONER_URL=https://127.0.0.1:9446/admin/v2 OSSBSS_PROVISIONER_CLIENT_CERT=provisioner-client.pem OSSBSS_PROVISIONER_SERVER_CERT=provisioner-server.pem OSSBSS_AUDIT_DIR=./audit ./aka-ossbss
 ```
 
-provisioner に接続できるかは、同じ環境変数で `./aka-ossbss check-provisioner` を実行して確かめられます。provisioner との契約テストは、`OSSBSS_TEST_PROVISIONER_URL`、`OSSBSS_TEST_PROVISIONER_CLIENT_CERT`、`OSSBSS_TEST_PROVISIONER_SERVER_CERT` を与えたときだけ動きます（`go test -run Integration ./internal/provisioner/`。CI のジョブ「aka-provisioner との契約テスト」と同じ手順で、下流と provisioner を手元で動かせます）。
+aka-provisioner に接続できるかは、同じ環境変数で `./aka-ossbss check-provisioner` を実行して確かめられます。
+
+aka-provisioner との契約テストは、`OSSBSS_TEST_PROVISIONER_URL`（と `_CLIENT_CERT`、`_SERVER_CERT`、`_AV_CLIENT_ID`、`_SOURCE_ID`）を与えたときだけ動きます（`go test -run Integration ./internal/provisioner/`）。CI のジョブ「aka-provisioner との契約テスト」と同じく、aka-provisioner のリポジトリの `scripts/contract.sh up <バイナリのディレクトリ> <作業ディレクトリ>` で、固定のコミットの aka-vecgen・aka-radius・aka-provisioner を手元で起動し、作業ディレクトリの `contract.env` の `PROVISIONER_TEST_*` を `OSSBSS_TEST_PROVISIONER_*` として渡します。上の開発用の設定も、この aka-provisioner（`contract.env` の URL と証明書）につなげば、本物の下流で画面を確かめられます。
 
 依存と標準ライブラリの既知の脆弱性は、`.github/workflows/govulncheck.yml` が push と pull request のたびと、毎週月曜に govulncheck で調べます。
 
-`http://127.0.0.1:8446/` を開きます。最初のシステム管理者（`OSSBSS_INITIAL_ADMIN_EMAIL`）は起動時に作られます。役割ごとの表示は、DB でこの利用者のアカウントの役割とテナントを付け替えて確かめます（起動し直すと、最初のシステム管理者はシステム管理者に戻ります）。
+`http://127.0.0.1:8446/` を開きます（PoC のスキーマの DB では起動しません。新しい DB で始めます）。最初のシステム管理者（`OSSBSS_INITIAL_ADMIN_EMAIL`）は起動時に作られます。役割ごとの表示は、DB でこの利用者のアカウントの役割とテナントを付け替えて確かめます（起動し直すと、最初のシステム管理者はシステム管理者に戻ります）。
 
 compose（`compose.yaml`）は本番の構成です（運用ガイド）。開発用の設定は compose では使えません。
 

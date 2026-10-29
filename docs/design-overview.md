@@ -1,7 +1,7 @@
 # aka-ossbss 設計概要（下書き）
 
 - 作成日: 2026-10-26
-- 状態: 下書き。§20 の確認事項は 2026-10-26 にすべて推奨案で合意した（§3.2 の決定事項 1〜11）。
+- 状態: 下書き。§20 の確認事項は 2026-10-26 にすべて推奨案で合意した（§3.2 の決定事項 1〜11）。段階 3-1 を終えた（2026-10-30。§19.2 の「段階 3-1 で決めたこと」）。
 - 置き場所: 2026-10-27（MVP セットの段階 1）に、aka-mvpset の `docs/nodes/aka-ossbss.md` から本リポジトリの `docs/design-overview.md` に移した。
 - 対象: 運用者とテナントの利用者が使う画面と、管理面の業務の処理を受け持つノード aka-ossbss（もとは eapaka-ossbss-sample。以下「もとの実装」）。
 - 関連:
@@ -330,7 +330,7 @@
 | `OSSBSS_RECONCILE_AT` / `OSSBSS_USAGE_IMPORT_AT` | 突き合わせと利用の集計の取り込みの時刻 | `04:00` / `03:00` |
 | `OSSBSS_EDGE_CAPACITY_DEFAULT` | エッジの容量の既定 | `150` |
 | `OSSBSS_TENANT_PORT_RANGE` | テナントのポートの範囲（§20 の F9） | `20000-21999` |
-| `OSSBSS_AUDIT_DIR` | 監査ログの JSONL の書き出し先 | `/data/audit` |
+| `OSSBSS_AUDIT_DIR` | 監査ログの JSONL の書き出し先（段階 3-1 で入れた） | `/data/audit` |
 
 ## 19. 試験・進め方
 
@@ -349,11 +349,28 @@
 | 段階 | 内容 |
 |---|---|
 | 1 | リポジトリ `aka-ossbss` を作り、eapaka-ossbss-sample の履歴ごと移す。改名だけ |
-| 3-1 | 台帳（スキーマ、テナントなしをなくす）、aka-provisioner v2 のクライアント、加入者の画面（両側を並べる、状態、戻し、個別の登録）、認可ポリシーの編集、セッション |
+| 3-1 | 台帳（スキーマ、テナントなしをなくす）、aka-provisioner v2 のクライアント、加入者の画面（両側を並べる、状態、戻し、個別の登録）、認可ポリシーの編集、セッション。**済み（2026-10-30）**: 下の「段階 3-1 で決めたこと」 |
 | 3-2 | 一括投入と一括の物理削除（KEK、待ち行列、検証、実行、中断、報告） |
 | 3-3 | 突き合わせ、`check_needed`、ダッシュボード |
 | 3-4 | 課金レコード（`charging-records.md` の §8） |
 | 4-3・4-4 | RadSec の受け口の管理と中央の整合のループ（radsec-edge §23.1） |
+
+段階 3-1 で決めたこと（2026-10-30。aka-mvpset の概要 §18.7 の段階 3 の進め方 Q1〜Q10 と、確認事項 W1〜W12 はすべて推奨案で合意）:
+
+- W1: 1 つの手順にし、中ではコミットを分けた（スキーマと台帳、aka-provisioner v2 のクライアント、画面、なくす画面、compose と CI、本書）。画面は手元の開発用の設定（`OSSBSS_ADDR=127.0.0.1:18446`、`OSSBSS_DEV_USER_EMAIL`）で、aka-provisioner の `scripts/contract.sh` で起動した本物の aka-provisioner・aka-vecgen・aka-radius につなぎ、役割 A〜D ごとに確かめた（playwright-cli）。Cloudflare を通すのは段階 3 の終わり。画面仕様（`docs/screen-spec.md`）と運用ガイドの書き直しは 3-5。
+- W2: スキーマは MVP の起点 `internal/db/migrations/0001_mvp.sql`（PoC の `0001_init.sql` を置き換えた）。表は `tenants`（`external_customer_id`・`deleted_at` を足し、名前は削除していないテナントの中で一意）、`accounts`（もとのまま）、`subscribers`（台帳。§7.1。有無と状態・取得先の組み合わせ、削除済みならどちらの側もないことを CHECK で守る）、`charging_events`、`audit_log`（`job_id` を足した）。PoC のスキーマ（`subscriber_tenants`）の DB では、移行を断って起動しない（`db.ErrPoCSchema`。新しい DB で始める）。テナントの削除は `deleted_at` を付けて行を残す（加入者（削除済みを除く）とアカウントが残っていれば断る）。
+- W3: `charging_events` は台帳を書くのと同じトランザクションで書く（`db.WithSubscriber` の `Apply`、テナントの作成・名前の変更・削除）。`from_val`・`to_val` は、状態の事実では状態（ないときは空）、付け替えではテナントの ID、テナントの事実では名前。`tenant_id` は付け替えでは移った先。月次の計算・締め・ファイルは 3-4。
+- 台帳の移り方は DB を使わない関数 `db.Transition` にまとめ（登録・状態・削除・取得先・付け替え・印・読み直し）、DB と画面の試験の偽物の両方で使う。同じ IMSI の操作は、IMSI ごとの advisory lock（`pg_advisory_xact_lock(class, hashtext(imsi))`）を取ったトランザクションの中で、台帳を確かめ、aka-provisioner を 1 回呼び、成功したら書く（台帳にまだない IMSI もこれで順になる）。要求の取り消しで下流の成功を書き損じないよう、取り消されないコンテキストで行う。下流が成功したのに台帳を書けなかったときは、別のトランザクションで印（`check_needed`）を立てる。行を新しくテナントに属させるとき（登録、付け替え）は、テナントの行を `FOR KEY SHARE` で読み、削除済みなら断る。
+- W4: 登録は vecgen 側（D。Ki・OPc・AMF・SQN・SQN の方式・状態・許可クライアント）と radius 側（C・D。取得先・状態・最初のルール）の 2 つのフォーム（`/subscribers/new?side=…`）。所属のテナントは、台帳にない・削除済みの IMSI だけ選び、もう一方の側を登録済みなら台帳の値で固定する（画面にも出す）。削除済みの IMSI は D の承認（チェックと理由）が要り、承認を監査ログ（`subscriber.reregister`）に残す。登録し直した行は新しい回線として扱い、最初の登録の日時と操作者を改める。Ki・OPc は誤りのときも画面に戻さない。下流に既にある（台帳にない）ときは、台帳を書かずに誤りを出す（取り込みは 3-3 の突き合わせ）。
+- W5: 一覧は台帳から 50 件ずつ IMSI の順（絞り込み: テナント（C・D）、両側の状態と「なし」、取得先、食い違い、確かめているもの、削除済み、IMSI の前方一致）と件数。そのページの IMSI を一括取得で補う（vecgen 側は C・D だけ読む）。台帳にあって下流にないものは「下流にない」と出す。下流を読めなくても台帳の列は出す。詳細は台帳・vecgen 側・radius 側を並べ、台帳と下流の違いを文で出す（A・B には AMF・SQN・許可クライアントを出さない）。
+- W6: 状態の操作は側ごとのボタン（止める・使う・解約する）と「両方を止める・使う」。両方のときは止めるなら radius 側、使うなら vecgen 側を先に 1 つずつ呼び、取り消さない。解約からの戻しは D が理由つきで側ごと、物理削除は C・D が側ごと（Active と、台帳で Active のものは下流に送らずに断る）。両側を消したら台帳に `deleted_at`。この手順で、vecgen 側の変更（D。変わった項目だけを送る。許可クライアントの選択肢を出せなかったフォームからは許可クライアントを変えない）と取得先の変更（C・D。台帳にも書く）も入れた。
+- W7: 結果が分からないのは、aka-provisioner に届かない・応答がない、または 5xx（W7 の 503・502 に、下流の内部の誤りの 500 も入れた）。台帳を変えずに印を立て、その場で両側を一括取得で読み直して台帳を下流に合わせ（違いがあれば `reconciled`、理由「結果が分からなかった操作の確かめ」）、印を下ろす。読めなければ印を残して「結果を確かめています」と出す。台帳にない IMSI の登録の結果が分からないときは、選んだテナントで印だけの行（両側ともない）を作り、読み直してどちらにもなければ行を消す。印の立った加入者の詳細を開くと、その場で読み直す（5 分ごとの確かめのジョブは 3-3）。認可ポリシーのルールは台帳にないので、保存の結果が分からなくても印は立てない（同じ内容で保存し直せる）。
+- W8: 認可ポリシーの編集（B・C・D）は、ルールのテナントを所属のテナントに固定し、NAS-Identifier（制御文字を除く 253 文字まで、`*` 可）、SSID（32 個・32 バイトまで、`*` はほかと混ぜない）、VLAN（1〜4094）、Session-Timeout（1〜86400）、1〜32 件、並べ替え。保存は `PATCH`（`rules`）。所属と違うテナントのルールがあれば知らせ、保存で直す。付け替え（D）は radius 側のルールのテナントを書き換えてから台帳を書き（radius 側が解約なら断る）、移動元と移動先のテナントの監査ログに残す。
+- W9: セッションは A・B は自分のテナント（`tenantId`）。A・B が IMSI で開いたときも、自分のテナントの刻印のものだけを出す。C・D はテナントか IMSI（カンマ区切り 100 件まで）のどちらか一方を選び、条件がなければ読まない。
+- W10: RADIUS クライアント・操作の記録・所属の一括の付け替えと点検・Ki/OPc の表示・停止中の数の画面と、PoC の provisioner クライアントの口をなくした。監査ログの画面は `/audit`（aka-ossbss）と `/audit/{provisioner,vecgen,radius}`（C・D。もとは D だけ）。ダッシュボードは台帳の件数（全体・食い違い・確かめているもの・側と状態ごと）と aka-provisioner と下流の状態（aka-provisioner が 30 秒ごとに集めたもの。C・D）。
+- W11: 監査ログは PostgreSQL に書いた後、同じ内容（番号つき）を日ごとの JSONL（`OSSBSS_AUDIT_DIR`、既定 `/data/audit`。`internal/audit` は aka-provisioner の `files.go` を写した）にも書く。ファイルは起動のときと 1 時間ごとに前の日までを圧縮し、14 日で消す（ほかのノードと同じ。PostgreSQL の 13 か月での削除は 3-3）。書けないディレクトリでは起動しない（`AUDIT_DIR_ERR`）。aka-ossbss の操作の名前は `subscriber.vecgen.create`・`subscriber.radius.create`・`subscriber.reregister`・`subscriber.vecgen.update`・`subscriber.radius.source`・`subscriber.radius.rules`・`subscriber.state`・`subscriber.reinstate`・`subscriber.delete`・`subscriber.tenant` とテナント・アカウントの操作。結果が分からなかった操作も `detail.result` を `unknown` にして残す。
+- W12: `internal/provisioner` を aka-provisioner 2.0.0 の型つきのクライアントに書き直した（両側の加入者・一括取得・状態・戻し・削除、AV クライアント、取得先、セッション、3 つの監査ログ、`/status`）。書き込みは操作者と `Idempotency-Key` がなければ送らない。キーはフォームに持たせ（画面ごとのキーにフォームの名前を付け、両側に続けて書くときは側の名前を付ける）、結果が分からなかったときは同じキーで送り直せるよう残す。本文は構造体から決まった並びで組み立てる（PATCH は `application/merge-patch+json`）。CI の契約の試験は aka-provisioner `ff21ac4` の `scripts/contract.sh up` で下流 2 つ（`2d48379`・`ac2f05a`）と aka-provisioner を起動し、管理クライアントの証明書（`ossbss-ci`）で登録から削除まで（再送と内容の違うキー、409・404 の cause、監査ログの操作者とトレースID を含む）を流す。compose に管理面の Fluent Bit へ送る重ね合わせ `compose.fluent-bit.yaml`（タグ `app.ossbss`・`app.ossbss-postgres`・`app.ossbss-cloudflared`）を足した。
+- 確認事項にない小さな変更: `OSSBSS_PROVISIONER_URL` の既定を `https://aka-provisioner:9446/admin/v2`、`OSSBSS_PROVISIONER_TIMEOUT` の既定を 15 秒にした（aka-provisioner は下流を 1 回だけ呼び、下流の上限は既定 5 秒。台帳のロックを持って待つので短くする）。テナントの一覧と詳細に ID（刻印の値）を出す。画面の名前を「aka-ossbss」にした。
 
 ## 20. 確認事項（2026-10-26 にすべて推奨案で合意。§3.2 の決定事項 1〜11）
 

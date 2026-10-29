@@ -1,5 +1,7 @@
 # 運用ガイド
 
+> **段階 3-5 で書き直すまで、本書は PoC の作りのままです。** MVP セットの段階 3-1 で、相手を aka-provisioner 2.0.0（`/admin/v2`）にし、加入者の台帳を足し、RADIUS クライアント・操作の記録・所属の付け替えと点検・Ki/OPc の表示の画面をなくしました（[設計概要](design-overview.md) §19.2 の「段階 3-1 で決めたこと」）。そのため、本書のうち接続先の URL、aka-provisioner の管理クライアントの登録（ピンのファイルと `SIGHUP` になった）、それらの画面の手順は今の作りと違います。監査ログの日ごとのファイル（`audit/`）と、管理面の Fluent Bit への重ね合わせ（`compose.fluent-bit.yaml`）も本書にはまだありません。
+
 aka-ossbss（以下「本BFF」）の導入と運用の手順。設計は [設計概要（PoC。今の作り）](poc/design-overview.md)、画面は [画面仕様](screen-spec.md) を参照。
 
 本書の手順は、2026-10-11 に検証機（simwifi。Debian 13）で、aka-provisioner（以下「provisioner」）・本PoC・aka-vecgen と同じホストに導入して確かめた（設計概要 §17.6）。
