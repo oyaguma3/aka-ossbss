@@ -1,17 +1,18 @@
-// Package provisioner は aka-provisioner（以下「provisioner」）の API のクライアント（設計概要 §10）。
-// API 仕様は aka-provisioner のリポジトリの docs/openapi/provisioner-api.yaml（0.3.0）を参照。
-// 既存の BFF（web-gui-for-eapaka-radius）の internal/provapi と internal/pvapi を、1 つにまとめて手直ししたもの
-// （本BFF の接続先は provisioner だけなので、本PoCの Provisioning API に直接つなぐための部分は持たない）。
+// Package provisioner は aka-provisioner（以下「provisioner」）の API 2.0.0 の型つきのクライアント（設計概要 §1。段階 3-1 の W12）。
+// API 仕様は aka-provisioner のリポジトリの docs/openapi/provisioner-api.yaml（2.0.0）を参照。provisioner は
+// /admin/v2/vecgen/... と /admin/v2/radius/... を下流（aka-vecgen・aka-radius の管理API 2.0.0）にそのまま中継するので、
+// 本文の項目は下流の OpenAPI（各リポジトリの docs/openapi/admin-api.yaml）に合わせる。画面が項目を使うので型を持つ。
 //
-// 接続は mTLS で、本BFF のクライアント証明書を提示し、provisioner のサーバー証明書（自己署名）を
+// 接続は mTLS で、aka-ossbss のクライアント証明書を提示し、provisioner のサーバー証明書（自己署名）を
 // 信頼する証明書として検証する（ホスト名も検証する）。
 //
-// 変更操作と秘密の値（Ki / OPc、共有シークレット）の取得には操作者が要る。本BFF は利用者のメールアドレスを渡す
-// （設計概要 §15 の 6）。WithOperator でコンテキストに入れておくと X-Operator-Id ヘッダーで渡す。入っていなければ
-// ErrNoOperator を返し、リクエストを送らない。
+// 操作者（利用者のメールアドレス）は WithOperator でコンテキストに入れておくと X-Operator-Id ヘッダーで渡す。
+// 書き込み（下流を書き換える口）は、操作者と Idempotency-Key がなければ送らない（ErrNoOperator・ErrNoIdempotencyKey）。
+// provisioner は Idempotency-Key をメソッド・パス・クエリ・本文のバイト列で照合するので、本文は構造体から決まった並びで組み立てる
+// （同じフォームの再送は同じバイト列になる）。
 //
 // トレースID（internal/trace）がコンテキストに入っていれば X-Trace-ID ヘッダーで渡す。入っていなければ呼び出しごとに採番する。
-// provisioner はそれを下流（本PoCの provisioning-api、aka-vecgen）にも渡すので、監査ログを突き合わせられる。
+// provisioner はそれを下流にも渡すので、監査ログを突き合わせられる。
 package provisioner
 
 import (
@@ -38,8 +39,8 @@ import (
 )
 
 const (
-	// defaultTimeout は 1 回の呼び出しの上限の既定。provisioner の加入者の登録は、補償を含めて下流を何度か呼ぶので長めにする。
-	defaultTimeout = 60 * time.Second
+	// defaultTimeout は 1 回の呼び出しの上限の既定。provisioner は下流を 1 回だけ呼ぶ（下流の上限は既定 5 秒）。
+	defaultTimeout = 15 * time.Second
 	// maxResponseBytes は応答ボディを読む上限。一覧の最大（500 件）でも収まる大きさにする。
 	maxResponseBytes     = 16 << 20
 	operatorHeader       = "X-Operator-Id"
@@ -57,20 +58,25 @@ var (
 	ErrNoOperator = errors.New("provisioner: operator is required for this operation")
 	// ErrInvalidOperator は、操作者が X-Operator-Id の形式に合わないことを表す。
 	ErrInvalidOperator = errors.New("provisioner: operator does not match " + operatorPattern.String())
+	// ErrNoIdempotencyKey は、書き込みに Idempotency-Key がない（または形式に合わない）ことを表す。
+	ErrNoIdempotencyKey = errors.New("provisioner: Idempotency-Key is required for this operation")
 )
+
+// idempotencyKeyPattern は Idempotency-Key の形式（provisioner の検証と同じ。印字可能 ASCII 1〜128 文字）。
+var idempotencyKeyPattern = regexp.MustCompile(`^[\x21-\x7E]{1,128}$`)
 
 // Options はクライアントの設定。
 type Options struct {
-	// BaseURL は provisioner のベース URL（例: https://aka-provisioner:9446/admin/v1）。
+	// BaseURL は provisioner のベース URL（例: https://aka-provisioner:9446/admin/v2）。
 	BaseURL string
-	// ClientCertFile は本BFF のクライアント証明書（PEM）。
+	// ClientCertFile は aka-ossbss のクライアント証明書（PEM）。
 	ClientCertFile string
 	// ClientKeyFile はクライアント証明書の秘密鍵（PEM）。空なら ClientCertFile から読む
 	// （gen-client-cert は、出力先を分けなければ証明書と秘密鍵を 1 つの PEM にまとめて出力する）。
 	ClientKeyFile string
 	// ServerCertFile は provisioner のサーバー証明書（PEM）。これを信頼する証明書として検証する。
 	ServerCertFile string
-	// Timeout は 1 回の呼び出しの上限時間。0 なら 60 秒。
+	// Timeout は 1 回の呼び出しの上限時間。0 なら 15 秒。
 	Timeout time.Duration
 	Log     *slog.Logger
 }
@@ -152,60 +158,52 @@ func OperatorFrom(ctx context.Context) string {
 
 // ---- エラー ----
 
-// ProblemDetails の cause の値。
+// ProblemDetails の cause の値（下流の cause は下流の名前のまま届く）。
 const (
 	CauseInvalidMsgFormat     = "INVALID_MSG_FORMAT"
 	CauseInvalidQueryParam    = "INVALID_QUERY_PARAM"
 	CauseMandatoryIEMissing   = "MANDATORY_IE_MISSING"
 	CauseMandatoryIEIncorrect = "MANDATORY_IE_INCORRECT"
 	CauseOptionalIEIncorrect  = "OPTIONAL_IE_INCORRECT"
-	CauseUserNotFound         = "USER_NOT_FOUND"
-	CauseClientNotFound       = "CLIENT_NOT_FOUND"
-	CausePolicyNotFound       = "POLICY_NOT_FOUND"
-	CauseSubscriberExists     = "SUBSCRIBER_ALREADY_EXISTS"
-	CauseClientExists         = "CLIENT_ALREADY_EXISTS"
 	CauseSystemFailure        = "SYSTEM_FAILURE"
 
-	// 以下は provisioner だけの cause。
-	CauseKeyStoreMismatch        = "KEY_STORE_MISMATCH"
-	CauseOperationInProgress     = "OPERATION_IN_PROGRESS"
-	CauseOperationUnresolved     = "OPERATION_UNRESOLVED"
-	CauseOperationIncomplete     = "OPERATION_INCOMPLETE"
-	CauseOperationNotFound       = "OPERATION_NOT_FOUND"
-	CauseOperationStateConflict  = "OPERATION_STATE_CONFLICT"
-	CauseIdempotencyKeyMismatch  = "IDEMPOTENCY_KEY_MISMATCH"
-	CauseDownstreamError         = "DOWNSTREAM_ERROR"
-	CauseDownstreamUnavailable   = "DOWNSTREAM_UNAVAILABLE"
-	CauseDownstreamNotConfigured = "DOWNSTREAM_NOT_CONFIGURED"
+	// 下流（aka-vecgen・aka-radius）の cause。
+	CauseUserNotFound              = "USER_NOT_FOUND"
+	CauseSubscriberExists          = "SUBSCRIBER_ALREADY_EXISTS"
+	CauseSubscriberActive          = "SUBSCRIBER_ACTIVE"
+	CauseSubscriberTerminated      = "SUBSCRIBER_TERMINATED"
+	CauseStateTransitionNotAllowed = "STATE_TRANSITION_NOT_ALLOWED"
+	CauseClientNotFound            = "CLIENT_NOT_FOUND"
+	CauseUnknownSource             = "UNKNOWN_SOURCE"
+	CauseResourceNotFound          = "RESOURCE_NOT_FOUND"
+
+	// provisioner だけの cause。
+	CauseRouteNotAllowed        = "ROUTE_NOT_ALLOWED"
+	CauseOperationInProgress    = "OPERATION_IN_PROGRESS"
+	CauseIdempotencyKeyMismatch = "IDEMPOTENCY_KEY_MISMATCH"
+	CauseDownstreamError        = "DOWNSTREAM_ERROR"
+	CauseDownstreamUnavailable  = "DOWNSTREAM_UNAVAILABLE"
 )
 
 // InvalidParam は不正だった項目。
 type InvalidParam struct {
-	// Param は項目の名前（例: ki、rules[0].allowedSsids[1]）。
+	// Param は項目の名前（例: ki、rules[0].ssids）。
 	Param  string `json:"param"`
 	Reason string `json:"reason,omitempty"`
 }
 
-// Problem は provisioner のエラー応答（ProblemDetails）。下流の作法の cause / invalidParams に、
-// provisioner の拡張項目（Downstream 以降）を加えたもの。中継した操作では、下流のエラーがそのまま入る。
+// Problem は provisioner のエラー応答（ProblemDetails）。中継した操作では下流のエラーがそのまま入り、
+// provisioner が Downstream（vecgen / radius）を足す。
 type Problem struct {
 	Title         string         `json:"title,omitempty"`
 	Status        int            `json:"status,omitzero"`
 	Detail        string         `json:"detail,omitempty"`
 	Cause         string         `json:"cause,omitempty"`
 	InvalidParams []InvalidParam `json:"invalidParams,omitempty"`
-
-	// Downstream はエラーの元の下流（prov / aka）。
+	// Downstream はエラーの元の下流（vecgen / radius。provisioner 自身の誤りでは空）。
 	Downstream string `json:"downstream,omitempty"`
-	// DownstreamStatus と DownstreamCause は下流の HTTP ステータスと cause。
-	DownstreamStatus int    `json:"downstreamStatus,omitzero"`
-	DownstreamCause  string `json:"downstreamCause,omitempty"`
-	// OperationID は操作の記録の ID（書き込みの途中の失敗、または同じ IMSI の未完了の操作）。
-	OperationID string `json:"operationId,omitempty"`
-	// RolledBack は、補償で元に戻したか（OperationID がある場合だけ）。
-	RolledBack *bool `json:"rolledBack,omitempty"`
-	// Conflicts は、SUBSCRIBER_ALREADY_EXISTS で同じ IMSI のものがあった場所（poc / aka / policy）。
-	Conflicts []string `json:"conflicts,omitempty"`
+	// DownstreamStatus は、下流が ProblemDetails でない誤りを返したとき（DOWNSTREAM_ERROR）の下流の HTTP ステータス。
+	DownstreamStatus int `json:"downstreamStatus,omitzero"`
 }
 
 // Error は provisioner がエラーを返したことを表す。
@@ -238,14 +236,33 @@ func CauseOf(err error) string {
 	return ""
 }
 
-// IsUnavailable は、err が provisioner に届かなかった（接続・TLS・タイムアウトなど）ことを表すかを返す。
-// provisioner が応答を返した場合と、呼び出し側の誤り（操作者の指定漏れ、パスの値の誤りなど）は false。
+// StatusOf は、err が provisioner のエラー応答なら HTTP ステータスを返す。そうでなければ 0。
+func StatusOf(err error) int {
+	if e, ok := errors.AsType[*Error](err); ok {
+		return e.Status
+	}
+	return 0
+}
+
+// IsUnavailable は、err が provisioner に届かなかった・応答がなかった（接続・TLS・タイムアウトなど）ことを表すかを返す。
+// provisioner が応答を返した場合と、呼び出し側の誤り（操作者やキーの指定漏れ、パスの値の誤りなど）は false。
 func IsUnavailable(err error) bool {
-	if err == nil || errors.Is(err, ErrNoOperator) || errors.Is(err, ErrInvalidOperator) || errors.Is(err, ErrInvalidPath) {
+	if err == nil || errors.Is(err, ErrNoOperator) || errors.Is(err, ErrInvalidOperator) || errors.Is(err, ErrInvalidPath) ||
+		errors.Is(err, ErrNoIdempotencyKey) {
 		return false
 	}
 	_, isAPIError := errors.AsType[*Error](err)
 	return !isAPIError
+}
+
+// ResultUnknown は、書き込みの結果（下流を書き換えたかどうか）が分からないかを返す（設計概要 §7.2。段階 3-1 の W7）。
+// provisioner に届かなかった・応答がなかった、または 5xx（下流につながらない 503、下流の不正な応答 502、下流の内部の誤り 500 など）。
+// 4xx は、provisioner か下流が断ったので、何も変わっていない。
+func ResultUnknown(err error) bool {
+	if IsUnavailable(err) {
+		return true
+	}
+	return StatusOf(err) >= 500
 }
 
 // ---- 呼び出し ----
@@ -259,9 +276,9 @@ type request struct {
 	// body は JSON にして送る値。nil なら送らない。
 	body        any
 	contentType string
-	// needOperator が true なら、コンテキストに操作者が入っていなければ送らない。
-	needOperator bool
-	// idempotencyKey は Idempotency-Key ヘッダーの値。空なら付けない。
+	// write は下流を書き換える口か。操作者と Idempotency-Key がなければ送らない。
+	write bool
+	// idempotencyKey は Idempotency-Key ヘッダーの値（write のとき）。
 	idempotencyKey string
 }
 
@@ -290,8 +307,10 @@ func (c *Client) send(ctx context.Context, req request) (*http.Response, error) 
 	switch {
 	case op != "" && !operatorPattern.MatchString(op):
 		return nil, ErrInvalidOperator
-	case op == "" && req.needOperator:
+	case op == "" && req.write:
 		return nil, ErrNoOperator
+	case req.write && !idempotencyKeyPattern.MatchString(req.idempotencyKey):
+		return nil, ErrNoIdempotencyKey
 	}
 	traceID := cmp.Or(trace.From(ctx), trace.New())
 
@@ -303,7 +322,8 @@ func (c *Client) send(ctx context.Context, req request) (*http.Response, error) 
 
 	var body io.Reader
 	if req.body != nil {
-		b, err := json.Marshal(req.body)
+		// 構造体の項目は決まった順に書かれる。map を送るときも並びを決める（再送を同じバイト列にする）。
+		b, err := json.Marshal(req.body, json.Deterministic(true))
 		if err != nil {
 			return nil, fmt.Errorf("%s %s %s: encode request: %w", name, req.method, u.Path, err)
 		}
@@ -321,7 +341,7 @@ func (c *Client) send(ctx context.Context, req request) (*http.Response, error) 
 		hreq.Header.Set(operatorHeader, op)
 	}
 	hreq.Header.Set(traceHeader, traceID)
-	if req.idempotencyKey != "" {
+	if req.write {
 		hreq.Header.Set(idempotencyKeyHeader, req.idempotencyKey)
 	}
 
@@ -334,7 +354,7 @@ func (c *Client) send(ctx context.Context, req request) (*http.Response, error) 
 	}
 	// provisioner は使ったトレースID を応答で返す（送った値と同じになるはず）。
 	traceID = cmp.Or(resp.Header.Get(traceHeader), traceID)
-	// リクエストとレスポンスのボディ、クエリ文字列は出さない（Ki / OPc や検索条件を含みうるため）。
+	// リクエストとレスポンスのボディ、クエリ文字列は出さない（Ki / OPc や IMSI の一覧を含みうるため）。
 	c.log.Debug("provisioner call", "method", req.method, "path", u.Path, "status", resp.StatusCode,
 		"duration_ms", time.Since(start).Milliseconds(), "operator", op, "trace_id", traceID)
 

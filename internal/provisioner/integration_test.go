@@ -1,324 +1,173 @@
 package provisioner_test
 
 import (
-	"context"
-	"errors"
+	"cmp"
 	"fmt"
-	"math/rand/v2"
 	"os"
 	"slices"
+	"strconv"
 	"testing"
+	"time"
 
-	. "github.com/oyaguma3/aka-ossbss/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner/provisionertest"
 	"github.com/oyaguma3/aka-ossbss/internal/trace"
 )
 
-// 実際の aka-provisioner を相手にした契約テスト。次の環境変数を指定したときだけ実行する。
-//
-//	OSSBSS_TEST_PROVISIONER_URL          provisioner のベース URL（例: https://127.0.0.1:19446/admin/v1）
-//	OSSBSS_TEST_PROVISIONER_CLIENT_CERT  本BFF のクライアント証明書の PEM（秘密鍵も含める）。
-//	                                            provisioner の PROVISIONER_ADMIN_CLIENTS に登録しておく
-//	OSSBSS_TEST_PROVISIONER_SERVER_CERT  provisioner のサーバー証明書の PEM（aka-provisioner server-cert の出力）
-//
-// 鍵を本PoCに置く加入者は IMSI 00101 で始まるテスト用の番号を使う。provisioner の PLMN マップで
-// 00102 を 01（aka-vecgen）にしてあれば、00102 で始まる加入者で aka-vecgen の側も確かめる。
-// RADIUSクライアントは文書用のアドレス（198.51.100.0/24）を使う。作ったものは終わったら削除する。
+// 本物の aka-provisioner と下流（aka-vecgen・aka-radius）を相手にする契約の試験（段階 3-1 の W12）。
+// aka-provisioner の scripts/contract.sh up で起動したものに、その contract.env の管理クライアントの証明書でつなぐ。
+// OSSBSS_TEST_PROVISIONER_URL（と _CLIENT_CERT、_SERVER_CERT、_AV_CLIENT_ID、_SOURCE_ID）を指定したときだけ動く。
 
-// integrationOperator は操作者（本BFF は利用者のメールアドレスを渡す）。
-const integrationOperator = "it-alice@example.com"
-
-// akaPLMN は、aka-vecgen の側を確かめるときの PLMN（provisioner の PLMN マップで 01 にしておく）。
-const akaPLMN = "00102"
-
-// newIntegrationClients は provisioner のクライアントを返す（既存の BFF のテストと同じ形にするため、同じものを 2 つ返す）。
-func newIntegrationClients(t *testing.T) (*Client, *Client) {
+func integrationClient(t *testing.T) (*provisioner.Client, int64, string) {
 	t.Helper()
-	url := os.Getenv("OSSBSS_TEST_PROVISIONER_URL")
-	if url == "" {
+	u := os.Getenv("OSSBSS_TEST_PROVISIONER_URL")
+	if u == "" {
 		t.Skip("OSSBSS_TEST_PROVISIONER_URL is not set")
 	}
-	c, err := New(Options{
-		BaseURL:        url,
+	c, err := provisioner.New(provisioner.Options{BaseURL: u,
 		ClientCertFile: os.Getenv("OSSBSS_TEST_PROVISIONER_CLIENT_CERT"),
 		ServerCertFile: os.Getenv("OSSBSS_TEST_PROVISIONER_SERVER_CERT"),
-		Log:            provisionertest.Discard,
-	})
+		Timeout:        30 * time.Second, Log: provisionertest.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return c, c
+	av, err := strconv.ParseInt(cmp.Or(os.Getenv("OSSBSS_TEST_PROVISIONER_AV_CLIENT_ID"), "1"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, av, cmp.Or(os.Getenv("OSSBSS_TEST_PROVISIONER_SOURCE_ID"), "vecgen")
 }
 
-// itCtx は、操作者と新しいトレースID を入れたコンテキストと、そのトレースID を返す。
-func itCtx(t *testing.T) (context.Context, string) {
-	id := trace.New()
-	return trace.With(WithOperator(t.Context(), integrationOperator), id), id
+// wantCause は err が provisioner の誤りの応答で、ステータスと cause が一致することを確かめる。
+func wantCause(t *testing.T, what string, err error, status int, cause string) {
+	t.Helper()
+	if provisioner.StatusOf(err) != status || provisioner.CauseOf(err) != cause {
+		t.Errorf("%s: err = %v, want %d %s", what, err, status, cause)
+	}
 }
 
-func testIMSI(plmn string) string { return fmt.Sprintf("%s%010d", plmn, rand.Int64N(1e10)) }
+func TestIntegrationLifecycle(t *testing.T) {
+	c, avClient, source := integrationClient(t)
+	ctx := trace.With(provisioner.WithOperator(t.Context(), "ossbss-ci@example.com"), "ossbss-contract")
+	imsi := fmt.Sprintf("00101%010d", time.Now().UnixNano()%1e10)
+	key := func(name string) string { return "contract-" + imsi + "-" + name }
 
-func newKey() string { return fmt.Sprintf("it-%016x", rand.Uint64()) }
+	st, err := c.Status(ctx)
+	if err != nil || !st.IsProvisioner() {
+		t.Fatalf("status = %+v, %v", st, err)
+	}
+	clients, err := c.VecgenClients(ctx)
+	if err != nil || !slices.ContainsFunc(clients, func(cl provisioner.VecgenClient) bool { return cl.ID == avClient }) {
+		t.Fatalf("vecgen clients = %+v, %v", clients, err)
+	}
+	sources, err := c.RadiusSources(ctx)
+	if err != nil || !slices.ContainsFunc(sources, func(s provisioner.Source) bool { return s.ID == source }) {
+		t.Fatalf("radius sources = %+v, %v", sources, err)
+	}
 
-func cause(err error) string { return CauseOf(err) }
+	// 登録（vecgen 側・radius 側）。
+	vc := provisioner.VecgenSubscriberCreate{IMSI: imsi, Ki: "465b5ce8b199b49faa5f0a2ee238a6bc", OPc: "cd63cb71954a9f4e48a5994e37a02baf",
+		State: "active", AMF: "8000", SQN: "000000000000", SQNType: "inc32", AllowedClientIDs: []int64{avClient}}
+	v, err := c.CreateVecgenSubscriber(ctx, vc, key("vc"))
+	if err != nil || v.IMSI != imsi || v.State != "active" || !slices.Equal(v.AllowedClientIDs, []int64{avClient}) {
+		t.Fatalf("create vecgen = %+v, %v", v, err)
+	}
+	// 同じキーの再送は最初の応答を返す（同じバイト列を送る）。同じキーで内容が違えば断られる。
+	if v2, err := c.CreateVecgenSubscriber(ctx, vc, key("vc")); err != nil || v2.CreatedAt != v.CreatedAt {
+		t.Errorf("replay = %+v, %v", v2, err)
+	}
+	vc2 := vc
+	vc2.State = "inactive"
+	_, err = c.CreateVecgenSubscriber(ctx, vc2, key("vc"))
+	wantCause(t, "key mismatch", err, 422, provisioner.CauseIdempotencyKeyMismatch)
+	_, err = c.CreateVecgenSubscriber(ctx, vc, key("vc-again"))
+	wantCause(t, "create twice", err, 409, provisioner.CauseSubscriberExists)
 
-// cleanupSubscriber は、テストの失敗で残らないよう、終わったら加入者を消す（既にないなら何もしない）。
-func cleanupSubscriber(t *testing.T, pv *Client, imsi string) {
-	t.Cleanup(func() {
-		ctx := WithOperator(context.WithoutCancel(t.Context()), integrationOperator)
-		if err := pv.DeleteSubscriber(ctx, imsi, ""); err != nil && cause(err) != CauseUserNotFound {
-			t.Logf("cleanup %s: %v", imsi, err)
+	rules := []provisioner.Rule{{TenantID: 42, NASID: "*", SSIDs: []string{"*"}, VLANID: 100, SessionTimeout: 3600}}
+	r, err := c.CreateRadiusSubscriber(ctx, provisioner.RadiusSubscriberCreate{IMSI: imsi, State: "inactive", SourceID: source, Rules: rules}, key("rc"))
+	if err != nil || r.State != "inactive" || r.SourceID != source || len(r.Rules) != 1 || r.Rules[0].VLANID != 100 {
+		t.Fatalf("create radius = %+v, %v", r, err)
+	}
+	_, err = c.CreateRadiusSubscriber(ctx, provisioner.RadiusSubscriberCreate{IMSI: imsi, State: "active", SourceID: "no-such-source",
+		Rules: rules}, key("rc-bad"))
+	if provisioner.StatusOf(err) != 400 && provisioner.StatusOf(err) != 409 {
+		t.Errorf("create with unknown source = %v", err)
+	}
+
+	// 読み出し（1 件、一括取得）。
+	if got, err := c.VecgenSubscriber(ctx, imsi); err != nil || got.SQNType != "inc32" || got.AMF != "8000" {
+		t.Errorf("get vecgen = %+v, %v", got, err)
+	}
+	missing := "001019999999999"
+	vb, err := c.VecgenBatchGet(ctx, []string{imsi, missing})
+	if err != nil || len(vb.Items) != 1 || vb.Items[0].IMSI != imsi || !slices.Equal(vb.NotFound, []string{missing}) {
+		t.Errorf("vecgen batch = %+v, %v", vb, err)
+	}
+	rb, err := c.RadiusBatchGet(ctx, []string{missing, imsi})
+	if err != nil || len(rb.Items) != 1 || rb.Items[0].Rules[0].TenantID != 42 || !slices.Equal(rb.NotFound, []string{missing}) {
+		t.Errorf("radius batch = %+v, %v", rb, err)
+	}
+
+	// 変更（vecgen 側の AMF と許可クライアント、radius 側のルール）。
+	v, err = c.UpdateVecgenSubscriber(ctx, imsi, provisioner.VecgenSubscriberUpdate{AMF: "9001", AllowedClientIDs: new([]int64{})}, key("vu"))
+	if err != nil || v.AMF != "9001" || len(v.AllowedClientIDs) != 0 {
+		t.Errorf("update vecgen = %+v, %v", v, err)
+	}
+	rules = append(rules, provisioner.Rule{TenantID: 42, NASID: "ap-01", SSIDs: []string{"corp", "guest"}})
+	r, err = c.UpdateRadiusSubscriber(ctx, imsi, provisioner.RadiusSubscriberUpdate{Rules: rules}, key("ru"))
+	if err != nil || len(r.Rules) != 2 || r.Rules[1].NASID != "ap-01" || r.Rules[1].VLANID != 0 {
+		t.Errorf("update radius = %+v, %v", r, err)
+	}
+
+	// 状態: Active は削除できない。止める・解約・戻す。
+	err = c.DeleteSubscriber(ctx, provisioner.Vecgen, imsi, key("vd-active"))
+	wantCause(t, "delete active", err, 409, provisioner.CauseSubscriberActive)
+	if s, err := c.SetState(ctx, provisioner.Radius, imsi, provisioner.StateChange{State: "active"}, key("rs-active")); err != nil || s != "active" {
+		t.Errorf("radius active = %q, %v", s, err)
+	}
+	for _, d := range []provisioner.Downstream{provisioner.Radius, provisioner.Vecgen} {
+		if s, err := c.SetState(ctx, d, imsi, provisioner.StateChange{State: "terminated", Reason: "契約の試験"}, key(string(d)+"-term")); err != nil || s != "terminated" {
+			t.Errorf("%s terminate = %q, %v", d, s, err)
 		}
-	})
-}
-
-func TestIntegrationStatus(t *testing.T) {
-	_, prov := newIntegrationClients(t)
-	st, err := prov.Status(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !st.IsProvisioner() || st.Version == "" || st.StartedAt.IsZero() || !st.Downstreams.Prov.Configured || !st.Downstreams.Prov.Reachable ||
-		st.Downstreams.Prov.NodeName == "" || !st.Valkey.Reachable || st.Operations == nil {
-		t.Errorf("status = %+v", st)
-	}
-	if st.Downstreams.Aka.Configured && (!st.Downstreams.Aka.Reachable || !st.AVClient.Exists || !st.AVClient.Enabled) {
-		t.Errorf("aka = %+v, av client = %+v", st.Downstreams.Aka, st.AVClient)
-	}
-}
-
-func TestIntegrationSubscriberPoC(t *testing.T) {
-	pv, prov := newIntegrationClients(t)
-	imsi := testIMSI("00101")
-	cleanupSubscriber(t, pv, imsi)
-	ctx, traceID := itCtx(t)
-	in := SubscriberCreate{IMSI: imsi, Ki: "465B5CE8B199B49FAA5F0A2EE238A6BC", OPc: "cd63cb71954a9f4e48a5994e37a02baf", AMF: "b9b9",
-		Policy: PolicyPut{Default: "deny", Rules: []PolicyRule{{NASID: "*", AllowedSSIDs: []string{"CORP"}}}}}
-
-	// 作成。置き場所は PLMN マップから決まる（00101 は poc）。
-	key := newKey()
-	sub, err := pv.CreateSubscriber(ctx, in, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sub.IMSI != imsi || sub.KeyStore != KeyStorePoC || sub.Key == nil || sub.Key.AMF != "b9b9" || sub.Key.SQN != "000000000000" ||
-		sub.Policy == nil || sub.Policy.Default != "deny" || len(sub.Policy.Rules) != 1 || sub.Status != PolicyActive || len(sub.Issues) != 0 {
-		t.Errorf("create = %+v", sub)
-	}
-	// 同じ Idempotency-Key で送り直すと、最初の結果が返る（二重に作らない）。
-	if again, err := pv.CreateSubscriber(ctx, in, key); err != nil || again.IMSI != imsi {
-		t.Errorf("replay = %+v, %v", again, err)
-	}
-	// キーなしで送ると、既にあるので 409（あった場所を conflicts に入れる）。
-	_, err = pv.CreateSubscriber(ctx, in, "")
-	if apiErr, ok := errors.AsType[*Error](err); !ok || apiErr.Status != 409 || cause(err) != CauseSubscriberExists ||
-		!slices.Contains(apiErr.Problem.Conflicts, "poc") || !slices.Contains(apiErr.Problem.Conflicts, "policy") {
-		t.Errorf("duplicate: %v (%+v)", err, apiErr)
-	}
-
-	// 取得と一覧。
-	if got, err := pv.GetSubscriber(ctx, imsi); err != nil || got.Key == nil || got.Policy == nil || len(got.Issues) != 0 {
-		t.Errorf("get = %+v, %v", got, err)
-	}
-	list, err := pv.ListSubscribers(ctx, ListParams{Prefix: imsi})
-	if err != nil || len(list.Items) != 1 || list.Items[0].IMSI != imsi {
-		t.Errorf("list = %+v, %v", list, err)
-	}
-
-	// 変更（鍵の属性とポリシー）。鍵の取得は中継（provapi のクライアントのまま）。
-	upd, err := pv.UpdateSubscriber(ctx, imsi, SubscriberUpdate{AMF: "8000", SQN: "000000000040",
-		Policy: &PolicyPut{Default: "allow", Rules: []PolicyRule{}}}, newKey())
-	if err != nil || upd.Key.AMF != "8000" || upd.Key.SQN != "000000000040" || upd.Policy.Default != "allow" || len(upd.Policy.Rules) != 0 {
-		t.Errorf("update = %+v, %v", upd, err)
-	}
-
-	// 停止・再開は認可ポリシーの中継（provapi のクライアントのまま）。加入者の status に出る。
-	// 停止・再開には Idempotency-Key を付ける（設計概要 §10）。同じキーで送り直すと、最初の応答が返る。
-	suspendKey := newKey()
-	if p, err := prov.SetPolicyStatus(ctx, imsi, PolicySuspended, suspendKey); err != nil || p.Status != PolicySuspended {
-		t.Errorf("suspend = %+v, %v", p, err)
-	}
-	if got, err := pv.GetSubscriber(ctx, imsi); err != nil || got.Status != PolicySuspended {
-		t.Errorf("get after suspend = %+v, %v", got, err)
-	}
-	if list, err := pv.ListSubscribers(ctx, ListParams{Prefix: imsi}); err != nil || len(list.Items) != 1 || list.Items[0].Status != PolicySuspended {
-		t.Errorf("list after suspend = %+v, %v", list, err)
-	}
-	// ポリシーを置き換えても停止のまま。
-	if upd, err := pv.UpdateSubscriber(ctx, imsi, SubscriberUpdate{Policy: &PolicyPut{Default: "deny", Rules: []PolicyRule{}}}, newKey()); err != nil ||
-		upd.Status != PolicySuspended {
-		t.Errorf("update while suspended = %+v, %v", upd, err)
-	}
-	if p, err := prov.SetPolicyStatus(ctx, imsi, PolicySuspended, suspendKey); err != nil || p.Status != PolicySuspended {
-		t.Errorf("suspend (replay) = %+v, %v", p, err)
-	}
-	// 同じキーで違う内容を送ると 422（IDEMPOTENCY_KEY_MISMATCH）。
-	if _, err := prov.SetPolicyStatus(ctx, imsi, PolicyActive, suspendKey); CauseOf(err) != CauseIdempotencyKeyMismatch {
-		t.Errorf("key mismatch: %v", err)
-	}
-	if p, err := prov.SetPolicyStatus(ctx, imsi, PolicyActive, newKey()); err != nil || p.Status != PolicyActive {
-		t.Errorf("resume = %+v, %v", p, err)
-	}
-	if keys, err := prov.GetSubscriberKeys(ctx, imsi); err != nil || keys.Ki != "465b5ce8b199b49faa5f0a2ee238a6bc" {
-		t.Errorf("keys = %+v, %v", keys, err)
-	}
-	// 本PoCの側だけの項目は、置き場所が poc なら断られる。
-	plain := true
-	if _, err := pv.UpdateSubscriber(ctx, imsi, SubscriberUpdate{AllowPlain: &plain}, ""); err == nil {
-		t.Error("allowPlain for poc: want error")
-	}
-
-	// 削除（認可ポリシーも消える）。
-	if err := pv.DeleteSubscriber(ctx, imsi, newKey()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pv.GetSubscriber(ctx, imsi); cause(err) != CauseUserNotFound {
-		t.Errorf("get after delete: %v", err)
-	}
-	if _, err := prov.GetPolicy(ctx, imsi); cause(err) != CausePolicyNotFound {
-		t.Errorf("policy after delete: %v", err)
-	}
-
-	// provisioner の監査ログに、操作者・管理クライアント・トレースID・操作の記録の ID が残る。
-	logs, err := pv.ListAuditLogs(ctx, AuditLogParams{Limit: 50})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, e := range logs.Items {
-		if e.TraceID == traceID && e.Action == "subscriber.create" {
-			found = true
-			if e.Operator != integrationOperator || e.MgmtClient == "" || e.OperationID == "" || e.Result != "completed" || e.Target != imsi {
-				t.Errorf("audit = %+v", e)
-			}
+		_, err := c.SetState(ctx, d, imsi, provisioner.StateChange{State: "active"}, key(string(d)+"-term-active"))
+		wantCause(t, string(d)+" from terminated", err, 409, provisioner.CauseStateTransitionNotAllowed)
+		if s, err := c.Reinstate(ctx, d, imsi, "契約の試験の戻し", key(string(d)+"-reinstate")); err != nil || s != "inactive" {
+			t.Errorf("%s reinstate = %q, %v", d, s, err)
 		}
 	}
-	if !found {
-		t.Errorf("audit log for trace %s not found", traceID)
-	}
-	// provisioning-api の監査ログ（中継）にも同じトレースID で残る（管理クライアントは provisioner）。
-	provLogs, err := pv.ListProvAuditLogs(ctx, AuditLogParams{Limit: 50})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := slices.IndexFunc(provLogs.Items, func(e ProvAuditLogEntry) bool { return e.TraceID == traceID }); i < 0 ||
-		provLogs.Items[i].Operator != integrationOperator {
-		t.Errorf("prov audit log for trace %s not found", traceID)
-	}
-}
 
-func TestIntegrationSubscriberAka(t *testing.T) {
-	pv, _ := newIntegrationClients(t)
-	st, err := pv.Status(t.Context())
-	if err != nil {
-		t.Fatal(err)
+	// セッション（テナントか IMSI で絞る）。
+	if _, err := c.Sessions(ctx, provisioner.SessionParams{TenantID: 42, Limit: 10}); err != nil {
+		t.Errorf("sessions by tenant = %v", err)
 	}
-	if !st.Downstreams.Aka.Configured || !slices.Contains(st.PLMNMap, PLMNEntry{PLMN: akaPLMN, KeyStore: KeyStoreAKA}) {
-		t.Skipf("provisioner does not map %s to aka-vecgen", akaPLMN)
+	if _, err := c.Sessions(ctx, provisioner.SessionParams{IMSIs: []string{imsi, missing}}); err != nil {
+		t.Errorf("sessions by imsi = %v", err)
 	}
-	imsi := testIMSI(akaPLMN)
-	cleanupSubscriber(t, pv, imsi)
-	ctx, traceID := itCtx(t)
 
-	sub, err := pv.CreateSubscriber(ctx, SubscriberCreate{IMSI: imsi, Ki: "465b5ce8b199b49faa5f0a2ee238a6bc", OPc: "cd63cb71954a9f4e48a5994e37a02baf",
-		Policy: PolicyPut{Default: "allow", Rules: []PolicyRule{}}}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// aka-vecgen の加入者は、vector-gateway の AVクライアントを許可する。SQN の増加タイプ等は aka-vecgen の既定。
-	if sub.KeyStore != KeyStoreAKA || sub.Key == nil || sub.Key.SQNType != "inc32" || sub.Key.AllowPlain == nil || *sub.Key.AllowPlain ||
-		!slices.Equal(sub.Key.AllowedClientIDs, []int64{st.AVClient.ID}) || len(sub.Issues) != 0 {
-		t.Errorf("create = %+v (key %+v)", sub, sub.Key)
-	}
-	plain := true
-	upd, err := pv.UpdateSubscriber(ctx, imsi, SubscriberUpdate{SQNType: "inc33", AllowPlain: &plain}, "")
-	if err != nil || upd.Key.SQNType != "inc33" || !*upd.Key.AllowPlain {
-		t.Errorf("update = %+v, %v", upd, err)
-	}
-	if err := pv.DeleteSubscriber(ctx, imsi, ""); err != nil {
-		t.Fatal(err)
-	}
-	// aka-vecgen の監査ログ（中継）に同じトレースID で残る。
-	akaLogs, err := pv.ListAkaAuditLogs(ctx, AuditLogParams{Limit: 50})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(akaLogs.Items, func(e AkaAuditLogEntry) bool {
-		return e.TraceID == traceID && e.Action == "subscriber.update" && e.Detail["sqnType"] != nil
-	}) {
-		t.Errorf("aka audit log for trace %s not found", traceID)
-	}
-}
-
-func TestIntegrationOperations(t *testing.T) {
-	pv, _ := newIntegrationClients(t)
-	ctx, _ := itCtx(t)
-	if _, err := pv.ListOperations(ctx, OpFailed, 10); err != nil {
-		t.Errorf("list: %v", err)
-	}
-	const missing = "0199c8a2-0000-7000-8000-000000000000"
-	if _, err := pv.GetOperation(ctx, missing); cause(err) != CauseOperationNotFound {
-		t.Errorf("get missing: %v", err)
-	}
-	if _, err := pv.DismissOperation(ctx, missing, ""); cause(err) != CauseOperationNotFound {
-		t.Errorf("dismiss missing: %v", err)
-	}
-}
-
-// TestIntegrationRelay は、接続先を provisioner にした Client で、中継の部分（RADIUSクライアント・
-// 認可ポリシー・セッション）がそのまま使えることを確かめる（BFF の画面はこのクライアントで中継を呼ぶ）。
-func TestIntegrationRelay(t *testing.T) {
-	_, prov := newIntegrationClients(t)
-	ctx, _ := itCtx(t)
-
-	var ip string
-	for range 50 {
-		cand := fmt.Sprintf("198.51.100.%d", 1+rand.IntN(254))
-		if _, used, err := prov.FindRADIUSClientByIP(ctx, cand); err != nil {
-			t.Fatal(err)
-		} else if !used {
-			ip = cand
-			break
+	// 監査ログ（provisioner・aka-vecgen・aka-radius）に、この IMSI の操作が操作者つきで残る。
+	for _, src := range []provisioner.AuditSource{provisioner.AuditProvisioner, provisioner.AuditVecgen, provisioner.AuditRadius} {
+		l, err := c.AuditLogs(ctx, src, provisioner.AuditLogParams{Limit: 100})
+		if err != nil {
+			t.Errorf("%s audit: %v", src, err)
+			continue
+		}
+		if !slices.ContainsFunc(l.Items, func(e provisioner.AuditLogEntry) bool {
+			return e.Target == imsi && e.Operator == "ossbss-ci@example.com" && e.TraceID == "ossbss-contract"
+		}) {
+			t.Errorf("%s audit has no entry for %s: %+v", src, imsi, l.Items)
 		}
 	}
-	if ip == "" {
-		t.Fatal("no free test IP address")
-	}
-	rc, err := prov.CreateRADIUSClient(ctx, RADIUSClientCreate{IP: ip, Secret: "it-secret-1", Name: "it-ap", Vendor: "test"}, newKey())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		prov.DeleteRADIUSClient(WithOperator(context.WithoutCancel(t.Context()), integrationOperator), rc.ID, "")
-	})
-	if got, err := prov.GetRADIUSClient(ctx, rc.ID); err != nil || got.IP != ip {
-		t.Errorf("get client = %+v, %v", got, err)
-	}
-	if secret, err := prov.GetRADIUSClientSecret(ctx, rc.ID); err != nil || secret != "it-secret-1" {
-		t.Errorf("secret = %q, %v", secret, err)
-	}
-	name := "it-ap-2"
-	if got, err := prov.UpdateRADIUSClient(ctx, rc.ID, RADIUSClientUpdate{Name: &name}, newKey()); err != nil || got.Name != name {
-		t.Errorf("update client = %+v, %v", got, err)
-	}
-	if err := prov.DeleteRADIUSClient(ctx, rc.ID, newKey()); err != nil {
-		t.Errorf("delete client: %v", err)
-	}
 
-	imsi := testIMSI("00101")
-	t.Cleanup(func() {
-		prov.DeletePolicy(WithOperator(context.WithoutCancel(t.Context()), integrationOperator), imsi, "")
-	})
-	if _, created, err := prov.PutPolicy(ctx, imsi, PolicyPut{Default: "deny", Rules: []PolicyRule{}}, newKey()); err != nil || !created {
-		t.Errorf("put policy: created %v, %v", created, err)
+	// 物理削除（両側）。消した後は 404。
+	for _, d := range []provisioner.Downstream{provisioner.Vecgen, provisioner.Radius} {
+		if err := c.DeleteSubscriber(ctx, d, imsi, key(string(d)+"-delete")); err != nil {
+			t.Errorf("%s delete = %v", d, err)
+		}
+		err := c.DeleteSubscriber(ctx, d, imsi, key(string(d)+"-delete-again"))
+		wantCause(t, string(d)+" delete again", err, 404, provisioner.CauseUserNotFound)
 	}
-	if p, err := prov.GetPolicy(ctx, imsi); err != nil || p.Default != "deny" {
-		t.Errorf("get policy = %+v, %v", p, err)
-	}
-	if err := prov.DeletePolicy(ctx, imsi, newKey()); err != nil {
-		t.Errorf("delete policy: %v", err)
-	}
-	if _, err := prov.ListSessions(ctx, SessionParams{IMSI: imsi}); err != nil {
-		t.Errorf("sessions: %v", err)
-	}
+	_, err = c.VecgenSubscriber(ctx, imsi)
+	wantCause(t, "get deleted vecgen", err, 404, provisioner.CauseUserNotFound)
+	_, err = c.RadiusSubscriber(ctx, imsi)
+	wantCause(t, "get deleted radius", err, 404, provisioner.CauseUserNotFound)
 }

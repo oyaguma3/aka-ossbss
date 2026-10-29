@@ -28,7 +28,7 @@ type Server struct {
 }
 
 // NewServer は、ハンドラー h を mTLS で提供するサーバーを立て、それにつながるクライアントを返す。
-// クライアントのベース URL は <サーバー>/admin/v1。opts の BaseURL・証明書のファイル・Log は上書きする。
+// クライアントのベース URL は <サーバー>/admin/v2。opts の BaseURL・証明書のファイル・Log は上書きする。
 func NewServer(t *testing.T, h http.HandlerFunc, opts provisioner.Options) (*provisioner.Client, *Server) {
 	t.Helper()
 	dir := t.TempDir()
@@ -68,7 +68,7 @@ func NewServer(t *testing.T, h http.HandlerFunc, opts provisioner.Options) (*pro
 		}
 		return path
 	}
-	opts.BaseURL = srv.URL + "/admin/v1"
+	opts.BaseURL = srv.URL + "/admin/v2"
 	opts.ClientCertFile = write("client.pem", append(clientCertPEM, clientKeyPEM...))
 	opts.ClientKeyFile = ""
 	opts.ServerCertFile = write("server.pem", serverCertPEM)
