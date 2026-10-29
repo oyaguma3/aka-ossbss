@@ -69,7 +69,7 @@ type Options struct {
 	Now func() time.Time
 }
 
-// Claims は検証した JWT の内容のうち、本BFF が使うもの。
+// Claims は検証した JWT の内容のうち、aka-ossbss が使うもの。
 type Claims struct {
 	// Email はログインした利用者のメールアドレス（Access が確かめたもの。小文字にはしていない）。
 	Email   string
@@ -200,7 +200,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Claims, error) {
 	if iat := unixTime(c.Iat); !iat.IsZero() && iat.After(now.Add(clockSkew)) {
 		return Claims{}, fmt.Errorf("%w: issued in the future", ErrInvalid)
 	}
-	// サービストークンの JWT にはメールアドレスがない（本BFF の利用者ではない）。
+	// サービストークンの JWT にはメールアドレスがない（aka-ossbss の利用者ではない）。
 	if strings.TrimSpace(c.Email) == "" {
 		return Claims{}, fmt.Errorf("%w: no email", ErrInvalid)
 	}

@@ -18,15 +18,15 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
-// Config は本BFF の設定。
+// Config は aka-ossbss の設定。
 type Config struct {
-	// Addr は HTTP の待ち受けアドレス（cloudflared からだけ受ける。設計概要 §5.4）。
+	// Addr は HTTP の待ち受けアドレス（cloudflared からだけ受ける）。
 	Addr     string
 	LogLevel slog.Level
 
 	// DB は PostgreSQL への接続。
 	DB DB
-	// Provisioner は aka-provisioner への接続（設計概要 §10）。
+	// Provisioner は aka-provisioner への接続。
 	Provisioner Provisioner
 
 	// AccessTeamDomain は Cloudflare Access のチームのドメイン（例 example.cloudflareaccess.com）。
@@ -35,7 +35,9 @@ type Config struct {
 	AccessAUDs       []string
 	// InitialAdminEmail は最初のシステム管理者のメールアドレス（正規化したもの）。
 	InitialAdminEmail string
-	// DevUserEmail は開発用の設定（設計概要 §15 の 10）。JWT の検証の代わりに、このメールアドレスの利用者として動かす。
+	// AuditDir は監査ログの日ごとのファイル（JSONL）の書き出し先（設計概要 §14・§18）。
+	AuditDir string
+	// DevUserEmail は開発用の設定（もとの設計概要 §15 の 10）。JWT の検証の代わりに、このメールアドレスの利用者として動かす。
 	// Addr がループバックのときだけ使え、Access の設定とは同時に使えない。
 	DevUserEmail string
 }
@@ -47,7 +49,7 @@ func (c Config) DevMode() bool { return c.DevUserEmail != "" }
 type Provisioner struct {
 	// URL は provisioner のベース URL。既定は同一ホストの共有ネットワーク（aka-provisioner）の名前。
 	URL string
-	// ClientCertFile は本BFF のクライアント証明書（gen-client-cert の出力。秘密鍵も含めてよい）。
+	// ClientCertFile は aka-ossbss のクライアント証明書（gen-client-cert の出力。秘密鍵も含めてよい）。
 	// ClientKeyFile は秘密鍵（空なら ClientCertFile から読む）。
 	ClientCertFile string
 	ClientKeyFile  string
@@ -73,12 +75,13 @@ func Load() (Config, error) {
 	c := Config{
 		Addr: cmp.Or(os.Getenv("OSSBSS_ADDR"), ":8446"),
 		Provisioner: Provisioner{
-			URL:            cmp.Or(os.Getenv("OSSBSS_PROVISIONER_URL"), "https://aka-provisioner:9446/admin/v1"),
+			URL:            cmp.Or(os.Getenv("OSSBSS_PROVISIONER_URL"), "https://aka-provisioner:9446/admin/v2"),
 			ClientCertFile: cmp.Or(os.Getenv("OSSBSS_PROVISIONER_CLIENT_CERT"), "/certs/provisioner-client.pem"),
 			ClientKeyFile:  os.Getenv("OSSBSS_PROVISIONER_CLIENT_KEY"),
 			ServerCertFile: cmp.Or(os.Getenv("OSSBSS_PROVISIONER_SERVER_CERT"), "/certs/provisioner-server.pem"),
-			Timeout:        60 * time.Second,
+			Timeout:        15 * time.Second,
 		},
+		AuditDir: cmp.Or(os.Getenv("OSSBSS_AUDIT_DIR"), "/data/audit"),
 		DB: DB{
 			Addr:     cmp.Or(os.Getenv("OSSBSS_DB_ADDR"), "postgres:5432"),
 			Name:     cmp.Or(os.Getenv("OSSBSS_DB_NAME"), "ossbss"),
@@ -107,12 +110,12 @@ func Load() (Config, error) {
 		c.DB.MaxConns = int32(n)
 	}
 	if u, err := url.Parse(c.Provisioner.URL); err != nil || u.Scheme != "https" || u.Host == "" {
-		errs = append(errs, errors.New("OSSBSS_PROVISIONER_URL: must be an https URL such as https://aka-provisioner:9446/admin/v1"))
+		errs = append(errs, errors.New("OSSBSS_PROVISIONER_URL: must be an https URL such as https://aka-provisioner:9446/admin/v2"))
 	}
 	if v := os.Getenv("OSSBSS_PROVISIONER_TIMEOUT"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d < time.Second || d > 5*time.Minute {
-			errs = append(errs, errors.New("OSSBSS_PROVISIONER_TIMEOUT: must be a duration between 1s and 5m (e.g. 60s)"))
+			errs = append(errs, errors.New("OSSBSS_PROVISIONER_TIMEOUT: must be a duration between 1s and 5m (e.g. 15s)"))
 		}
 		c.Provisioner.Timeout = d
 	}
@@ -160,7 +163,7 @@ func (c *Config) loadAuth() []error {
 		if !authz.ValidEmail(c.DevUserEmail) {
 			errs = append(errs, errors.New("OSSBSS_DEV_USER_EMAIL: must be an email address of up to 64 characters using only letters, digits and ._-"))
 		}
-		// 開発用の設定は、他のホストから届かない待ち受けでだけ使う（設計概要 §15 の 10、§17.2）。
+		// 開発用の設定は、他のホストから届かない待ち受けでだけ使う（もとの設計概要 §15 の 10、§17.2）。
 		if host, _, err := net.SplitHostPort(c.Addr); err == nil && !isLoopback(host) {
 			errs = append(errs, fmt.Errorf("OSSBSS_DEV_USER_EMAIL can be used only when OSSBSS_ADDR is a loopback address (got %q)", c.Addr))
 		}

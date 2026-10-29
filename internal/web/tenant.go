@@ -12,7 +12,8 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 )
 
-// テナントの画面（画面仕様 §8。システム管理者だけ）。
+// テナントの画面（もとの画面仕様 §8。システム管理者だけ）。テナントの作成・変更・削除は、課金レコードの状態の事実を
+// 同じトランザクションで書く（db の CreateTenant など）。削除したテナントの ID は使い回さない。
 
 // maxTenantNameLen はテナントの名前の文字数の上限（DB の CHECK 制約と同じ）。
 const maxTenantNameLen = 100
@@ -76,7 +77,7 @@ func (h *Handler) tenantCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := dbContext(r)
-	t, err := h.db.CreateTenant(ctx, name)
+	t, err := h.db.CreateTenant(ctx, name, meta(r))
 	cancel()
 	switch {
 	case errors.Is(err, db.ErrConflict):
@@ -100,7 +101,7 @@ type tenantData struct {
 
 // InUse は、属するもの（所属の記録・アカウント）が残っているか。
 func (d tenantData) InUse() bool {
-	return d.Tenant.Subscribers > 0 || d.Tenant.Clients > 0 || d.Tenant.Accounts > 0
+	return d.Tenant.Subscribers > 0 || d.Tenant.Accounts > 0
 }
 
 // pathTenantID は URL のテナントの ID を返す。形式が違えば 404 を返して false。
@@ -158,10 +159,7 @@ func (h *Handler) tenantRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := dbContext(r)
-	before, err := h.db.TenantSummary(ctx, id)
-	if err == nil {
-		err = h.db.RenameTenant(ctx, id, name)
-	}
+	before, err := h.db.RenameTenant(ctx, id, name, meta(r))
 	cancel()
 	switch {
 	case errors.Is(err, db.ErrNotFound):
@@ -174,8 +172,8 @@ func (h *Handler) tenantRename(w http.ResponseWriter, r *http.Request) {
 		h.dbUnavailable(w, r, err)
 		return
 	}
-	if before.Name != name {
-		h.record(r, auditTenantUpdate, name, id, map[string]any{"name": map[string]any{"from": before.Name, "to": name}})
+	if before != name {
+		h.record(r, auditTenantUpdate, name, id, map[string]any{"name": map[string]any{"from": before, "to": name}})
 	}
 	h.renderTenant(w, r, id, http.StatusOK, func(d *tenantData) { d.Message = "名前を変更しました。" })
 }
@@ -188,7 +186,7 @@ func (h *Handler) tenantDelete(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := dbContext(r)
 	t, err := h.db.TenantSummary(ctx, id)
 	if err == nil {
-		err = h.db.DeleteTenant(ctx, id)
+		err = h.db.DeleteTenant(ctx, id, meta(r))
 	}
 	cancel()
 	switch {
@@ -197,8 +195,8 @@ func (h *Handler) tenantDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, db.ErrInUse):
 		h.renderTenant(w, r, id, http.StatusConflict, func(d *tenantData) {
-			d.Error = fmt.Sprintf("このテナントには加入者 %d 件、RADIUSクライアント %d 件、アカウント %d 件が属しています。"+
-				"先に所属を付け替えるか外し、アカウントを移すか削除してから削除してください。", d.Tenant.Subscribers, d.Tenant.Clients, d.Tenant.Accounts)
+			d.Error = fmt.Sprintf("このテナントには加入者 %d 件、アカウント %d 件が属しています。"+
+				"先に加入者を物理削除するか付け替え、アカウントを移すか削除してから削除してください。", d.Tenant.Subscribers, d.Tenant.Accounts)
 		})
 		return
 	case err != nil:

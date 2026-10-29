@@ -1,4 +1,5 @@
-// aka-ossbss は外部 OSS/BSS のサンプル実装としての統合BFF（aka-provisioner の管理クライアント）。
+// aka-ossbss は MVP セットの、運用者とテナントの利用者が使う画面と管理面の業務の処理（台帳など）を受け持つノード
+// （aka-provisioner の管理クライアント）。
 package main
 
 import (
@@ -16,6 +17,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/oyaguma3/aka-ossbss/internal/access"
+	"github.com/oyaguma3/aka-ossbss/internal/audit"
 	"github.com/oyaguma3/aka-ossbss/internal/auth"
 	"github.com/oyaguma3/aka-ossbss/internal/certs"
 	"github.com/oyaguma3/aka-ossbss/internal/config"
@@ -32,7 +34,7 @@ const usage = `usage: aka-ossbss <command>
 commands:
   serve              サーバーを起動する（コマンド省略時の既定）。起動時に DB のスキーマを移行する
   migrate            DB のスキーマを移行して終わる
-  healthcheck        動いている本BFF の /healthz を確かめる（compose の healthcheck 用）
+  healthcheck        動いている aka-ossbss の /healthz を確かめる（compose の healthcheck 用）
   check-provisioner  aka-provisioner に接続できるか確かめる
   gen-client-cert    aka-provisioner に提示するクライアント証明書と秘密鍵を作る
                      （aka-ossbss gen-client-cert -h で使い方を表示）
@@ -125,7 +127,7 @@ func serve(ctx context.Context) error {
 	}
 	defer d.Close()
 
-	// 最初のシステム管理者（設計概要 §15 の 12）。役割を変えられていたり無効にされていたりしたら戻す。
+	// 最初のシステム管理者（もとの設計概要 §15 の 12）。役割を変えられていたり無効にされていたりしたら戻す。
 	res, err := d.EnsureInitialAdmin(ctx, cfg.InitialAdminEmail)
 	if err != nil {
 		return err
@@ -145,6 +147,15 @@ func serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// 監査ログの日ごとのファイル（設計概要 §14）。書けないまま動き出さないよう、起動のときに確かめる。
+	if err := audit.CheckWritableDir(cfg.AuditDir); err != nil {
+		log.Error("audit directory is not writable", "event_id", "AUDIT_DIR_ERR", "error", err)
+		return err
+	}
+	auditFiles := audit.NewFiles(cfg.AuditDir, auditRetentionDays)
+	bgCtx, stopBG := context.WithCancel(ctx)
+	defer stopBG()
+	go maintainAudit(bgCtx, log, auditFiles)
 	log.Info("provisioner client", "url", pv.BaseURL(), "client_cert_fingerprint", certs.Fingerprint(pv.ClientCertificate()),
 		"client_cert_not_after", pv.ClientCertificate().NotAfter, "timeout", cfg.Provisioner.Timeout.String())
 	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -152,13 +163,36 @@ func serve(ctx context.Context) error {
 	cancel()
 
 	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv,
-		InitialAdminEmail: cfg.InitialAdminEmail})
+		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail})
 	if err != nil {
 		return err
 	}
 	return server.Run(ctx, server.Options{Addr: cfg.Addr, Handler: h.Routes(), Log: log,
-		// 画面の 1 回の要求で provisioner を何度か呼ぶことがあるので、呼び出しの上限より長くする。
-		WriteTimeout: max(90*time.Second, cfg.Provisioner.Timeout+30*time.Second)})
+		// 画面の 1 回の要求で aka-provisioner を何度か呼ぶ（両側の操作、結果の読み直し）ので、呼び出しの上限より十分に長くする。
+		WriteTimeout: max(90*time.Second, 4*cfg.Provisioner.Timeout+30*time.Second)})
+}
+
+const (
+	// auditRetentionDays は監査ログの日ごとのファイルを持つ日数（ほかのノードと同じ。PostgreSQL の監査ログは 13 か月）。
+	auditRetentionDays = 14
+	// auditMaintainInterval は監査ログのファイルを圧縮・削除する間隔。
+	auditMaintainInterval = time.Hour
+)
+
+// maintainAudit は、起動のときと 1 時間ごとに、監査ログの前の日までのファイルを圧縮し、古いものを消す。
+func maintainAudit(ctx context.Context, log *slog.Logger, files *audit.Files) {
+	t := time.NewTicker(auditMaintainInterval)
+	defer t.Stop()
+	for {
+		if err := files.Maintain(time.Now()); err != nil {
+			log.Warn("audit file maintenance failed", "event_id", "AUDIT_FILE_ERR", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // newIdentifier は、要求から利用者を決める方法を作る（Cloudflare Access の JWT、または開発用の設定）。
@@ -191,7 +225,7 @@ func migrate(ctx context.Context) error {
 	return nil
 }
 
-// healthcheck は、同じコンテナで動いている本BFF の /healthz（DB に接続できるか）を確かめる。
+// healthcheck は、同じコンテナで動いている aka-ossbss の /healthz（DB に接続できるか）を確かめる。
 // distroless のイメージには curl がないので、compose の healthcheck はこれを使う。
 func healthcheck(ctx context.Context) error {
 	_, port, err := net.SplitHostPort(cmp.Or(os.Getenv("OSSBSS_ADDR"), ":8446"))

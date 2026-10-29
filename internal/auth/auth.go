@@ -44,7 +44,7 @@ func (a accessIdentifier) Identify(r *http.Request) (string, error) {
 	return authz.NormalizeEmail(c.Email), nil
 }
 
-// ClientIP は Cf-Connecting-IP（Cloudflare が付ける、利用者の接続元）を返す。本BFF はポートを公開せず、
+// ClientIP は Cf-Connecting-IP（Cloudflare が付ける、利用者の接続元）を返す。aka-ossbss はポートを公開せず、
 // 要求は cloudflared からだけ届く（接続元のアドレスは cloudflared のもの）ので、Cloudflare の値を使う（設計概要 §17.2）。
 func (accessIdentifier) ClientIP(r *http.Request) string {
 	if ip, err := netip.ParseAddr(r.Header.Get("Cf-Connecting-IP")); err == nil {

@@ -1,194 +1,259 @@
 {{define "content" -}}
-<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/subscribers">加入者</a></li><li>{{.Data.Sub.IMSI}}</li></ul></div>
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/subscribers">加入者</a></li><li>{{.Data.Entry.IMSI}}</li></ul></div>
 {{template "subscriber-detail" .Data}}
 {{- end}}
 
-{{/* 操作のたびに htmx でこの部分を差し替える。 */}}
+{{/* 操作のたびに htmx でこの部分を差し替える。フォームの Idempotency-Key は、画面ごとの Key にフォームの名前を付けたもの。 */}}
 {{define "subscriber-detail" -}}
+{{$d := . -}}
+{{$e := .Entry -}}
 <div id="subscriber">
-  <h1 class="text-2xl font-bold mb-4">加入者 <span class="font-mono">{{.Sub.IMSI}}</span></h1>
-  {{template "alerts" (dict "Message" .Message "Error" .Error "Op" .ErrorOperation)}}
-
-  {{- if .Staff}}
-  {{- range .Sub.Issues}}
-  <div role="status" class="alert alert-warning mb-4">
-    <div><p class="font-bold">{{issueLabel .}}</p><p class="text-sm">{{issueHelp .}}</p></div>
-  </div>
+  <h1 class="text-2xl font-bold mb-4">加入者 <span class="font-mono">{{$e.IMSI}}</span>
+    {{- if $e.Deleted}} <span class="badge badge-ghost align-middle">削除済み</span>{{end}}
+    {{- if and (not $e.Deleted) $e.Mismatch}} <span class="badge badge-warning badge-outline align-middle">食い違い</span>{{end}}
+  </h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+  {{- if $e.CheckNeeded}}
+  <div role="status" class="alert alert-info mb-4"><span>結果を確かめています（下流の結果が分からなかった操作があります。aka-provisioner と下流が応答するようになったら、開き直すと台帳を下流に合わせます）。</span></div>
   {{- end}}
-  {{- end}}
+  {{- range .Drifts}}<div role="status" class="alert alert-warning mb-2"><span>{{.}}</span></div>{{end}}
 
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">
-      <div class="overflow-x-auto">
-        <table class="table table-sm">
-          <tbody>
-            {{- if .Staff}}
-            <tr><th class="w-48">テナント</th><td>{{.TenantName}}</td></tr>
-            <tr><th>鍵の置き場所</th><td>{{keyStoreLabel .Sub.KeyStore}} <span class="text-sm text-base-content/60">（IMSI の PLMN と provisioner の PLMN マップで決まります）</span></td></tr>
-            {{- with .Sub.Key}}
-            <tr><th>SQN</th><td><code>{{.SQN}}</code> <span class="text-sm text-base-content/60">（認証のたびに進みます）</span></td></tr>
-            <tr><th>AMF</th><td><code>{{.AMF}}</code></td></tr>
-            {{- if .SQNType}}
-            <tr><th>SQN の増加タイプ</th><td><code>{{.SQNType}}</code></td></tr>
-            <tr><th>平文HTTP での払い出し</th><td>{{if deref .AllowPlain}}許可する{{else}}許可しない{{end}}</td></tr>
-            <tr><th>許可するクライアントID</th><td>{{range $i, $id := .AllowedClientIDs}}{{if $i}}, {{end}}{{$id}}{{else}}なし{{end}} <span class="text-sm text-base-content/60">（aka-vecgen の AVクライアント）</span></td></tr>
-            {{- end}}
-            <tr><th>登録日時</th><td>{{datetime .CreatedAt}}</td></tr>
-            {{- if not .UpdatedAt.IsZero}}
-            <tr><th>変更日時</th><td>{{datetime .UpdatedAt}}</td></tr>
-            {{- end}}
-            {{- else}}
-            <tr><th>鍵（Ki / OPc）</th><td class="text-base-content/60">なし</td></tr>
-            {{- end}}
-            {{- end}}
-            <tr>
-              <th class="w-48">状態</th>
-              <td>{{template "policy-status" (dict "IMSI" .Sub.IMSI "HasPolicy" .Sub.Policy "Status" .Sub.Status "Can" .CanSuspend
-                "URL" (printf "/subscribers/%s/status" .Sub.IMSI) "Target" "#subscriber" "Key" .StatusKey)}}
-                <p class="text-sm text-base-content/60 mt-1">停止・再開が効くのは次の認証（再認証、Session-Timeout の後など）からです。接続中のセッションは切れません。</p>
-              </td>
-            </tr>
-            <tr><th>セッション</th><td><a class="link" href="/sessions?imsi={{.Sub.IMSI}}">この加入者のセッションを表示</a></td></tr>
-          </tbody>
-        </table>
-      </div>
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-48">所属のテナント</th><td>{{.TenantName}}</td></tr>
+          <tr><th>最初の登録</th><td>{{datetime $e.RegisteredAt}}{{with $e.RegisteredBy}}（{{.}}）{{end}}</td></tr>
+          {{- if $e.Deleted}}<tr><th>削除済みにした日時</th><td>{{datetime $e.DeletedAt}}</td></tr>{{end}}
+          <tr><th>台帳の更新</th><td>{{datetime $e.UpdatedAt}}</td></tr>
+          <tr><th>セッション</th><td><a class="link" href="/sessions?imsi={{$e.IMSI}}">この加入者のセッションを表示</a></td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
+  {{- if .Perm.State}}
+  <fieldset class="fieldset mb-4 max-w-xl">
+    <legend class="fieldset-legend">状態の変更の理由（任意。下流の監査ログに残ります）</legend>
+    <input id="state-reason" name="reason" maxlength="500" class="input w-full" placeholder="例 料金の未払い">
+  </fieldset>
+  {{- end}}
+
+  <div class="grid gap-6 md:grid-cols-2 mb-6">
+    {{- range .Sides}}{{template "side-card" (dict "D" $d "Side" .)}}{{end}}
+  </div>
+
+  {{- if .BothOps}}
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <h2 class="card-title">認可ポリシー</h2>
-        {{- if .CanEditPolicy}}
-        <a class="btn btn-sm" href="/subscribers/{{.Sub.IMSI}}/policy">{{if .Sub.Policy}}編集する{{else}}作成する{{end}}</a>
+      <h2 class="card-title">両方の状態</h2>
+      <div class="flex flex-wrap gap-2">
+        {{- if or (ne $e.VecgenState "inactive") (ne $e.RadiusState "inactive")}}
+        <form hx-post="/subscribers/{{$e.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
+          <input type="hidden" name="side" value="both"><input type="hidden" name="state" value="inactive">
+          <input type="hidden" name="idem" value="{{.Key}}-both-inactive">
+          <button type="submit" class="btn btn-warning btn-outline">両方を止める</button>
+        </form>
+        {{- end}}
+        {{- if or (ne $e.VecgenState "active") (ne $e.RadiusState "active")}}
+        <form hx-post="/subscribers/{{$e.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
+          <input type="hidden" name="side" value="both"><input type="hidden" name="state" value="active">
+          <input type="hidden" name="idem" value="{{.Key}}-both-active">
+          <button type="submit" class="btn btn-primary btn-outline">両方を使う</button>
+        </form>
         {{- end}}
       </div>
-      {{- with .Sub.Policy}}
-      <p>既定の動作（どのルールにも一致しないとき）: <strong>{{.Default}}</strong></p>
-      {{- if .Rules}}
-      <div class="overflow-x-auto">
-        <table class="table table-sm">
-          <thead><tr><th>#</th><th>NAS-ID</th><th>許可する SSID</th><th>VLAN ID</th><th>Session-Timeout</th></tr></thead>
-          <tbody>
-            {{- range $i, $rule := .Rules}}
-            <tr>
-              <td>{{add1 $i}}</td>
-              <td class="font-mono">{{$rule.NASID}}</td>
-              <td class="font-mono">{{range $j, $s := $rule.AllowedSSIDs}}{{if $j}}, {{end}}{{$s}}{{end}}</td>
-              <td>{{or $rule.VLANID "-"}}</td>
-              <td>{{if $rule.SessionTimeout}}{{$rule.SessionTimeout}} 秒{{else}}-{{end}}</td>
-            </tr>
-            {{- end}}
-          </tbody>
-        </table>
-      </div>
-      <p class="text-sm text-base-content/60">上から順に評価し、最初に一致したルールを使います。</p>
-      {{- else}}
-      <p class="text-base-content/60">ルールはありません（すべての接続に既定の動作を使います）。</p>
-      {{- end}}
-      {{- else}}
-      <p class="text-base-content/60">なし（認可ポリシーがない加入者の認証は拒否されます）。</p>
-      {{- end}}
+      <p class="text-sm text-base-content/60">1 つずつ変えます（止めるときは radius 側を先、使うときは vecgen 側を先）。片方だけ失敗しても、もう一方は元に戻しません。</p>
     </div>
   </div>
-
-  {{- if .CanAssign}}
-  {{template "assign-card" (dict "URL" (printf "/subscribers/%s/tenant" .Sub.IMSI) "Target" "#subscriber" "Current" .Tenant "Tenants" .Tenants "What" "加入者")}}
   {{- end}}
 
-  {{- if and .CanKeys .Sub.Key}}
-  <div class="card bg-base-100 shadow mb-6">
-    <div class="card-body">
-      <h2 class="card-title">Ki / OPc</h2>
-      {{template "subscriber-keys" (keysPlaceholder .Sub.IMSI)}}
-    </div>
-  </div>
+  {{- if and .Perm.VecgenEdit .Vecgen (ne $e.VecgenState "terminated")}}{{template "vecgen-edit" .}}{{end}}
 
+  {{- if and .Perm.SourceEdit $e.RadiusPresent (ne $e.RadiusState "terminated")}}
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">
-      <h2 class="card-title">{{if .CanAuth}}鍵の属性の変更{{else}}Ki / OPc の変更{{end}}</h2>
-      <form hx-post="/subscribers/{{.Sub.IMSI}}/auth" hx-target="#subscriber" hx-swap="outerHTML" autocomplete="off">
-        <input type="hidden" name="idem" value="{{.AuthKey}}">
-        <div class="grid gap-x-6 md:grid-cols-2">
-          <fieldset class="fieldset">
-            <legend class="fieldset-legend">Ki</legend>
-            <input name="ki" maxlength="32" pattern="[0-9A-Fa-f]{32}" spellcheck="false" placeholder="変更する場合だけ入力" class="input w-full font-mono{{if .Errors.ki}} input-error{{end}}">
-            {{template "field-error" .Errors.ki}}
-          </fieldset>
-          <fieldset class="fieldset">
-            <legend class="fieldset-legend">OPc</legend>
-            <input name="opc" maxlength="32" pattern="[0-9A-Fa-f]{32}" spellcheck="false" placeholder="変更する場合だけ入力" class="input w-full font-mono{{if .Errors.opc}} input-error{{end}}">
-            {{template "field-error" .Errors.opc}}
-          </fieldset>
-          {{- if .CanAuth}}
-          <fieldset class="fieldset">
-            <legend class="fieldset-legend">AMF</legend>
-            <input name="amf" value="{{.Sub.Key.AMF}}" required maxlength="4" pattern="[0-9A-Fa-f]{4}" spellcheck="false" class="input w-full font-mono{{if .Errors.amf}} input-error{{end}}">
-            {{template "field-error" .Errors.amf}}
-          </fieldset>
-          <fieldset class="fieldset">
-            <legend class="fieldset-legend">SQN</legend>
-            <input name="sqn" value="{{.Sub.Key.SQN}}" required maxlength="12" pattern="[0-9A-Fa-f]{12}" spellcheck="false" class="input w-full font-mono{{if .Errors.sqn}} input-error{{end}}">
-            {{template "field-error" .Errors.sqn}}
-          </fieldset>
-          {{- if eq .Sub.KeyStore "aka"}}
-          <fieldset class="fieldset">
-            <legend class="fieldset-legend">SQN の増加タイプ</legend>
-            <select name="sqn_type" class="select w-full{{if .Errors.sqnType}} select-error{{end}}">
-              {{- range (list "inc1" "inc32" "inc33")}}
-              <option value="{{.}}"{{if eq . $.Sub.Key.SQNType}} selected{{end}}>{{.}}</option>
-              {{- end}}
-            </select>
-            {{- if .Errors.sqnType}}{{template "field-error" .Errors.sqnType}}{{else}}<p class="label">USIM の SQN の検証方式に合わせます（本PoCの Vector API と同じ挙動は inc32）</p>{{end}}
-          </fieldset>
-          <fieldset class="fieldset">
-            <legend class="fieldset-legend">平文HTTP での払い出し</legend>
-            <label class="label cursor-pointer gap-2">
-              <input type="checkbox" name="allow_plain" value="1" class="checkbox"{{if deref .Sub.Key.AllowPlain}} checked{{end}}>
-              許可する
-            </label>
-            <p class="label whitespace-normal">CK / IK が暗号化されずに流れます。同一ホストの平文HTTP 接続を使う場合だけ許可します。</p>
-          </fieldset>
-          {{- end}}
-          {{- end}}
-        </div>
-        <p class="text-sm text-base-content/60 my-2">
-          {{- if .CanAuth}}変わった項目だけを送ります（SQN を変えなければ、認証で進んだ SQN には触れません）。SQN を戻すと、端末側で同期エラー（再同期）になることがあります。
-          {{- else}}入力した項目だけを送ります。AMF / SQN の変更はシステム管理者が行います。{{end -}}
-          変更は provisioner と下流の監査ログに操作者つきで残ります。
-        </p>
-        <button type="submit" class="btn btn-primary">変更する</button>
+      <h2 class="card-title">取得先の変更</h2>
+      <form hx-post="/subscribers/{{$e.IMSI}}/source" hx-target="#subscriber" hx-swap="outerHTML" class="flex flex-wrap items-end gap-2">
+        <input type="hidden" name="idem" value="{{.Key}}-source">
+        <select name="source" class="select" aria-label="取得先">
+          {{- range .Sources}}<option value="{{.ID}}"{{if eq .ID $e.RadiusSourceID}} selected{{end}}>{{.ID}}（{{.Name}}）</option>{{end}}
+          {{- if not .Sources}}<option value="{{$e.RadiusSourceID}}">{{$e.RadiusSourceID}}（登録簿を読めませんでした）</option>{{end}}
+        </select>
+        <button type="submit" class="btn">変える</button>
       </form>
+      <p class="text-sm text-base-content/60">認証ベクターを取る先（aka-radius の取得先の登録簿）。次の認証から使います。</p>
     </div>
   </div>
   {{- end}}
 
-  {{- if .CanDelete}}
-  <form id="subscriber-delete" hx-post="/subscribers/{{.Sub.IMSI}}/delete" hx-target="#subscriber" hx-swap="outerHTML">
-    <input type="hidden" name="idem" value="{{.DeleteKey}}">
-  </form>
-  <button type="button" class="btn btn-error btn-outline" command="show-modal" commandfor="dialog-delete">この加入者を削除</button>
-  {{template "confirm" (dict "ID" "dialog-delete" "Title" "加入者の削除" "Form" "subscriber-delete" "Label" "削除する" "Class" "btn-error"
-    "Message" (printf "加入者 %s を削除します。認可ポリシーと、鍵の置き場所（%s）の Ki / OPc を削除します。よろしいですか？" .Sub.IMSI (keyStoreLabel .Sub.KeyStore)))}}
+  {{- if and .Perm.Move (not $e.Deleted) (not $e.Pending)}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">所属のテナントの付け替え</h2>
+      <form id="move-form" hx-post="/subscribers/{{$e.IMSI}}/tenant" hx-target="#subscriber" hx-swap="outerHTML" class="flex flex-wrap items-center gap-2">
+        <input type="hidden" name="idem" value="{{.Key}}-move">
+        <select name="tenant" class="select" aria-label="付け替え先のテナント">
+          <option value="" selected disabled>付け替え先を選んでください</option>
+          {{- range .Tenants.List}}{{if ne .ID $e.TenantID}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}
+        </select>
+        <button type="button" class="btn" command="show-modal" commandfor="dialog-move">付け替える</button>
+      </form>
+      <p class="text-sm text-base-content/60">radius 側があれば、ルールのテナントも新しいテナントに書き換えます（刻印のテナントと一致しないと認証されないため）。</p>
+      {{template "confirm" (dict "ID" "dialog-move" "Title" "所属のテナントの付け替え" "Form" "move-form" "Label" "付け替える" "Class" "btn-primary"
+        "Message" "所属のテナントを付け替えます。radius 側のルールのテナントも書き換えます。よろしいですか？")}}
+    </div>
+  </div>
   {{- end}}
 </div>
 {{- end}}
 
-{{/* Ki / OPc の表示。表示のボタンを押したときだけ provisioner から取得する。 */}}
-{{define "subscriber-keys" -}}
-<div id="keys">
-  {{- with .Error}}<div role="alert" class="alert alert-error mb-2"><span>{{.}}</span></div>{{end}}
-  {{- with .Keys}}
-  <table class="table table-sm">
-    <tbody>
-      <tr><th class="w-24">Ki</th><td><code>{{.Ki}}</code></td></tr>
-      <tr><th>OPc</th><td><code>{{.OPc}}</code></td></tr>
-    </tbody>
-  </table>
-  <p class="text-sm text-base-content/60">表示したことは provisioner・下流と本BFF の監査ログに残りました。画面を移動すると表示は消えます。</p>
-  {{- else}}
-  <button type="button" class="btn btn-sm" hx-post="/subscribers/{{.IMSI}}/keys" hx-target="#keys" hx-swap="outerHTML">Ki / OPc を表示</button>
-  <p class="text-sm text-base-content/60 mt-1">表示すると provisioner・下流と本BFF の監査ログに残ります。</p>
-  {{- end}}
+{{/* side-card は片側のカード（引数は dict で D（subscriberData）と Side）。 */}}
+{{define "side-card" -}}
+{{$d := .D -}}{{$e := .D.Entry -}}{{$side := .Side -}}
+{{$present := $e.Present $side -}}{{$state := $e.State $side -}}
+<div class="card bg-base-100 shadow">
+  <div class="card-body">
+    <h2 class="card-title">{{sideLabel $side}} {{if $present}}{{template "state-badge" $state}}{{end}}</h2>
+    {{- if eq $side "vecgen"}}
+      {{- with $d.VecgenErr}}<div role="alert" class="alert alert-warning"><span>{{.}}</span></div>{{end}}
+      {{- with $d.Vecgen}}
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-40">状態の変更</th><td>{{datetime .StateChangedAt}}</td></tr>
+          {{- if $d.Perm.Detail}}
+          <tr><th>AMF</th><td class="font-mono">{{.AMF}}</td></tr>
+          <tr><th>SQN</th><td class="font-mono">{{.SQN}} <span class="text-sm text-base-content/60">（認証のたびに進みます）</span></td></tr>
+          <tr><th>SQN の方式</th><td class="font-mono">{{.SQNType}}</td></tr>
+          <tr><th>許可クライアント</th><td>{{range $i, $id := .AllowedClientIDs}}{{if $i}}、{{end}}{{$d.ClientName $id}}{{else}}なし{{end}}</td></tr>
+          {{- end}}
+          <tr><th>登録</th><td>{{datetime .CreatedAt}}</td></tr>
+        </tbody>
+      </table>
+      {{- end}}
+    {{- else}}
+      {{- with $d.RadiusErr}}<div role="alert" class="alert alert-warning"><span>{{.}}</span></div>{{end}}
+      {{- with $d.Radius}}
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-40">状態の変更</th><td>{{datetime .StateChangedAt}}</td></tr>
+          <tr><th>取得先</th><td class="font-mono">{{.SourceID}}</td></tr>
+          <tr><th>登録</th><td>{{datetime .CreatedAt}}</td></tr>
+        </tbody>
+      </table>
+      <h3 class="font-semibold">認可ポリシーのルール</h3>
+      <div class="overflow-x-auto">
+        <table class="table table-xs">
+          <thead><tr><th>#</th><th>テナント</th><th>NAS-Identifier</th><th>SSID</th><th>VLAN</th><th>Session-Timeout</th></tr></thead>
+          <tbody>
+            {{- range $i, $r := .Rules}}
+            <tr><td>{{add1 $i}}</td><td>{{$d.Tenants.Name $r.TenantID}}{{if ne $r.TenantID $e.TenantID}} <span class="badge badge-warning badge-xs">所属と違う</span>{{end}}</td>
+              <td class="font-mono">{{$r.NASID}}</td><td class="font-mono">{{joinStrings $r.SSIDs}}</td>
+              <td>{{or $r.VLANID "-"}}</td><td>{{if $r.SessionTimeout}}{{$r.SessionTimeout}} 秒{{else}}-{{end}}</td></tr>
+            {{- end}}
+          </tbody>
+        </table>
+      </div>
+      {{- if and $d.Perm.PolicyEdit (ne .State "terminated")}}<div><a class="btn btn-sm" href="/subscribers/{{$e.IMSI}}/policy">ルールを編集する</a></div>{{end}}
+      {{- end}}
+    {{- end}}
+
+    {{- if not $present}}
+    <p class="text-base-content/60">{{if $e.Pending}}登録の結果を確かめています。{{else}}登録されていません。{{end}}</p>
+    {{- if and (eq $side "vecgen") $d.Perm.VecgenNew}}<div><a class="btn btn-sm" href="/subscribers/new?side=vecgen&imsi={{$e.IMSI}}">vecgen 側に登録する</a></div>{{end}}
+    {{- if and (eq $side "radius") $d.Perm.RadiusNew}}<div><a class="btn btn-sm" href="/subscribers/new?side=radius&imsi={{$e.IMSI}}">radius 側に登録する</a></div>{{end}}
+    {{- else}}
+    <div class="flex flex-wrap gap-2 mt-2">
+      {{- if and $d.Perm.State (ne $state "terminated")}}
+        {{- if eq $state "active"}}{{template "state-button" (dict "D" $d "Side" $side "State" "inactive" "Label" "止める" "Class" "btn-warning btn-outline")}}
+        {{- else}}{{template "state-button" (dict "D" $d "Side" $side "State" "active" "Label" "使う" "Class" "btn-primary btn-outline")}}{{end}}
+        <form id="state-{{$side}}-terminated" hx-post="/subscribers/{{$e.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
+          <input type="hidden" name="side" value="{{$side}}"><input type="hidden" name="state" value="terminated">
+          <input type="hidden" name="idem" value="{{$d.Key}}-state-{{$side}}-terminated">
+        </form>
+        <button type="button" class="btn btn-sm btn-error btn-outline" command="show-modal" commandfor="dialog-terminate-{{$side}}">解約する</button>
+        {{template "confirm" (dict "ID" (printf "dialog-terminate-%s" $side) "Title" "解約" "Form" (printf "state-%s-terminated" $side) "Label" "解約する" "Class" "btn-error"
+          "Message" (printf "%sを解約（Terminated）にします。解約から戻せるのはシステム管理者だけです。よろしいですか？" (sideLabel $side)))}}
+      {{- end}}
+      {{- if and $d.Perm.Delete (ne $state "active")}}
+        <form id="delete-{{$side}}" hx-post="/subscribers/{{$e.IMSI}}/delete" hx-target="#subscriber" hx-swap="outerHTML">
+          <input type="hidden" name="side" value="{{$side}}">
+          <input type="hidden" name="idem" value="{{$d.Key}}-delete-{{$side}}">
+        </form>
+        <button type="button" class="btn btn-sm btn-error" command="show-modal" commandfor="dialog-delete-{{$side}}">物理削除</button>
+        {{template "confirm" (dict "ID" (printf "dialog-delete-%s" $side) "Title" "物理削除" "Form" (printf "delete-%s" $side) "Label" "削除する" "Class" "btn-error"
+          "Message" (printf "%sからこの加入者を物理削除します。元に戻せません。よろしいですか？" (sideLabel $side)))}}
+      {{- end}}
+    </div>
+    {{- if and (eq $state "terminated") $d.Perm.Reinstate}}
+    <form hx-post="/subscribers/{{$e.IMSI}}/reinstate" hx-target="#subscriber" hx-swap="outerHTML" class="flex flex-wrap items-end gap-2 mt-2">
+      <input type="hidden" name="side" value="{{$side}}">
+      <input type="hidden" name="idem" value="{{$d.Key}}-reinstate-{{$side}}">
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">戻す理由（必須）</legend>
+        <input name="reason" maxlength="500" class="input{{if index $d.Errors (printf "reinstate_%s" $side)}} input-error{{end}}" placeholder="例 誤って解約した">
+      </fieldset>
+      <button type="submit" class="btn btn-sm">停止中に戻す</button>
+    </form>
+    {{- else if eq $state "terminated"}}
+    <p class="text-sm text-base-content/60">解約から戻せるのはシステム管理者だけです。</p>
+    {{- end}}
+    {{- end}}
+  </div>
+</div>
+{{- end}}
+
+{{/* state-button は状態の変更のボタン（引数は dict で D、Side、State、Label、Class）。 */}}
+{{define "state-button" -}}
+<form hx-post="/subscribers/{{.D.Entry.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
+  <input type="hidden" name="side" value="{{.Side}}"><input type="hidden" name="state" value="{{.State}}">
+  <input type="hidden" name="idem" value="{{.D.Key}}-state-{{.Side}}-{{.State}}">
+  <button type="submit" class="btn btn-sm {{.Class}}">{{.Label}}</button>
+</form>
+{{- end}}
+
+{{/* vecgen-edit は vecgen 側の変更（システム管理者）。誤りのときは入力（.Form）を残す。 */}}
+{{define "vecgen-edit" -}}
+{{$v := .Vecgen -}}
+{{$amf := $v.AMF}}{{$sqn := $v.SQN}}{{$sqnType := $v.SQNType}}{{$clients := $v.AllowedClientIDs -}}
+{{if .Form.Set}}{{$amf = .Form.AMF}}{{$sqn = .Form.SQN}}{{$sqnType = .Form.SQNType}}{{$clients = .Form.Clients}}{{end -}}
+<div class="card bg-base-100 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title">vecgen 側の変更</h2>
+    <form hx-post="/subscribers/{{.Entry.IMSI}}/vecgen" hx-target="#subscriber" hx-swap="outerHTML" autocomplete="off">
+      <input type="hidden" name="idem" value="{{.Key}}-vecgen">
+      <div class="grid gap-x-6 md:grid-cols-3">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">AMF</legend>
+          <input name="amf" value="{{$amf}}" required maxlength="4" spellcheck="false" class="input w-full font-mono{{if .Errors.amf}} input-error{{end}}">
+          {{template "field-error" .Errors.amf}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">SQN</legend>
+          <input name="sqn" value="{{$sqn}}" required maxlength="12" spellcheck="false" class="input w-full font-mono{{if .Errors.sqn}} input-error{{end}}">
+          {{template "field-error" .Errors.sqn}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">SQN の方式</legend>
+          <select name="sqn_type" class="select w-full">
+            {{- range (list "inc1" "inc32" "inc33")}}<option value="{{.}}"{{if eq . $sqnType}} selected{{end}}>{{.}}</option>{{end}}
+          </select>
+          {{template "field-error" .Errors.sqnType}}
+        </fieldset>
+      </div>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">許可クライアント（aka-vecgen の AVクライアント）</legend>
+        <div class="flex flex-wrap gap-4">
+          {{- if .Clients}}<input type="hidden" name="clients_shown" value="1">{{end}}
+          {{- range .Clients}}
+          <label class="label cursor-pointer gap-2"><input type="checkbox" name="clients" value="{{.ID}}" class="checkbox checkbox-sm"{{if hasID $clients .ID}} checked{{end}}>{{.Name}}（#{{.ID}}{{if not .Enabled}}、無効{{end}}）</label>
+          {{- else}}<span class="text-base-content/60">AVクライアントを読めませんでした（許可クライアントは変えません）。</span>{{end}}
+        </div>
+        {{template "field-error" .Errors.clients}}
+      </fieldset>
+      <p class="text-sm text-base-content/60 my-2">変わった項目だけを送ります（SQN を変えなければ、認証で進んだ SQN には触れません）。SQN を戻すと、端末で再同期になることがあります。鍵（Ki / OPc）は変えられません。</p>
+      <button type="submit" class="btn btn-primary">変更する</button>
+    </form>
+  </div>
 </div>
 {{- end}}

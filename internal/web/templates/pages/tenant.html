@@ -13,8 +13,8 @@
     <div class="card-body">
       <table class="table table-sm">
         <tbody>
-          <tr><th class="w-48">加入者</th><td><a class="link" href="/subscribers?tenant={{.Tenant.ID}}">{{.Tenant.Subscribers}} 件</a></td></tr>
-          <tr><th>RADIUSクライアント</th><td><a class="link" href="/clients?tenant={{.Tenant.ID}}">{{.Tenant.Clients}} 件</a></td></tr>
+          <tr><th class="w-48">ID（刻印の値）</th><td class="font-mono">{{.Tenant.ID}}</td></tr>
+          <tr><th>加入者</th><td><a class="link" href="/subscribers?tenant={{.Tenant.ID}}">{{.Tenant.Subscribers}} 件</a></td></tr>
           <tr><th>アカウント</th><td><a class="link" href="/accounts?tenant={{.Tenant.ID}}">{{.Tenant.Accounts}} 件</a></td></tr>
           <tr><th>作成日時</th><td>{{datetime .Tenant.CreatedAt}}</td></tr>
         </tbody>
@@ -38,7 +38,7 @@
 
   <form id="tenant-delete" hx-post="/tenants/{{.Tenant.ID}}/delete" hx-target="#tenant" hx-swap="outerHTML"></form>
   <button type="button" class="btn btn-error btn-outline" command="show-modal" commandfor="dialog-delete">このテナントを削除</button>
-  {{- if .InUse}}<p class="text-sm text-base-content/60 mt-2">加入者・RADIUSクライアント・アカウントが属している間は削除できません。先に所属を付け替えるか外し、アカウントを移すか削除してください。</p>{{end}}
+  {{- if .InUse}}<p class="text-sm text-base-content/60 mt-2">加入者（削除済みを除く）・アカウントが属している間は削除できません。先に加入者を物理削除するか付け替え、アカウントを移すか削除してください。削除したテナントの ID は使い回しません。</p>{{end}}
   {{template "confirm" (dict "ID" "dialog-delete" "Title" "テナントの削除" "Form" "tenant-delete" "Label" "削除する" "Class" "btn-error"
     "Message" (printf "テナント「%s」を削除します。監査ログは残ります。よろしいですか？" .Tenant.Name))}}
 </div>

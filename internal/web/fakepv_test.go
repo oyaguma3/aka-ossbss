@@ -1,9 +1,8 @@
 package web
 
 import (
-	"cmp"
 	"context"
-	"maps"
+	"encoding/json/jsontext"
 	"slices"
 	"strings"
 	"sync"
@@ -12,71 +11,71 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
-// fakePV はテスト用の provisioner。加入者・RADIUSクライアント・セッションをメモリに持ち、
-// 変更操作と秘密の値の取得ごとに「操作名 操作者 Idempotency-Key」を記録する。
+// fakePV はテスト用の aka-provisioner。両側の加入者をメモリに持ち、書き込みごとに
+// 「口 操作者 Idempotency-Key」を記録する（本文の秘密の値は記録しない）。
 type fakePV struct {
-	mu     sync.Mutex
-	status provisioner.Status
-	// err を設定すると Status がそのエラーを返す。calls は Status の呼び出し回数。
-	err   error
-	calls int
-	// delay は Status が応答するまでの時間（provisioner につながらずにタイムアウトする場合）。
-	delay time.Duration
+	mu sync.Mutex
+	// status と statusErr は Status が返すもの。statusCalls はその呼び出し回数。
+	status      provisioner.Status
+	statusErr   error
+	statusCalls int
 
-	subs     map[string]provisioner.Subscriber
-	keys     map[string]provisioner.SubscriberKeys
-	clients  map[int64]provisioner.RADIUSClient
-	secrets  map[int64]string
-	nextID   int64
+	vecgen   map[string]provisioner.VecgenSubscriber
+	radius   map[string]provisioner.RadiusSubscriber
+	clients  []provisioner.VecgenClient
+	sources  []provisioner.Source
 	sessions []provisioner.Session
-	// errs は操作名ごとに返すエラー（GetSubscriber、CreateSubscriber など）。
-	errs map[string]error
-	// ops は変更操作と秘密の値の取得の記録（「操作名 操作者 キー」）。gets は GetSubscriber の呼び出し回数。
-	ops  []string
-	gets int
-	// lastList と lastSessions は最後に受け取った一覧の条件。lastUpdate・lastClientUpdate・lastPut は最後の変更の内容。
-	lastList         provisioner.ListParams
-	listCalls        int
+	audit    map[provisioner.AuditSource][]provisioner.AuditLogEntry
+	// errs は口ごとに返す誤り（"vecgen.create" など）。applyErrs は、下流には反映したうえで返す誤り（結果が分からない場合）。
+	errs, applyErrs map[string]error
+	// ops は書き込みの記録。lastSessions は最後のセッションの条件、lastRadiusUpdate は最後の radius 側の変更、lastVecgenCreate は
+	// 最後の vecgen 側の登録（Ki・OPc を含む。送ったことの確かめにだけ使う）。
+	ops              []string
 	lastSessions     provisioner.SessionParams
-	lastCreate       provisioner.SubscriberCreate
-	lastUpdate       provisioner.SubscriberUpdate
-	lastClientUpdate provisioner.RADIUSClientUpdate
-	lastPut          provisioner.PolicyPut
-	// policyCalls は ListPolicies の呼び出し回数。opsByID は操作の記録、pvAudit・provAudit・akaAudit は監査ログ。
-	policyCalls int
-	opsByID     map[string]provisioner.Operation
-	pvAudit     []provisioner.AuditLogEntry
-	provAudit   []provisioner.ProvAuditLogEntry
-	akaAudit    []provisioner.AkaAuditLogEntry
+	lastRadiusUpdate provisioner.RadiusSubscriberUpdate
+	lastVecgenUpdate provisioner.VecgenSubscriberUpdate
+	lastVecgenCreate provisioner.VecgenSubscriberCreate
+	batchCalls       int
 }
 
 func newFakePV() *fakePV {
-	return &fakePV{status: provisioner.Status{Version: "0.3.0",
-		PLMNMap: []provisioner.PLMNEntry{{PLMN: "00102", KeyStore: provisioner.KeyStoreAKA}},
-		Downstreams: provisioner.Downstreams{
-			Prov: provisioner.DownstreamStatus{Configured: true, Reachable: true, Version: "0.4.0", NodeName: "poc-01", SubscriberCount: 3},
-			Aka:  provisioner.DownstreamStatus{Configured: true, Reachable: false, Hint: "aka-vecgen に接続できません。"},
-		},
-		AVClient:   provisioner.AVClientStatus{ID: 1},
-		Operations: &provisioner.OperationCounts{Failed: 1}},
-		subs: map[string]provisioner.Subscriber{}, keys: map[string]provisioner.SubscriberKeys{},
-		clients: map[int64]provisioner.RADIUSClient{}, secrets: map[int64]string{}, nextID: 1,
-		errs: map[string]error{}, opsByID: map[string]provisioner.Operation{}}
+	vecgenStatus := jsontext.Value(`{"version":"0.5.0","subscriberCount":3,"avApiContractVersion":"1.0.0"}`)
+	return &fakePV{
+		status: provisioner.Status{Version: "2.0.0", StartedAt: time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC),
+			Downstreams: []provisioner.DownstreamStatus{
+				{Name: provisioner.Vecgen, Reachable: true, Status: vecgenStatus, CheckedAt: time.Now()},
+				{Name: provisioner.Radius, Reachable: false, Hint: "aka-radius に届きません。"},
+			}},
+		vecgen: map[string]provisioner.VecgenSubscriber{}, radius: map[string]provisioner.RadiusSubscriber{},
+		clients: []provisioner.VecgenClient{{ID: 1, Name: "radius-av", Enabled: true}, {ID: 2, Name: "other", Enabled: true}},
+		sources: []provisioner.Source{{ID: "vecgen", Name: "aka-vecgen"}, {ID: "vecgen-2", Name: "aka-vecgen-2"}},
+		audit:   map[provisioner.AuditSource][]provisioner.AuditLogEntry{},
+		errs:    map[string]error{}, applyErrs: map[string]error{},
+	}
 }
 
-func pvNotFound(cause string) error {
-	return &provisioner.Error{Status: 404, Problem: provisioner.Problem{Status: 404, Cause: cause}}
+// addVecgen と addRadius は下流に加入者を置く（試験の準備）。
+func (f *fakePV) addVecgen(imsi, state string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vecgen[imsi] = provisioner.VecgenSubscriber{IMSI: imsi, State: state, SQN: "000000000020", AMF: "8000", SQNType: "inc32",
+		AllowedClientIDs: []int64{1}}
 }
 
-func pvConflict(cause string) error {
-	return &provisioner.Error{Status: 409, Problem: provisioner.Problem{Status: 409, Cause: cause}}
+func (f *fakePV) addRadius(imsi, state string, tenant int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.radius[imsi] = provisioner.RadiusSubscriber{IMSI: imsi, State: state, SourceID: "vecgen",
+		Rules: []provisioner.Rule{{TenantID: tenant, NASID: "ap-01", SSIDs: []string{"corp"}, VLANID: 10}}}
 }
 
-func (f *fakePV) record(ctx context.Context, op, key string) {
+// record は書き込みを記録し、その口の誤りを返す（applyErrs のときは、反映してから誤りを返すよう呼び出し側で扱う）。
+func (f *fakePV) record(ctx context.Context, op, key string) error {
 	f.ops = append(f.ops, strings.TrimSpace(op+" "+provisioner.OperatorFrom(ctx)+" "+key))
+	return f.errs[op]
 }
 
-// lastOp は最後の記録を返す。
+// lastOp は最後の書き込みの記録を返す。
 func (f *fakePV) lastOp() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -86,387 +85,273 @@ func (f *fakePV) lastOp() string {
 	return f.ops[len(f.ops)-1]
 }
 
-// addSubscriber は加入者（鍵を本PoC、または 00102 なら aka-vecgen に置き、認可ポリシーは利用中）を加える。
-func (f *fakePV) addSubscriber(imsi string) {
+func (f *fakePV) writes() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ks := keyStoreOf(imsi)
-	k := &provisioner.Key{AMF: "8000", SQN: "000000000020", CreatedAt: time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)}
-	if ks == provisioner.KeyStoreAKA {
-		k.SQNType, k.AllowPlain, k.AllowedClientIDs = "inc32", new(false), []int64{1}
-	}
-	f.subs[imsi] = provisioner.Subscriber{IMSI: imsi, KeyStore: ks, Key: k, Status: provisioner.PolicyActive, Issues: []provisioner.Issue{},
-		Policy: &provisioner.PolicyPut{Default: "deny", Rules: []provisioner.PolicyRule{{NASID: "ap-01", AllowedSSIDs: []string{"corp"}, VLANID: "10"}}}}
-	f.keys[imsi] = provisioner.SubscriberKeys{Ki: strings.Repeat("1", 32), OPc: strings.Repeat("2", 32)}
+	return slices.Clone(f.ops)
 }
 
-// addClient は RADIUSクライアントを加え、ID を返す。
-func (f *fakePV) addClient(ip, name string) int64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	id := f.nextID
-	f.nextID++
-	f.clients[id] = provisioner.RADIUSClient{ID: id, IP: ip, Name: name, Vendor: "acme"}
-	f.secrets[id] = "secret-" + name
-	return id
+func notFound() error {
+	return &provisioner.Error{Status: 404, Problem: provisioner.Problem{Status: 404, Cause: provisioner.CauseUserNotFound}}
 }
 
-// keyStoreOf は PLMN マップから置き場所を決める（00102 は aka、それ以外は poc）。
-func keyStoreOf(imsi string) provisioner.KeyStore {
-	if strings.HasPrefix(imsi, "00102") {
-		return provisioner.KeyStoreAKA
-	}
-	return provisioner.KeyStorePoC
+func pvError(status int, cause string) error {
+	return &provisioner.Error{Status: status, Problem: provisioner.Problem{Status: status, Cause: cause}}
 }
 
 func (f *fakePV) Status(context.Context) (provisioner.Status, error) {
 	f.mu.Lock()
-	f.calls++
-	st, err, delay := f.status, f.err, f.delay
-	f.mu.Unlock()
-	time.Sleep(delay)
-	return st, err
+	defer f.mu.Unlock()
+	f.statusCalls++
+	return f.status, f.statusErr
 }
 
-func (f *fakePV) ListSubscribers(_ context.Context, p provisioner.ListParams) (provisioner.SubscriberList, error) {
+func (f *fakePV) VecgenSubscriber(_ context.Context, imsi string) (provisioner.VecgenSubscriber, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.lastList = p
-	f.listCalls++
-	if err := f.errs["ListSubscribers"]; err != nil {
-		return provisioner.SubscriberList{}, err
+	if err := f.errs["vecgen.get"]; err != nil {
+		return provisioner.VecgenSubscriber{}, err
 	}
-	var l provisioner.SubscriberList
-	for _, imsi := range slices.Sorted(maps.Keys(f.subs)) {
-		if strings.HasPrefix(imsi, p.Prefix) && imsi > p.Cursor {
-			l.Items = append(l.Items, f.subs[imsi])
+	s, ok := f.vecgen[imsi]
+	if !ok {
+		return s, notFound()
+	}
+	return s, nil
+}
+
+func (f *fakePV) VecgenBatchGet(_ context.Context, imsis []string) (provisioner.VecgenBatch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.batchCalls++
+	if err := f.errs["vecgen.batch"]; err != nil {
+		return provisioner.VecgenBatch{}, err
+	}
+	var b provisioner.VecgenBatch
+	for _, imsi := range imsis {
+		if s, ok := f.vecgen[imsi]; ok {
+			b.Items = append(b.Items, s)
+		} else {
+			b.NotFound = append(b.NotFound, imsi)
 		}
 	}
-	if limit := cmp.Or(p.Limit, 50); len(l.Items) > limit {
-		l.Items = l.Items[:limit]
-		l.NextCursor = l.Items[limit-1].IMSI
-	}
-	return l, nil
+	return b, nil
 }
 
-func (f *fakePV) GetSubscriber(_ context.Context, imsi string) (provisioner.Subscriber, error) {
+func (f *fakePV) CreateVecgenSubscriber(ctx context.Context, s provisioner.VecgenSubscriberCreate, key string) (provisioner.VecgenSubscriber, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.gets++
-	if err := f.errs["GetSubscriber"]; err != nil {
-		return provisioner.Subscriber{}, err
+	f.lastVecgenCreate = s
+	if err := f.record(ctx, "vecgen.create", key); err != nil {
+		return provisioner.VecgenSubscriber{}, err
 	}
-	s, ok := f.subs[imsi]
+	if _, ok := f.vecgen[s.IMSI]; ok {
+		return provisioner.VecgenSubscriber{}, pvError(409, provisioner.CauseSubscriberExists)
+	}
+	v := provisioner.VecgenSubscriber{IMSI: s.IMSI, State: s.State, SQN: s.SQN, AMF: s.AMF, SQNType: s.SQNType, AllowedClientIDs: s.AllowedClientIDs}
+	f.vecgen[s.IMSI] = v
+	return v, f.applyErrs["vecgen.create"]
+}
+
+func (f *fakePV) UpdateVecgenSubscriber(ctx context.Context, imsi string, u provisioner.VecgenSubscriberUpdate, key string) (provisioner.VecgenSubscriber, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastVecgenUpdate = u
+	if err := f.record(ctx, "vecgen.update", key); err != nil {
+		return provisioner.VecgenSubscriber{}, err
+	}
+	v, ok := f.vecgen[imsi]
 	if !ok {
-		return provisioner.Subscriber{}, pvNotFound(provisioner.CauseUserNotFound)
+		return v, notFound()
+	}
+	v.AMF, v.SQN, v.SQNType = cmpOr(u.AMF, v.AMF), cmpOr(u.SQN, v.SQN), cmpOr(u.SQNType, v.SQNType)
+	if u.AllowedClientIDs != nil {
+		v.AllowedClientIDs = *u.AllowedClientIDs
+	}
+	f.vecgen[imsi] = v
+	return v, nil
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+func (f *fakePV) VecgenClients(context.Context) ([]provisioner.VecgenClient, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.clients), f.errs["vecgen.clients"]
+}
+
+func (f *fakePV) RadiusSubscriber(_ context.Context, imsi string) (provisioner.RadiusSubscriber, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.errs["radius.get"]; err != nil {
+		return provisioner.RadiusSubscriber{}, err
+	}
+	s, ok := f.radius[imsi]
+	if !ok {
+		return s, notFound()
 	}
 	return s, nil
 }
 
-func (f *fakePV) CreateSubscriber(ctx context.Context, in provisioner.SubscriberCreate, key string) (provisioner.Subscriber, error) {
+func (f *fakePV) RadiusBatchGet(_ context.Context, imsis []string) (provisioner.RadiusBatch, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record(ctx, "CreateSubscriber", key)
-	f.lastCreate = in
-	if err := f.errs["CreateSubscriber"]; err != nil {
-		return provisioner.Subscriber{}, err
+	f.batchCalls++
+	if err := f.errs["radius.batch"]; err != nil {
+		return provisioner.RadiusBatch{}, err
 	}
-	if _, ok := f.subs[in.IMSI]; ok {
-		return provisioner.Subscriber{}, pvConflict(provisioner.CauseSubscriberExists)
-	}
-	ks := keyStoreOf(in.IMSI)
-	s := provisioner.Subscriber{IMSI: in.IMSI, KeyStore: ks, Key: &provisioner.Key{AMF: in.AMF, SQN: in.SQN},
-		Policy: &in.Policy, Status: provisioner.PolicyActive, Issues: []provisioner.Issue{}}
-	f.subs[in.IMSI] = s
-	f.keys[in.IMSI] = provisioner.SubscriberKeys{Ki: in.Ki, OPc: in.OPc}
-	return s, nil
-}
-
-func (f *fakePV) UpdateSubscriber(ctx context.Context, imsi string, u provisioner.SubscriberUpdate, key string) (provisioner.Subscriber, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "UpdateSubscriber", key)
-	f.lastUpdate = u
-	if err := f.errs["UpdateSubscriber"]; err != nil {
-		return provisioner.Subscriber{}, err
-	}
-	s, ok := f.subs[imsi]
-	if !ok || s.Key == nil {
-		return provisioner.Subscriber{}, pvNotFound(provisioner.CauseUserNotFound)
-	}
-	k := *s.Key
-	k.AMF, k.SQN, k.SQNType = cmp.Or(u.AMF, k.AMF), cmp.Or(u.SQN, k.SQN), cmp.Or(u.SQNType, k.SQNType)
-	if u.AllowPlain != nil {
-		k.AllowPlain = new(*u.AllowPlain)
-	}
-	s.Key = &k
-	f.subs[imsi] = s
-	return s, nil
-}
-
-func (f *fakePV) DeleteSubscriber(ctx context.Context, imsi, key string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "DeleteSubscriber", key)
-	if err := f.errs["DeleteSubscriber"]; err != nil {
-		return err
-	}
-	if _, ok := f.subs[imsi]; !ok {
-		return pvNotFound(provisioner.CauseUserNotFound)
-	}
-	delete(f.subs, imsi)
-	return nil
-}
-
-func (f *fakePV) GetSubscriberKeys(ctx context.Context, imsi string) (provisioner.SubscriberKeys, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "GetSubscriberKeys", "")
-	if err := f.errs["GetSubscriberKeys"]; err != nil {
-		return provisioner.SubscriberKeys{}, err
-	}
-	k, ok := f.keys[imsi]
-	if !ok {
-		return provisioner.SubscriberKeys{}, pvNotFound(provisioner.CauseUserNotFound)
-	}
-	return k, nil
-}
-
-func (f *fakePV) PutPolicy(ctx context.Context, imsi string, p provisioner.PolicyPut, key string) (provisioner.Policy, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "PutPolicy", key)
-	f.lastPut = p
-	if err := f.errs["PutPolicy"]; err != nil {
-		return provisioner.Policy{}, false, err
-	}
-	s, ok := f.subs[imsi]
-	if !ok {
-		return provisioner.Policy{}, false, pvNotFound(provisioner.CauseUserNotFound)
-	}
-	created := s.Policy == nil
-	if created {
-		s.Status = provisioner.PolicyActive
-	}
-	s.Policy = &p
-	f.subs[imsi] = s
-	return provisioner.Policy{IMSI: imsi, Default: p.Default, Rules: p.Rules, Status: s.Status}, created, nil
-}
-
-func (f *fakePV) SetPolicyStatus(ctx context.Context, imsi, status, key string) (provisioner.Policy, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "SetPolicyStatus "+status, key)
-	if err := f.errs["SetPolicyStatus"]; err != nil {
-		return provisioner.Policy{}, err
-	}
-	s, ok := f.subs[imsi]
-	if !ok || s.Policy == nil {
-		return provisioner.Policy{}, pvNotFound(provisioner.CausePolicyNotFound)
-	}
-	s.Status = status
-	f.subs[imsi] = s
-	return provisioner.Policy{IMSI: imsi, Default: s.Policy.Default, Rules: s.Policy.Rules, Status: status}, nil
-}
-
-func (f *fakePV) ListRADIUSClients(context.Context) ([]provisioner.RADIUSClient, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.errs["ListRADIUSClients"]; err != nil {
-		return nil, err
-	}
-	out := slices.Collect(maps.Values(f.clients))
-	slices.SortFunc(out, func(a, b provisioner.RADIUSClient) int { return cmp.Compare(a.IP, b.IP) })
-	return out, nil
-}
-
-func (f *fakePV) CreateRADIUSClient(ctx context.Context, rc provisioner.RADIUSClientCreate, key string) (provisioner.RADIUSClient, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "CreateRADIUSClient", key)
-	if err := f.errs["CreateRADIUSClient"]; err != nil {
-		return provisioner.RADIUSClient{}, err
-	}
-	for _, c := range f.clients {
-		if c.IP == rc.IP {
-			return provisioner.RADIUSClient{}, pvConflict(provisioner.CauseClientExists)
+	var b provisioner.RadiusBatch
+	for _, imsi := range imsis {
+		if s, ok := f.radius[imsi]; ok {
+			b.Items = append(b.Items, s)
+		} else {
+			b.NotFound = append(b.NotFound, imsi)
 		}
 	}
-	c := provisioner.RADIUSClient{ID: f.nextID, IP: rc.IP, Name: rc.Name, Vendor: rc.Vendor}
-	f.nextID++
-	f.clients[c.ID] = c
-	f.secrets[c.ID] = rc.Secret
-	return c, nil
+	return b, nil
 }
 
-func (f *fakePV) GetRADIUSClient(_ context.Context, id int64) (provisioner.RADIUSClient, error) {
+func (f *fakePV) CreateRadiusSubscriber(ctx context.Context, s provisioner.RadiusSubscriberCreate, key string) (provisioner.RadiusSubscriber, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	c, ok := f.clients[id]
+	if err := f.record(ctx, "radius.create", key); err != nil {
+		return provisioner.RadiusSubscriber{}, err
+	}
+	if _, ok := f.radius[s.IMSI]; ok {
+		return provisioner.RadiusSubscriber{}, pvError(409, provisioner.CauseSubscriberExists)
+	}
+	v := provisioner.RadiusSubscriber{IMSI: s.IMSI, State: s.State, SourceID: s.SourceID, Rules: s.Rules}
+	f.radius[s.IMSI] = v
+	return v, f.applyErrs["radius.create"]
+}
+
+func (f *fakePV) UpdateRadiusSubscriber(ctx context.Context, imsi string, u provisioner.RadiusSubscriberUpdate, key string) (provisioner.RadiusSubscriber, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastRadiusUpdate = u
+	if err := f.record(ctx, "radius.update", key); err != nil {
+		return provisioner.RadiusSubscriber{}, err
+	}
+	v, ok := f.radius[imsi]
 	if !ok {
-		return provisioner.RADIUSClient{}, pvNotFound(provisioner.CauseClientNotFound)
+		return v, notFound()
 	}
-	return c, nil
+	if v.State == "terminated" {
+		return v, pvError(409, provisioner.CauseSubscriberTerminated)
+	}
+	v.SourceID = cmpOr(u.SourceID, v.SourceID)
+	if u.Rules != nil {
+		v.Rules = u.Rules
+	}
+	f.radius[imsi] = v
+	return v, nil
 }
 
-func (f *fakePV) UpdateRADIUSClient(ctx context.Context, id int64, u provisioner.RADIUSClientUpdate, key string) (provisioner.RADIUSClient, error) {
+func (f *fakePV) RadiusSources(context.Context) ([]provisioner.Source, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record(ctx, "UpdateRADIUSClient", key)
-	f.lastClientUpdate = u
-	if err := f.errs["UpdateRADIUSClient"]; err != nil {
-		return provisioner.RADIUSClient{}, err
-	}
-	c, ok := f.clients[id]
-	if !ok {
-		return provisioner.RADIUSClient{}, pvNotFound(provisioner.CauseClientNotFound)
-	}
-	if u.IP != nil {
-		c.IP = *u.IP
-	}
-	if u.Name != nil {
-		c.Name = *u.Name
-	}
-	if u.Vendor != nil {
-		c.Vendor = *u.Vendor
-	}
-	if u.Secret != nil {
-		f.secrets[id] = *u.Secret
-	}
-	f.clients[id] = c
-	return c, nil
+	return slices.Clone(f.sources), f.errs["radius.sources"]
 }
 
-func (f *fakePV) DeleteRADIUSClient(ctx context.Context, id int64, key string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "DeleteRADIUSClient", key)
-	if _, ok := f.clients[id]; !ok {
-		return pvNotFound(provisioner.CauseClientNotFound)
-	}
-	delete(f.clients, id)
-	return nil
-}
-
-func (f *fakePV) GetRADIUSClientSecret(ctx context.Context, id int64) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "GetRADIUSClientSecret", "")
-	s, ok := f.secrets[id]
-	if !ok {
-		return "", pvNotFound(provisioner.CauseClientNotFound)
-	}
-	return s, nil
-}
-
-func (f *fakePV) ListSessions(_ context.Context, p provisioner.SessionParams) (provisioner.SessionList, error) {
+func (f *fakePV) Sessions(_ context.Context, p provisioner.SessionParams) (provisioner.SessionList, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastSessions = p
-	if err := f.errs["ListSessions"]; err != nil {
+	if err := f.errs["radius.sessions"]; err != nil {
 		return provisioner.SessionList{}, err
 	}
 	var l provisioner.SessionList
 	for _, s := range f.sessions {
-		if p.IMSI == "" || s.IMSI == p.IMSI {
-			l.Total++
-			if len(l.Items) < cmp.Or(p.Limit, 100) {
-				l.Items = append(l.Items, s)
-			}
+		if (p.TenantID != 0 && s.TenantID == p.TenantID) || slices.Contains(p.IMSIs, s.IMSI) {
+			l.Items = append(l.Items, s)
 		}
 	}
 	return l, nil
 }
 
-// ---- 認可ポリシーの一覧、操作の記録、監査ログ（ステップ 5） ----
+// side は口の下流の加入者の状態を読み書きする。
+func (f *fakePV) state(d provisioner.Downstream, imsi string) (string, bool) {
+	if d == provisioner.Vecgen {
+		s, ok := f.vecgen[imsi]
+		return s.State, ok
+	}
+	s, ok := f.radius[imsi]
+	return s.State, ok
+}
 
-func (f *fakePV) ListPolicies(_ context.Context, p provisioner.ListParams) (provisioner.PolicyList, error) {
+func (f *fakePV) setState(d provisioner.Downstream, imsi, state string) {
+	if d == provisioner.Vecgen {
+		s := f.vecgen[imsi]
+		s.State = state
+		f.vecgen[imsi] = s
+		return
+	}
+	s := f.radius[imsi]
+	s.State = state
+	f.radius[imsi] = s
+}
+
+func (f *fakePV) SetState(ctx context.Context, d provisioner.Downstream, imsi string, ch provisioner.StateChange, key string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.policyCalls++
-	if err := f.errs["ListPolicies"]; err != nil {
-		return provisioner.PolicyList{}, err
+	if err := f.record(ctx, string(d)+".state."+ch.State, key); err != nil {
+		return "", err
 	}
-	var l provisioner.PolicyList
-	var rest []provisioner.Policy
-	for _, imsi := range slices.Sorted(maps.Keys(f.subs)) {
-		s := f.subs[imsi]
-		if s.Policy == nil {
-			continue
-		}
-		l.Total++
-		if imsi > p.Cursor {
-			rest = append(rest, provisioner.Policy{IMSI: imsi, Default: s.Policy.Default, Rules: s.Policy.Rules, Status: s.Status})
-		}
+	cur, ok := f.state(d, imsi)
+	switch {
+	case !ok:
+		return "", notFound()
+	case cur == "terminated" && ch.State != "terminated":
+		return "", pvError(409, provisioner.CauseStateTransitionNotAllowed)
 	}
-	if limit := cmp.Or(p.Limit, 50); len(rest) > limit {
-		rest = rest[:limit]
-		l.NextCursor = rest[limit-1].IMSI
-	}
-	l.Items = rest
-	return l, nil
+	f.setState(d, imsi, ch.State)
+	return ch.State, f.applyErrs[string(d)+".state"]
 }
 
-func (f *fakePV) ListOperations(_ context.Context, status string, limit int) (provisioner.OperationList, error) {
+func (f *fakePV) Reinstate(ctx context.Context, d provisioner.Downstream, imsi, reason, key string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.errs["ListOperations"]; err != nil {
-		return provisioner.OperationList{}, err
+	if err := f.record(ctx, string(d)+".reinstate", key); err != nil {
+		return "", err
 	}
-	var l provisioner.OperationList
-	for _, id := range slices.Sorted(maps.Keys(f.opsByID)) {
-		op := f.opsByID[id]
-		if (status == "" && slices.Contains(operationStatuses, op.Status)) || op.Status == status {
-			l.Total++
-			if len(l.Items) < limit {
-				l.Items = append(l.Items, op)
-			}
-		}
+	cur, ok := f.state(d, imsi)
+	switch {
+	case !ok:
+		return "", notFound()
+	case cur != "terminated":
+		return "", pvError(409, provisioner.CauseStateTransitionNotAllowed)
 	}
-	return l, nil
+	f.setState(d, imsi, "inactive")
+	return "inactive", nil
 }
 
-func (f *fakePV) GetOperation(_ context.Context, id string) (provisioner.Operation, error) {
+func (f *fakePV) DeleteSubscriber(ctx context.Context, d provisioner.Downstream, imsi, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	op, ok := f.opsByID[id]
-	if !ok {
-		return provisioner.Operation{}, pvNotFound(provisioner.CauseOperationNotFound)
+	if err := f.record(ctx, string(d)+".delete", key); err != nil {
+		return err
 	}
-	return op, nil
+	cur, ok := f.state(d, imsi)
+	switch {
+	case !ok:
+		return notFound()
+	case cur == "active":
+		return pvError(409, provisioner.CauseSubscriberActive)
+	}
+	if d == provisioner.Vecgen {
+		delete(f.vecgen, imsi)
+	} else {
+		delete(f.radius, imsi)
+	}
+	return nil
 }
 
-func (f *fakePV) RetryOperation(ctx context.Context, id, key string) (provisioner.Operation, error) {
+func (f *fakePV) AuditLogs(_ context.Context, src provisioner.AuditSource, _ provisioner.AuditLogParams) (provisioner.AuditLogList, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.record(ctx, "RetryOperation", key)
-	if err := f.errs["RetryOperation"]; err != nil {
-		return provisioner.Operation{}, err
-	}
-	op := f.opsByID[id]
-	op.Status = provisioner.OpCompleted
-	f.opsByID[id] = op
-	return op, nil
-}
-
-func (f *fakePV) DismissOperation(ctx context.Context, id, key string) (provisioner.Operation, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.record(ctx, "DismissOperation", key)
-	op := f.opsByID[id]
-	op.Status = provisioner.OpDismissed
-	f.opsByID[id] = op
-	return op, nil
-}
-
-func (f *fakePV) ListAuditLogs(context.Context, provisioner.AuditLogParams) (provisioner.AuditLogList, error) {
-	return provisioner.AuditLogList{Items: f.pvAudit}, f.errs["ListAuditLogs"]
-}
-
-func (f *fakePV) ListProvAuditLogs(context.Context, provisioner.AuditLogParams) (provisioner.ProvAuditLogList, error) {
-	return provisioner.ProvAuditLogList{Items: f.provAudit}, f.errs["ListProvAuditLogs"]
-}
-
-func (f *fakePV) ListAkaAuditLogs(context.Context, provisioner.AuditLogParams) (provisioner.AkaAuditLogList, error) {
-	return provisioner.AkaAuditLogList{Items: f.akaAudit}, f.errs["ListAkaAuditLogs"]
+	return provisioner.AuditLogList{Items: f.audit[src]}, f.errs["audit"]
 }

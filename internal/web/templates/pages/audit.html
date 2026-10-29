@@ -2,14 +2,14 @@
 {{with .Data -}}
 <h1 class="text-2xl font-bold mb-4">監査ログ</h1>
 {{template "audit-tabs" .Tabs}}
-<p class="mb-2">本BFF の監査ログ（利用者の変更操作と、秘密の値の表示）。新しい順。{{if not .Filter.Selectable}}あなたのテナントが対象のものだけを出します。{{end}}</p>
-<p class="text-sm text-base-content/60 mb-4">トレースID は、provisioner と下流の監査ログと同じ値です。</p>
+<p class="mb-2">aka-ossbss の監査ログ（利用者の変更操作）。新しい順。{{if not .Filter.Selectable}}あなたのテナントが対象のものだけを出します。{{end}}</p>
+<p class="text-sm text-base-content/60 mb-4">トレースID は、aka-provisioner と下流の監査ログと同じ値です。結果が分からなかった操作は、内容の result が unknown です。</p>
 
 <form method="get" action="/audit" class="flex flex-wrap items-end gap-2 mb-4">
   {{- if .Filter.Selectable}}
   <fieldset class="fieldset">
     <legend class="fieldset-legend">テナント</legend>
-    <select name="tenant" class="select">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants)}}</select>
+    <select name="tenant" class="select">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants "AllowNone" true)}}</select>
   </fieldset>
   {{- end}}
   <fieldset class="fieldset">

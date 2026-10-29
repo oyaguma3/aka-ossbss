@@ -12,11 +12,8 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 )
 
-const testOperationID = "11111111-2222-4333-8444-555555555555"
-
-// TestStep5RoutesByRole は、ステップ 5 の画面を役割で断ることを確かめる（設計概要 §6.2）。対象を持つ操作でも、
-// システム管理者だけの操作は対象の範囲によらず 403 にする（範囲で応答が変わらないので、存在の有無は漏れない）。
-func TestStep5RoutesByRole(t *testing.T) {
+// TestAdminRoutesByRole は、テナント・アカウント・監査ログの画面を役割で断ることを確かめる（設計概要 §5）。
+func TestAdminRoutesByRole(t *testing.T) {
 	routes := []struct {
 		method, path string
 		form         url.Values
@@ -27,28 +24,16 @@ func TestStep5RoutesByRole(t *testing.T) {
 		{"GET", "/tenants/10", nil, []string{"d"}},
 		{"POST", "/tenants/10/rename", url.Values{"name": {"改名"}}, []string{"d"}},
 		{"POST", "/tenants/20/delete", url.Values{}, []string{"d"}},
-		{"GET", "/assignments/orphans", nil, []string{"d"}},
-		{"POST", "/assignments/orphans/delete", url.Values{"imsi": {"001019999999999"}}, []string{"d"}},
-		{"POST", "/subscribers/" + imsiOwn + "/tenant", url.Values{"tenant": {"20"}}, []string{"d"}},
-		{"POST", "/subscribers/" + imsiNone + "/tenant", url.Values{"tenant": {"10"}}, []string{"d"}},
-		{"POST", "/subscribers/assign", url.Values{"imsi": {imsiOwn}, "tenant": {"20"}}, []string{"d"}},
-		{"POST", "/clients/1/tenant", url.Values{"tenant": {"20"}}, []string{"d"}},
-		{"POST", "/clients/assign", url.Values{"id": {"1"}, "tenant": {"20"}}, []string{"d"}},
-		{"GET", "/operations", nil, []string{"c", "d"}},
-		{"GET", "/operations/" + testOperationID, nil, []string{"c", "d"}},
-		{"POST", "/operations/" + testOperationID + "/retry", url.Values{}, []string{"d"}},
-		{"POST", "/operations/" + testOperationID + "/dismiss", url.Values{}, []string{"d"}},
 		{"GET", "/audit", nil, []string{"b", "c", "d"}},
-		{"GET", "/audit/provisioner", nil, []string{"d"}},
-		{"GET", "/audit/prov", nil, []string{"d"}},
-		{"GET", "/audit/aka", nil, []string{"d"}},
+		{"GET", "/audit/provisioner", nil, []string{"c", "d"}},
+		{"GET", "/audit/vecgen", nil, []string{"c", "d"}},
+		{"GET", "/audit/radius", nil, []string{"c", "d"}},
 		{"GET", "/accounts", nil, []string{"b", "d"}},
 		{"POST", "/accounts", url.Values{"email": {"new@example.com"}}, []string{"b", "d"}},
 	}
 	for _, rt := range routes {
 		for _, role := range []string{"a", "b", "c", "d"} {
 			e := newTestEnv()
-			e.pv.opsByID[testOperationID] = provisioner_failedOp(imsiOwn)
 			h := e.handler(t, role+"@example.com")
 			var code int
 			if rt.method == "GET" {
@@ -63,10 +48,14 @@ func TestStep5RoutesByRole(t *testing.T) {
 			case !allowed && code != http.StatusForbidden:
 				t.Errorf("%s %s by %s = %d, want 403", rt.method, rt.path, role, code)
 			}
-			if !allowed && (len(e.pv.ops) != 0 || len(e.db.audit) != 0) {
-				t.Errorf("%s %s by %s: side effects %v %v", rt.method, rt.path, role, e.pv.ops, e.db.audit)
+			if !allowed && (len(e.pv.writes()) != 0 || len(e.db.audit) != 0) {
+				t.Errorf("%s %s by %s: side effects %v %v", rt.method, rt.path, role, e.pv.writes(), e.db.audit)
 			}
 		}
+	}
+	// 知らない監査ログの元は 404。
+	if w := get(newTestEnv().handler(t, "d@example.com"), "/audit/prov"); w.Code != 404 {
+		t.Errorf("unknown audit source = %d", w.Code)
 	}
 }
 
@@ -78,16 +67,16 @@ func TestNavByRole(t *testing.T) {
 		want  []string
 		not   []string
 	}{
-		{"a@example.com", []string{`href="/subscribers"`}, []string{`href="/tenants"`, `href="/accounts"`, `href="/operations"`, `href="/audit"`}},
+		{"a@example.com", []string{`href="/subscribers"`, `href="/sessions"`}, []string{`href="/tenants"`, `href="/accounts"`, `href="/audit"`, `href="/clients"`}},
 		{"b@example.com", []string{`href="/accounts"`, `href="/audit"`}, []string{`href="/tenants"`, `href="/operations"`}},
-		{"c@example.com", []string{`href="/operations"`, `href="/audit"`}, []string{`href="/tenants"`, `href="/accounts"`}},
-		{"d@example.com", []string{`href="/tenants"`, `href="/accounts"`, `href="/operations"`, `href="/audit"`}, nil},
+		{"c@example.com", []string{`href="/audit"`}, []string{`href="/tenants"`, `href="/accounts"`, `href="/operations"`}},
+		{"d@example.com", []string{`href="/tenants"`, `href="/accounts"`, `href="/audit"`}, []string{`href="/operations"`}},
 	} {
-		body := get(e.handler(t, c.email), "/clients").Body.String()
+		body := get(e.handler(t, c.email), "/sessions").Body.String()
 		nav := body[strings.Index(body, `aria-label="メニュー"`):strings.Index(body, "</nav>")]
 		mustContain(t, nav, c.want...)
 		mustNotContain(t, nav, c.not...)
-		mustContain(t, nav, `href="/clients" class="menu-active"`)
+		mustContain(t, nav, `href="/sessions" class="menu-active"`)
 	}
 }
 
@@ -253,8 +242,9 @@ func TestTenants(t *testing.T) {
 	e := newTestEnv()
 	h := e.handler(t, "d@example.com")
 	body := get(h, "/tenants").Body.String()
-	// テナントA: 加入者 2（own・aka）、RADIUSクライアント 1、アカウント 2（a・b）。
-	mustContain(t, body, "テナントA", `href="/subscribers?tenant=10">2<`, `href="/clients?tenant=10">1<`, `href="/accounts?tenant=10">2<`)
+	// テナントA: 加入者 2（own・both。削除済みは数えない）、アカウント 2（a・b）。
+	mustContain(t, body, "テナントA", `href="/subscribers?tenant=10">2<`, `href="/accounts?tenant=10">2<`)
+	mustNotContain(t, body, "/clients")
 	// 作成（名前の誤り、重複）。
 	if w := post(h, "/tenants", url.Values{"name": {"  "}}); w.Code != 400 {
 		t.Errorf("empty = %d", w.Code)
@@ -276,7 +266,7 @@ func TestTenants(t *testing.T) {
 	}
 	// 属するものが残っていれば削除を断り、件数を出す。
 	w = post(h, "/tenants/10/delete", url.Values{})
-	if w.Code != 409 || !strings.Contains(w.Body.String(), "加入者 2 件、RADIUSクライアント 1 件、アカウント 2 件が属しています") {
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "加入者 2 件、アカウント 2 件が属しています") {
 		t.Errorf("in use = %d %s", w.Code, w.Body)
 	}
 	if w := post(h, "/tenants/"+id+"/delete", url.Values{}); w.Code != 200 || w.Header().Get("HX-Redirect") != "/tenants?deleted=1" {

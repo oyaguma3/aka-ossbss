@@ -12,7 +12,7 @@
   <form method="get" action="/accounts" class="flex flex-wrap items-end gap-2 mb-4">
     <fieldset class="fieldset">
       <legend class="fieldset-legend">テナント</legend>
-      <select name="tenant" class="select">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants)}}</select>
+      <select name="tenant" class="select">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants "AllowNone" true)}}</select>
     </fieldset>
     <button type="submit" class="btn">絞り込む</button>
   </form>

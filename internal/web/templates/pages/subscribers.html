@@ -1,92 +1,100 @@
 {{define "content" -}}
 {{with .Data -}}
 <div class="flex flex-wrap items-center justify-between gap-2 mb-4">
-  <h1 class="text-2xl font-bold">加入者{{if .HasTotal}} <span class="text-base font-normal text-base-content/60">{{.Total}} 件</span>{{end}}</h1>
-  {{- if .CanCreate}}
-  <a href="/subscribers/new" class="btn btn-primary">加入者の登録</a>
-  {{- end}}
+  <h1 class="text-2xl font-bold">加入者 <span class="text-base font-normal text-base-content/60">{{.Total}} 件</span></h1>
+  <div class="flex gap-2">
+    {{- if .CanVecgenNew}}<a href="/subscribers/new?side=vecgen" class="btn btn-primary">vecgen 側の登録</a>{{end}}
+    {{- if .CanRadiusNew}}<a href="/subscribers/new?side=radius" class="btn{{if not .CanVecgenNew}} btn-primary{{end}}">radius 側の登録</a>{{end}}
+  </div>
 </div>
-{{template "alerts" (dict "Message" .Message "Error" .Error)}}
+{{template "alerts" (dict "Error" .Error)}}
 
 <form method="get" action="/subscribers" class="flex flex-wrap items-end gap-2 mb-4">
   <fieldset class="fieldset">
     <legend class="fieldset-legend">IMSI の前方一致</legend>
-    <input name="prefix" value="{{.Prefix}}" maxlength="15" inputmode="numeric" pattern="[0-9]{1,15}" class="input font-mono" placeholder="例 00101">
+    <input name="prefix" value="{{.Query.Prefix}}" maxlength="15" inputmode="numeric" pattern="[0-9]{1,15}" class="input w-40 font-mono" placeholder="例 00101">
   </fieldset>
   {{- if .Filter.Selectable}}
   <fieldset class="fieldset">
     <legend class="fieldset-legend">テナント</legend>
-    <select name="tenant" class="select">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants)}}</select>
+    <select name="tenant" class="select w-40">{{template "tenant-filter-options" (dict "Value" .Filter.Value "Tenants" .Tenants)}}</select>
   </fieldset>
   {{- end}}
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">vecgen 側</legend>
+    <select name="vecgen" class="select w-28">
+      <option value="">すべて</option>
+      {{- range .States}}<option value="{{.}}"{{if eq . $.Data.Query.VecgenState}} selected{{end}}>{{stateLabel .}}</option>{{end}}
+    </select>
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">radius 側</legend>
+    <select name="radius" class="select w-28">
+      <option value="">すべて</option>
+      {{- range .States}}<option value="{{.}}"{{if eq . $.Data.Query.RadiusState}} selected{{end}}>{{stateLabel .}}</option>{{end}}
+    </select>
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">取得先</legend>
+    <select name="source" class="select w-32">
+      <option value="">すべて</option>
+      {{- range .Sources}}<option value="{{.}}"{{if eq . $.Data.Query.Source}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </fieldset>
+  <div class="flex flex-col gap-1 pb-2">
+    <label class="label cursor-pointer gap-2 text-sm"><input type="checkbox" name="mismatch" value="1" class="checkbox checkbox-sm"{{if .Query.Mismatch}} checked{{end}}>食い違いだけ</label>
+    <label class="label cursor-pointer gap-2 text-sm"><input type="checkbox" name="check" value="1" class="checkbox checkbox-sm"{{if .Query.CheckNeeded}} checked{{end}}>確かめているものだけ</label>
+    <label class="label cursor-pointer gap-2 text-sm"><input type="checkbox" name="deleted" value="1" class="checkbox checkbox-sm"{{if .Query.Deleted}} checked{{end}}>削除済みだけ</label>
+  </div>
   <button type="submit" class="btn">検索</button>
+  <a class="btn btn-ghost" href="/subscribers">条件を消す</a>
 </form>
 
-{{- if .Filter.None}}
-<p class="text-sm text-base-content/60 mb-2">所属の記録のない加入者（本BFF の外で登録されたもの、所属の記録に失敗したもの）を出します。provisioner の一覧を 500 件ずつ調べ、1 回の表示で 5,000 件までを調べます。</p>
-{{- end}}
-{{- if .ScanStopped}}
-<div role="status" class="alert alert-info mb-4"><span>{{.Scanned}} 件を調べました（IMSI {{.ScanLast}} まで）。続きは「続きを探す」で調べます。</span></div>
-{{- end}}
+{{- with .FetchError}}<div role="status" class="alert alert-warning mb-4"><span>{{.}}</span></div>{{end}}
 
-{{- if and .CanAssign .Rows}}
-{{template "bulk-assign" (dict "Action" "/subscribers/assign" "Back" .Back "Tenants" .Tenants "What" "加入者")}}
-{{- end}}
 <div class="overflow-x-auto bg-base-100 rounded-box shadow">
   <table class="table table-sm">
     <thead>
       <tr>
-        {{- if .CanAssign}}<th class="w-8"><span class="sr-only">選ぶ</span></th>{{end}}
         <th>IMSI</th>
-        {{- if .Staff}}<th>テナント</th><th>鍵の置き場所</th><th>SQN</th><th>AMF</th>{{end}}
-        <th>認可ポリシー</th>
-        <th>状態</th>
-        {{- if .Staff}}<th>食い違い</th>{{end}}
+        {{- if .Staff}}<th>テナント</th>{{end}}
+        <th>vecgen 側</th>
+        {{- if .Staff}}<th>AMF</th><th>SQN</th>{{end}}
+        <th>radius 側</th><th>取得先</th><th>ルール</th><th></th>
       </tr>
     </thead>
     <tbody>
       {{- range .Rows}}
       <tr>
-        {{- if $.Data.CanAssign}}
-        <td>{{if not .Missing}}<input type="checkbox" name="imsi" value="{{.IMSI}}" form="bulk-assign" class="checkbox checkbox-sm" aria-label="{{.IMSI}} を選ぶ">{{end}}</td>
+        <td class="font-mono"><a class="link" href="/subscribers/{{.IMSI}}">{{.IMSI}}</a></td>
+        {{- if $.Data.Staff}}<td>{{$.Data.Tenants.Name .TenantID}}</td>{{end}}
+        <td>{{template "state-badge" .VecgenState}}{{if .VecgenMissing}} <span class="badge badge-warning badge-sm">下流にない</span>{{end}}</td>
+        {{- if $.Data.Staff}}
+        {{- with .Vecgen}}<td class="font-mono">{{.AMF}}</td><td class="font-mono">{{.SQN}}</td>{{else}}<td>-</td><td>-</td>{{end}}
         {{- end}}
-        <td class="font-mono">
-          {{- if .Missing}}{{.IMSI}}{{else}}<a class="link" href="/subscribers/{{.IMSI}}">{{.IMSI}}</a>{{end -}}
+        <td>{{template "state-badge" .RadiusState}}{{if .RadiusMissing}} <span class="badge badge-warning badge-sm">下流にない</span>{{end}}</td>
+        <td class="font-mono">{{or .RadiusSourceID "-"}}</td>
+        <td>{{with .Radius}}{{len .Rules}} 件{{else}}-{{end}}</td>
+        <td class="whitespace-nowrap">
+          {{- if .Deleted}}<span class="badge badge-ghost badge-sm">削除済み</span>{{end}}
+          {{- if .CheckNeeded}} <span class="badge badge-info badge-sm" title="下流の結果が分からなかった操作があります">確かめています</span>{{end}}
+          {{- if and (not .Deleted) .Mismatch}} <span class="badge badge-warning badge-sm badge-outline">食い違い</span>{{end}}
         </td>
-        {{- if $.Data.Staff}}
-        <td>{{$.Data.Tenants.Name .Tenant}}</td>
-        {{- end}}
-        {{- if .Missing}}
-        <td colspan="{{if $.Data.Staff}}6{{else}}2{{end}}"><span class="badge badge-warning badge-sm">下流にない</span> <span class="text-sm text-base-content/60">所属の記録だけが残っています（本BFF の外で削除された可能性があります）</span></td>
-        {{- else if .Failed}}
-        <td colspan="{{if $.Data.Staff}}6{{else}}2{{end}}" class="text-base-content/60">取得できませんでした</td>
-        {{- else}}
-        {{- with .Sub}}
-        {{- if $.Data.Staff}}
-        <td>{{keyStoreLabel .KeyStore}}</td>
-        {{- with .Key}}<td class="font-mono">{{.SQN}}</td><td class="font-mono">{{.AMF}}</td>{{else}}<td colspan="2" class="text-base-content/60">鍵なし</td>{{end}}
-        {{- end}}
-        <td>{{with .Policy}}既定 {{.Default}}、ルール {{len .Rules}} 件{{else}}<span class="text-base-content/60">なし</span>{{end}}</td>
-        <td>{{template "status-badge" .}}</td>
-        {{- if $.Data.Staff}}
-        <td>{{range $i, $e := .Issues}}{{if $i}}、{{end}}<span class="text-warning">{{issueLabel $e}}</span>{{end}}</td>
-        {{- end}}
-        {{- end}}
-        {{- end}}
       </tr>
       {{- else}}
-      <tr><td colspan="{{if .CanAssign}}9{{else if .Staff}}8{{else}}3{{end}}" class="text-base-content/60">該当する加入者はありません。</td></tr>
+      <tr><td colspan="{{if .Staff}}9{{else}}6{{end}}" class="text-base-content/60">該当する加入者はありません。</td></tr>
       {{- end}}
     </tbody>
   </table>
 </div>
 
 <div class="flex flex-wrap gap-2 mt-4">
-  {{- if .Cursor}}<a class="btn btn-sm" href="/subscribers?prefix={{.Prefix}}&tenant={{.Filter.Value}}">先頭へ</a>{{end}}
-  {{- if .Next}}<a class="btn btn-sm" href="/subscribers?prefix={{.Prefix}}&tenant={{.Filter.Value}}&cursor={{.Next}}">{{if .ScanStopped}}続きを探す{{else}}次のページ{{end}}</a>{{end}}
+  {{- if .Cursor}}<a class="btn btn-sm" href="{{.Query.URL ""}}">先頭へ</a>{{end}}
+  {{- if .Next}}<a class="btn btn-sm" href="{{.Query.URL .Next}}">次のページ</a>{{end}}
 </div>
-{{- if and .Staff .Filter.All}}
-<p class="text-sm text-base-content/60 mt-4">一覧では、鍵を本PoCに置く加入者について aka-vecgen 側を調べません（「置き場所でない方にも鍵があります」は詳細でだけ分かる場合があります）。</p>
-{{- end}}
+<p class="text-sm text-base-content/60 mt-4">
+  一覧と件数は台帳（aka-ossbss が下流の成功のたびに書く写し）から出し、{{if .Staff}}AMF・SQN と{{end}}ルールの件数はそのページの分だけを下流から読みます。
+  「下流にない」は、台帳にあるのに下流で見つからなかったものです（毎日の突き合わせで台帳を直します）。
+</p>
 {{- end}}
 {{- end}}

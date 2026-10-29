@@ -8,22 +8,23 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
-	"sync"
+	"strings"
 	"time"
 
+	"github.com/oyaguma3/aka-ossbss/internal/audit"
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 	"github.com/oyaguma3/aka-ossbss/internal/trace"
 )
 
-// テナントの範囲の判定、所属の表示、二重送信の防止、監査ログ（画面仕様 §1）。
+// テナントの範囲の判定、テナントの名前と絞り込み、二重送信の防止、監査ログ（もとの画面仕様 §1）。
 
 // dbTimeout は画面の DB の操作 1 回の上限時間。
 const dbTimeout = 5 * time.Second
 
 // dbContext は DB の操作 1 回の上限時間つきのコンテキストを返す
-// （provisioner の応答を待つ間に使い切らないよう、呼び出しごとに取る）。
+// （aka-provisioner の応答を待つ間に使い切らないよう、呼び出しごとに取る）。
 func dbContext(r *http.Request) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(r.Context(), dbTimeout)
 }
@@ -34,59 +35,57 @@ func (h *Handler) dbUnavailable(w http.ResponseWriter, r *http.Request, err erro
 	h.renderError(w, r, http.StatusServiceUnavailable, "データベースに接続できません。しばらくしてから開き直してください。")
 }
 
+// can は、利用者の役割に op があるか（A・B は自分のテナントのものとして判定する。画面に出すかなどに使う）。
+func can(r *http.Request, op authz.Op) bool {
+	a := userFrom(r.Context()).Actor()
+	return authz.Allowed(a, op, a.TenantID)
+}
+
+// isStaff は、利用者が運用担当・システム管理者か（全テナントを扱い、AMF・SQN や aka-provisioner の状態を見る）。
+func isStaff(r *http.Request) bool {
+	return !userFrom(r.Context()).Role.TenantScoped()
+}
+
 // ---- テナントの範囲 ----
 
-// subscriberOutOfScope は、A・B が範囲の外の加入者を開いたときの文（存在しないときと同じ。画面仕様 §1.2）。
+// subscriberOutOfScope は、範囲の外の加入者を開いたときの文（存在しないときと同じ。もとの画面仕様 §1.2）。
 func subscriberOutOfScope(imsi string) string {
 	return "加入者 " + imsi + " は見つかりません（このテナントに属していないか、登録されていません）。"
 }
 
-// clientOutOfScope は、A・B が範囲の外の RADIUSクライアントを開いたときの文。
-func clientOutOfScope(id int64) string {
-	return "RADIUSクライアント #" + strconv.FormatInt(id, 10) + " は見つかりません（このテナントに属していないか、登録されていません）。"
-}
-
-// subscriberScope は IMSI の所属を引き、利用者がその加入者に op をしてよいかを確かめる（要求ごとに必ず通す）。
-// 範囲の外なら 404、範囲の中でも役割にない操作なら 403 を返して false。
-func (h *Handler) subscriberScope(w http.ResponseWriter, r *http.Request, imsi string, op authz.Op) (int64, bool) {
+// subscriberScope は IMSI の台帳の行を引き、利用者がその加入者に op をしてよいかを確かめる（要求ごとに必ず通す）。
+// 台帳にない・範囲の外なら 404、範囲の中でも役割にない操作なら 403 を返して false。
+func (h *Handler) subscriberScope(w http.ResponseWriter, r *http.Request, imsi string, op authz.Op) (db.Entry, bool) {
 	ctx, cancel := dbContext(r)
-	tenant, err := h.db.SubscriberTenant(ctx, imsi)
+	e, err := h.db.Subscriber(ctx, imsi)
 	cancel()
-	if err != nil {
-		h.dbUnavailable(w, r, err)
-		return 0, false
-	}
-	a := userFrom(r.Context()).Actor()
-	if !authz.Allowed(a, authz.SubscriberView, tenant) {
+	switch {
+	case errors.Is(err, db.ErrNotFound):
 		h.renderErrorLink(w, r, http.StatusNotFound, subscriberOutOfScope(imsi), "/subscribers", "加入者の一覧へ")
-		return 0, false
-	}
-	if !authz.Allowed(a, op, tenant) {
-		h.forbidden(w, r)
-		return 0, false
-	}
-	return tenant, true
-}
-
-// clientScope は RADIUSクライアントの所属を引き、利用者が op をしてよいかを確かめる（subscriberScope と同じ）。
-func (h *Handler) clientScope(w http.ResponseWriter, r *http.Request, id int64, op authz.Op) (int64, bool) {
-	ctx, cancel := dbContext(r)
-	tenant, err := h.db.ClientTenant(ctx, id)
-	cancel()
-	if err != nil {
+		return db.Entry{}, false
+	case err != nil:
 		h.dbUnavailable(w, r, err)
-		return 0, false
+		return db.Entry{}, false
 	}
 	a := userFrom(r.Context()).Actor()
-	if !authz.Allowed(a, authz.ClientView, tenant) {
-		h.renderErrorLink(w, r, http.StatusNotFound, clientOutOfScope(id), "/clients", "RADIUSクライアントの一覧へ")
-		return 0, false
+	if !authz.Allowed(a, authz.SubscriberView, e.TenantID) {
+		h.renderErrorLink(w, r, http.StatusNotFound, subscriberOutOfScope(imsi), "/subscribers", "加入者の一覧へ")
+		return db.Entry{}, false
 	}
-	if !authz.Allowed(a, op, tenant) {
+	if !authz.Allowed(a, op, e.TenantID) {
 		h.forbidden(w, r)
-		return 0, false
+		return db.Entry{}, false
 	}
-	return tenant, true
+	return e, true
+}
+
+// requireOp は、範囲を絞らない操作（または A・B の自分のテナントの操作）の権限を確かめる。なければ 403 を返して false。
+func (h *Handler) requireOp(w http.ResponseWriter, r *http.Request, op authz.Op) bool {
+	if !can(r, op) {
+		h.forbidden(w, r)
+		return false
+	}
+	return true
 }
 
 // pathIMSI は URL の IMSI を返す。形式が違えば 404 を返して false。
@@ -99,28 +98,18 @@ func (h *Handler) pathIMSI(w http.ResponseWriter, r *http.Request) (string, bool
 	return imsi, true
 }
 
-// pathClientID は URL の RADIUSクライアントの ID を返す。形式が違えば 404 を返して false。
-func (h *Handler) pathClientID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id < 1 {
-		h.notFound(w, r)
-		return 0, false
-	}
-	return id, true
-}
-
 // ---- テナントの名前と絞り込み ----
 
-// tenantInfo はテナントの一覧と、ID から名前を引く表。
+// tenantInfo はテナント（削除していないもの）の一覧と、ID から名前を引く表。
 type tenantInfo struct {
 	List  []db.Tenant
 	names map[int64]string
 }
 
-// Name はテナントの名前を返す（0 は「テナントなし」）。
+// Name はテナントの名前を返す（0 は「なし」、削除したテナントは番号）。
 func (t tenantInfo) Name(id int64) string {
 	if id == authz.NoTenant {
-		return "テナントなし"
+		return "なし"
 	}
 	if n, ok := t.names[id]; ok {
 		return n
@@ -128,7 +117,7 @@ func (t tenantInfo) Name(id int64) string {
 	return "#" + strconv.FormatInt(id, 10)
 }
 
-// Has は、そのテナントがあるか。
+// Has は、そのテナントがあるか（削除していないか）。
 func (t tenantInfo) Has(id int64) bool {
 	_, ok := t.names[id]
 	return ok
@@ -151,30 +140,31 @@ func (h *Handler) tenants(r *http.Request) (tenantInfo, error) {
 
 // tenantFilter は一覧の絞り込み（C・D のテナントの選択）。A・B は自分のテナントに固定する。
 type tenantFilter struct {
-	// Value は画面の選択の値（"" はすべて、"none" はテナントなし、それ以外はテナントの ID）。
+	// Value は画面の選択の値（"" はすべて、"none" はテナントに属さないもの、それ以外はテナントの ID）。
 	Value string
-	// All はすべて、None はテナントなし。どちらでもなければ Tenant のものに絞る。
+	// All はすべて、None はテナントに属さないもの。どちらでもなければ Tenant のものに絞る。
 	All, None bool
 	Tenant    int64
-	// Selectable は、利用者がテナントを選べるか（C・D）。
-	Selectable bool
+	// Selectable は、利用者がテナントを選べるか（C・D）。AllowNone は「なし」を選べるか（アカウントと監査ログ）。
+	Selectable, AllowNone bool
 }
 
-// filterNone は「テナントなし」の絞り込みの値。
+// filterNone は「テナントに属さないもの」の絞り込みの値。
 const filterNone = "none"
 
-// readTenantFilter は ?tenant= を読む。A・B は自分のテナントに固定する。値が正しくなければ false。
-func readTenantFilter(r *http.Request, t tenantInfo) (tenantFilter, bool) {
+// readTenantFilter は ?tenant= を読む。A・B は自分のテナントに固定する。allowNone なら「なし」も受け付ける。
+// 値が正しくなければ false。
+func readTenantFilter(r *http.Request, t tenantInfo, allowNone bool) (tenantFilter, bool) {
 	a := userFrom(r.Context()).Actor()
 	if a.Role.TenantScoped() {
 		return tenantFilter{Tenant: a.TenantID}, true
 	}
 	v := r.URL.Query().Get("tenant")
-	f := tenantFilter{Value: v, Selectable: true}
-	switch v {
-	case "":
+	f := tenantFilter{Value: v, Selectable: true, AllowNone: allowNone}
+	switch {
+	case v == "":
 		f.All = true
-	case filterNone:
+	case v == filterNone && allowNone:
 		f.None = true
 	default:
 		id, err := strconv.ParseInt(v, 10, 64)
@@ -187,12 +177,9 @@ func readTenantFilter(r *http.Request, t tenantInfo) (tenantFilter, bool) {
 	return f, true
 }
 
-// readTenantChoice は登録のフォームの所属のテナント（tenant）を読む。"none" はテナントなし。
-// 選んでいない・形式が違えば ok が false、選んだテナントがなければ exists が false。
+// readTenantChoice はフォームのテナント（登録・付け替えの先）を読む。選んでいない・形式が違えば ok が false、
+// 選んだテナントがなければ（削除済みを含む）exists が false。
 func readTenantChoice(v string, t tenantInfo) (id int64, ok, exists bool) {
-	if v == filterNone {
-		return authz.NoTenant, true, true
-	}
 	id, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || id < 1 {
 		return 0, false, false
@@ -202,27 +189,38 @@ func readTenantChoice(v string, t tenantInfo) (id int64, ok, exists bool) {
 
 // ---- 二重送信の防止 ----
 
-// idemKeyPattern は、フォームに持たせる Idempotency-Key の形式（crypto/rand.Text の出力）。
-var idemKeyPattern = regexp.MustCompile(`^[A-Z2-7]{26}$`)
+// idemKeyPattern は、フォームに持たせる Idempotency-Key の形式（crypto/rand.Text の出力に、1 つの画面の中で
+// フォームを見分ける後ろの部分を付けたもの。例 ABC…-state-vecgen-inactive）。
+var idemKeyPattern = regexp.MustCompile(`^[A-Z2-7]{26}(-[a-z0-9-]{1,64})?$`)
 
-// newIdemKey は、フォームを描くたびに作る Idempotency-Key を返す（画面仕様 §1.5）。
-// 同じフォームを送り直しても（応答を待たずに押し直した、タイムアウトの後に送り直した）、provisioner は最初の結果を返す。
+// baseKey は Idempotency-Key の画面ごとの部分（フォームを見分ける後ろの部分を除く）を返す。
+func baseKey(k string) string {
+	b, _, _ := strings.Cut(k, "-")
+	return b
+}
+
+// newIdemKey は、フォームを描くたびに作る Idempotency-Key を返す（もとの画面仕様 §1.5）。
+// 同じフォームを送り直しても（応答を待たずに押し直した、タイムアウトの後に送り直した）、aka-provisioner は最初の結果を返す。
 func newIdemKey() string { return rand.Text() }
 
-// formIdemKey は、送られてきたフォームの Idempotency-Key（項目 name）を返す（形式が違えば空。空なら付けずに送る）。
+// formIdemKey は、送られてきたフォームの Idempotency-Key（項目 name）を返す。形式が違えば新しく作る
+// （aka-provisioner への書き込みには必ず付ける。段階 3-1 の W12）。
 func formIdemKey(r *http.Request, name string) string {
 	if k := r.PostForm.Get(name); idemKeyPattern.MatchString(k) {
 		return k
 	}
-	return ""
+	return newIdemKey()
 }
 
+// sideKey は、1 つのフォームから両側に続けて書き込むときの、側ごとの Idempotency-Key（再送で同じ値になる）。
+func sideKey(key string, side db.Side) string { return key + "-" + string(side) }
+
 // keepIdemKey は、失敗の後にフォームを描き直すときの Idempotency-Key を返す。
-// provisioner に届かなかった（接続できない・タイムアウト）場合は、同じキーで送り直せるよう残す
-// （provisioner は 5xx を覚えないので、届いて失敗していても同じキーでやり直せる）。
-// provisioner が 4xx を返した場合は、その応答を覚えているので、新しいキーにする（入力を直して送ると内容が変わるため）。
+// aka-provisioner に届かなかった・結果が分からない場合は、同じキーで送り直せるよう残す
+// （aka-provisioner は 5xx を覚えないので、届いて失敗していても同じキーでやり直せる）。
+// aka-provisioner が 4xx を返した場合は、その応答を覚えているので、新しいキーにする（入力を直して送ると内容が変わるため）。
 func keepIdemKey(err error, key string) string {
-	if key != "" && provisioner.IsUnavailable(err) {
+	if key != "" && provisioner.ResultUnknown(err) {
 		return key
 	}
 	return newIdemKey()
@@ -230,36 +228,32 @@ func keepIdemKey(err error, key string) string {
 
 // ---- 監査ログ ----
 
-// 本BFF の監査ログの操作の名前（画面仕様 §1.7）。
+// aka-ossbss の監査ログの操作の名前。
 const (
-	auditSubscriberCreate   = "subscriber.create"
-	auditSubscriberUpdate   = "subscriber.update"
-	auditSubscriberDelete   = "subscriber.delete"
-	auditSubscriberKeysRead = "subscriber.keys.read"
-	auditPolicyPut          = "policy.put"
-	auditPolicySuspend      = "policy.suspend"
-	auditPolicyResume       = "policy.resume"
-	auditClientCreate       = "client.create"
-	auditClientUpdate       = "client.update"
-	auditClientDelete       = "client.delete"
-	auditClientSecretRead   = "client.secret.read"
-	auditAssignmentUpdate   = "assignment.update"
-	auditAssignmentDelete   = "assignment.delete"
-	auditTenantCreate       = "tenant.create"
-	auditTenantUpdate       = "tenant.update"
-	auditTenantDelete       = "tenant.delete"
-	auditAccountCreate      = "account.create"
-	auditAccountUpdate      = "account.update"
-	auditAccountDisable     = "account.disable"
-	auditAccountEnable      = "account.enable"
-	auditAccountDelete      = "account.delete"
-	auditOperationRetry     = "operation.retry"
-	auditOperationDismiss   = "operation.dismiss"
+	auditVecgenCreate     = "subscriber.vecgen.create"
+	auditRadiusCreate     = "subscriber.radius.create"
+	auditReregister       = "subscriber.reregister"
+	auditVecgenUpdate     = "subscriber.vecgen.update"
+	auditSourceUpdate     = "subscriber.radius.source"
+	auditPolicyUpdate     = "subscriber.radius.rules"
+	auditStateChange      = "subscriber.state"
+	auditReinstate        = "subscriber.reinstate"
+	auditSubscriberDelete = "subscriber.delete"
+	auditTenantMove       = "subscriber.tenant"
+	auditCheck            = "subscriber.check"
+	auditTenantCreate     = "tenant.create"
+	auditTenantUpdate     = "tenant.update"
+	auditTenantDelete     = "tenant.delete"
+	auditAccountCreate    = "account.create"
+	auditAccountUpdate    = "account.update"
+	auditAccountDisable   = "account.disable"
+	auditAccountEnable    = "account.enable"
+	auditAccountDelete    = "account.delete"
 )
 
-// record は、成功した操作を本BFF の監査ログに残す。tenant は対象のテナント（テナントなしは 0）。
-// detail に秘密の値（Ki / OPc、共有シークレット）を入れてはならない。書き込みに失敗しても操作は済んでいるので、
-// ERROR のログを出して続ける（画面仕様 §1.7）。
+// record は、成功した操作を aka-ossbss の監査ログ（PostgreSQL と日ごとのファイル）に残す。tenant は対象のテナント
+// （テナントに属さないものは 0）。detail に秘密の値（Ki / OPc）を入れてはならない。書き込みに失敗しても操作は済んでいるので、
+// ERROR のログを出して続ける。
 func (h *Handler) record(r *http.Request, action, target string, tenant int64, detail map[string]any) {
 	u := userFrom(r.Context())
 	e := db.AuditEntry{ActorEmail: u.Email, ActorRole: u.Role, TenantID: tenant, Action: action, Target: target,
@@ -267,15 +261,25 @@ func (h *Handler) record(r *http.Request, action, target string, tenant int64, d
 	// 要求が取り消されても（利用者が画面を閉じても）、済んだ操作の記録は残す。
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), dbTimeout)
 	defer cancel()
-	if err := h.db.InsertAudit(ctx, e); err != nil {
-		h.log.Error("audit log write failed", "action", action, "target", target, "user", u.Email,
+	id, at, err := h.db.InsertAudit(ctx, e)
+	if err != nil {
+		h.log.Error("audit log write failed", "event_id", "AUDIT_DB_ERR", "action", action, "target", target, "user", u.Email,
+			"trace_id", e.TraceID, "error", err)
+		at = time.Now()
+	}
+	if h.audit == nil {
+		return
+	}
+	if err := h.audit.Append(audit.Entry{ID: id, Time: at, ActorEmail: e.ActorEmail, ActorRole: string(e.ActorRole), TenantID: tenant,
+		Action: action, Target: target, Detail: e.Detail, TraceID: e.TraceID, Remote: e.Remote, JobID: e.JobID}); err != nil {
+		h.log.Error("audit log file write failed", "event_id", "AUDIT_FILE_ERR", "action", action, "target", target,
 			"trace_id", e.TraceID, "error", err)
 	}
 }
 
 // recordMove は、テナントが from から to に変わる操作（所属の付け替え、アカウントのテナントの変更）を監査ログに残す。
-// 移動元と移動先が別のテナントなら、それぞれのテナントに 1 行ずつ書く（行は対象のテナントを 1 つしか持たないので、
-// 移動元のテナント管理者にも見えるように。テナントなしの側には書かない。§17.5 の 3）。両方テナントなしなら 1 行。
+// 移動元と移動先が別のテナントなら、それぞれのテナントに 1 行ずつ書く（移動元のテナント管理者にも見えるように。
+// テナントに属さない側には書かない）。両方とも属さないなら 1 行。
 func (h *Handler) recordMove(r *http.Request, action, target string, from, to int64, detail map[string]any) {
 	switch {
 	case from == to || from == authz.NoTenant:
@@ -286,33 +290,4 @@ func (h *Handler) recordMove(r *http.Request, action, target string, from, to in
 		h.record(r, action, target, from, detail)
 		h.record(r, action, target, to, detail)
 	}
-}
-
-// clientTarget は監査ログの対象に書く RADIUSクライアントの表記。
-func clientTarget(id int64) string { return "#" + strconv.FormatInt(id, 10) }
-
-// ---- 並行の取得 ----
-
-// fetchConcurrency は、テナントの範囲の一覧で provisioner から同時に取得する数（設計概要 §15 の 7）。
-const fetchConcurrency = 5
-
-// forEachConcurrently は f(0)〜f(n-1) を、同時に limit 件までで呼ぶ。
-func forEachConcurrently(n, limit int, f func(i int)) {
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, limit)
-	for i := range n {
-		sem <- struct{}{}
-		wg.Go(func() {
-			defer func() { <-sem }()
-			f(i)
-		})
-	}
-	wg.Wait()
-}
-
-// isNotFound は、provisioner が対象（加入者・RADIUSクライアント・認可ポリシー）がないと返したか
-// （aka-vecgen を扱わない設定の 404 は含めない）。
-func isNotFound(err error) bool {
-	e, ok := errors.AsType[*provisioner.Error](err)
-	return ok && e.Status == http.StatusNotFound && e.Problem.Cause != provisioner.CauseDownstreamNotConfigured
 }

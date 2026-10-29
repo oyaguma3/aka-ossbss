@@ -62,7 +62,7 @@ func (h *Handler) loadAccounts(r *http.Request, d *accountsData) (int, string) {
 		return http.StatusServiceUnavailable, "データベースに接続できません。しばらくしてから開き直してください。"
 	}
 	d.Tenants = t
-	f, ok := readTenantFilter(r, t)
+	f, ok := readTenantFilter(r, t, true)
 	d.Filter = f
 	if !ok {
 		return http.StatusBadRequest, "テナントの指定が正しくありません。"

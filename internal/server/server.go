@@ -1,7 +1,7 @@
 // Package server は HTTP のリスナーを起動する。
 //
-// 本BFF は HTTPS を自分で終端しない。ブラウザとの HTTPS は Cloudflare が終端し、cloudflared が同じホストの
-// compose のネットワークの中から HTTP で本BFF に届ける（設計概要 §5.4）。
+// aka-ossbss は HTTPS を自分で終端しない。ブラウザとの HTTPS は Cloudflare が終端し、cloudflared が同じホストの
+// compose のネットワークの中から HTTP でaka-ossbss に届ける（設計概要 §5.4）。
 package server
 
 import (

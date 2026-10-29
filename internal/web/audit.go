@@ -10,8 +10,9 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
-// 監査ログの画面（画面仕様 §11）。本BFF の監査ログはテナントの範囲で見せる（テナント管理者は自分のテナントの分だけ。
-// 設計概要 §13）。provisioner と下流の監査ログ（provisioner の中継）はテナントで絞れないので、システム管理者だけが見る。
+// 監査ログの画面（設計概要 §14。段階 3-1 の W10）。aka-ossbss の監査ログはテナントの範囲で見せる（テナント管理者は自分の
+// テナントの分だけ）。aka-provisioner と下流（aka-vecgen・aka-radius）の監査ログは aka-provisioner を通して読み、テナントで
+// 絞れないので、運用担当とシステム管理者が見る。
 
 // auditPerPage は監査ログの 1 回に読み込む件数。
 const auditPerPage = 50
@@ -21,9 +22,9 @@ var streamIDPattern = regexp.MustCompile(`^[0-9]{1,20}-[0-9]{1,20}$`)
 
 // auditTabs は監査ログの種類のタブ（templates/partials/common.html の audit-tabs）。
 type auditTabs struct {
-	// Current は表示中のタブ（bff / provisioner / prov / aka）。
+	// Current は表示中のタブ（ossbss / provisioner / vecgen / radius）。
 	Current string
-	// Downstream は provisioner と下流のタブを出すか（システム管理者）。
+	// Downstream は aka-provisioner と下流のタブを出すか（運用担当・システム管理者）。
 	Downstream bool
 }
 
@@ -46,13 +47,13 @@ type auditData struct {
 	More bool
 }
 
-// audit は本BFF の監査ログの画面（テナント管理者・運用担当・システム管理者）。
-func (h *Handler) audit(w http.ResponseWriter, r *http.Request) {
+// auditList は aka-ossbss の監査ログの画面（テナント管理者・運用担当・システム管理者）。
+func (h *Handler) auditList(w http.ResponseWriter, r *http.Request) {
 	if !h.requireOp(w, r, authz.AuditView) {
 		return
 	}
 	q := r.URL.Query()
-	d := auditData{Tabs: auditTabsFor(r, "bff"), Action: q.Get("action"), Actions: auditActions, More: q.Get("before") != ""}
+	d := auditData{Tabs: auditTabsFor(r, "ossbss"), Action: q.Get("action"), Actions: auditActions, More: q.Get("before") != ""}
 	status := http.StatusOK
 	t, err := h.tenants(r)
 	if err != nil {
@@ -60,7 +61,7 @@ func (h *Handler) audit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Tenants = t
-	f, ok := readTenantFilter(r, t)
+	f, ok := readTenantFilter(r, t, true)
 	d.Filter = f
 	before, berr := strconv.ParseInt(q.Get("before"), 10, 64)
 	switch {
@@ -94,68 +95,50 @@ func (h *Handler) audit(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, status, "audit", "監査ログ", d)
 }
 
-// downstreamAuditData は provisioner と下流の監査ログの画面に渡す値（Rows は種類ごとの型）。
-type downstreamAuditData[T any] struct {
-	Tabs  auditTabs
-	Rows  []T
-	Next  string
-	Error string
-	More  bool
+// downstreamAuditData は aka-provisioner と下流の監査ログの画面に渡す値。
+type downstreamAuditData struct {
+	Tabs   auditTabs
+	Source string
+	Title  string
+	Rows   []provisioner.AuditLogEntry
+	Next   string
+	Error  string
+	More   bool
 }
 
-// downstreamAudit は provisioner と下流の監査ログの画面の共通の処理（システム管理者だけ）。
-// list は provisioner の監査ログの読み出し、next は続きの位置を返す。
-func downstreamAudit[T, L any](h *Handler, w http.ResponseWriter, r *http.Request, tab, page, title string,
-	list func(*http.Request, provisioner.AuditLogParams) (L, error), items func(L) ([]T, string)) {
+// auditSources は aka-provisioner と下流の監査ログの元と、画面の名前。
+var auditSources = map[string]string{
+	string(provisioner.AuditProvisioner): "aka-provisioner",
+	string(provisioner.AuditVecgen):      "aka-vecgen",
+	string(provisioner.AuditRadius):      "aka-radius",
+}
+
+// downstreamAudit は aka-provisioner と下流の監査ログ（運用担当・システム管理者）。
+func (h *Handler) downstreamAudit(w http.ResponseWriter, r *http.Request) {
+	src := r.PathValue("source")
+	name, ok := auditSources[src]
+	if !ok {
+		h.notFound(w, r)
+		return
+	}
 	if !h.requireOp(w, r, authz.DownstreamAuditView) {
 		return
 	}
 	before := r.URL.Query().Get("before")
-	d := downstreamAuditData[T]{Tabs: auditTabsFor(r, tab), More: before != ""}
+	d := downstreamAuditData{Tabs: auditTabsFor(r, src), Source: src, Title: name, More: before != ""}
 	status := http.StatusOK
 	if before != "" && !streamIDPattern.MatchString(before) {
 		status, d.Error = http.StatusBadRequest, "続きの位置の指定が正しくありません。"
-	} else if l, err := list(r, provisioner.AuditLogParams{Before: before, Limit: auditPerPage}); err != nil {
+	} else if l, err := h.pv.AuditLogs(r.Context(), provisioner.AuditSource(src), provisioner.AuditLogParams{Before: before, Limit: auditPerPage}); err != nil {
 		f := h.apiError(r, err, "")
-		h.log.Warn("list "+tab+" audit logs", "error", err)
+		h.log.Warn("list "+src+" audit logs", "error", err)
 		status, d.Error = f.Status, f.Message
 	} else {
-		d.Rows, d.Next = items(l)
+		d.Rows, d.Next = l.Items, l.NextBefore
 	}
 	if d.More && isHTMX(r) {
-		h.renderBlock(w, r, status, page, "audit-more", d)
+		h.renderBlock(w, r, status, "audit_downstream", "audit-more", d)
 		return
 	}
-	h.render(w, r, status, page, title, d)
-}
-
-// pvAudit は provisioner 自身の監査ログ。
-func (h *Handler) pvAudit(w http.ResponseWriter, r *http.Request) {
-	downstreamAudit(h, w, r, "provisioner", "audit_provisioner", "監査ログ（provisioner）",
-		func(r *http.Request, p provisioner.AuditLogParams) (provisioner.AuditLogList, error) {
-			return h.pv.ListAuditLogs(r.Context(), p)
-		},
-		func(l provisioner.AuditLogList) ([]provisioner.AuditLogEntry, string) { return l.Items, l.NextBefore })
-}
-
-// provAudit は provisioner が中継する、本PoCの provisioning-api の監査ログ。
-func (h *Handler) provAudit(w http.ResponseWriter, r *http.Request) {
-	downstreamAudit(h, w, r, "prov", "audit_prov", "監査ログ（provisioning-api）",
-		func(r *http.Request, p provisioner.AuditLogParams) (provisioner.ProvAuditLogList, error) {
-			return h.pv.ListProvAuditLogs(r.Context(), p)
-		},
-		func(l provisioner.ProvAuditLogList) ([]provisioner.ProvAuditLogEntry, string) {
-			return l.Items, l.NextBefore
-		})
-}
-
-// akaAudit は provisioner が中継する、aka-vecgen の監査ログ。
-func (h *Handler) akaAudit(w http.ResponseWriter, r *http.Request) {
-	downstreamAudit(h, w, r, "aka", "audit_aka", "監査ログ（aka-vecgen）",
-		func(r *http.Request, p provisioner.AuditLogParams) (provisioner.AkaAuditLogList, error) {
-			return h.pv.ListAkaAuditLogs(r.Context(), p)
-		},
-		func(l provisioner.AkaAuditLogList) ([]provisioner.AkaAuditLogEntry, string) {
-			return l.Items, l.NextBefore
-		})
+	h.render(w, r, status, "audit_downstream", "監査ログ（"+name+"）", d)
 }

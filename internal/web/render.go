@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
 // pages はページごとのテンプレート（layout.html と部品に、ページのファイルを重ねたもの）。
@@ -19,21 +21,13 @@ type pages map[string]*template.Template
 var funcs = template.FuncMap{
 	// asset は静的ファイルの URL（内容のハッシュつき）。
 	"asset": assetURL,
-	// issueLabel と issueHelp は provisioner の加入者の食い違い（issues）の名前と対処。
-	"issueLabel": issueLabel,
-	"issueHelp":  issueHelp,
-	// keyStoreLabel は鍵の置き場所の名前。
-	"keyStoreLabel": keyStoreLabel,
-	// policyStatusLabel は加入者の状態（認可ポリシーの状態）の名前。
-	"policyStatusLabel": policyStatusLabel,
+	// stateLabel は加入者の状態の名前、sideLabel は側の名前、downstreamLabel は下流の名前。
+	"stateLabel":      stateLabel,
+	"sideLabel":       sideLabel,
+	"downstreamLabel": downstreamLabel,
 	// octets は通信量を単位つきで表示する。datetime は日時を表示する。
 	"octets":   formatOctets,
 	"datetime": datetime,
-	// deref は *bool の値（nil は false）。
-	"deref": func(b *bool) bool { return b != nil && *b },
-	// keysPlaceholder は、Ki / OPc をまだ表示していない状態の値を作る。secretPlaceholder は共有シークレットの同じもの。
-	"keysPlaceholder":   func(imsi string) keysData { return keysData{IMSI: imsi} },
-	"secretPlaceholder": func(id int64) secretData { return secretData{ID: id} },
 	// dict は「名前, 値, …」から部品に渡すマップを作る。
 	"dict": func(kv ...any) map[string]any {
 		m := map[string]any{}
@@ -46,16 +40,29 @@ var funcs = template.FuncMap{
 	},
 	// add1 は 0 からの番号を 1 からの番号にする。
 	"add1": func(i int) int { return i + 1 },
-	// 操作の記録の状態・種類・手順の名前、provisioner の下流の名前、監査ログの操作の名前と内容。
-	"opStatusLabel":   opStatusLabel,
-	"opKindLabel":     opKindLabel,
-	"stepLabel":       stepLabel,
-	"stepStateLabel":  stepStateLabel,
-	"downstreamLabel": downstreamLabel,
-	"actionLabel":     actionLabel,
-	"detailText":      detailText,
+	// actionLabel と detailText は監査ログの操作の名前と内容。
+	"actionLabel": actionLabel,
+	"detailText":  detailText,
 	// list は引数を並べたスライスを作る。
 	"list": func(v ...string) []string { return v },
+	// hasID は ID の並びに id があるか（許可クライアントの選択）。
+	"hasID": slices.Contains[[]int64],
+	// joinIDs と joinStrings は並びを「, 」でつなぐ。
+	"joinIDs": func(ids []int64) string {
+		var out []string
+		for _, id := range ids {
+			out = append(out, strconv.FormatInt(id, 10))
+		}
+		return strings.Join(out, ", ")
+	},
+	"joinStrings": func(v []string) string { return strings.Join(v, ", ") },
+	// node は下流の /status の主な項目（読めなければ nil）。
+	"node": func(d provisioner.DownstreamStatus) *provisioner.NodeStatus {
+		if n, ok := d.Node(); ok {
+			return &n
+		}
+		return nil
+	},
 }
 
 func parsePages() (pages, error) {
@@ -105,23 +112,19 @@ type navItem struct {
 // Active は、section の画面でこの項目を強調するか。
 func (n navItem) Active(section string) bool { return slices.Contains(n.Sections, section) }
 
-// navItems は利用者の役割で出すナビゲーションの項目を返す（画面仕様 §1.1）。
+// navItems は利用者の役割で出すナビゲーションの項目を返す。
 func navItems(a authz.Actor) []navItem {
 	items := []navItem{
-		{"ダッシュボード", "/", []string{"", "dashboard"}},
+		{"ダッシュボード", "/", []string{""}},
 		{"加入者", "/subscribers", []string{"subscribers"}},
-		{"RADIUSクライアント", "/clients", []string{"clients"}},
 		{"セッション", "/sessions", []string{"sessions"}},
 	}
 	target := a.TenantID // A・B は自分のテナントのものとして判定する
 	if authz.Allowed(a, authz.TenantManage, target) {
-		items = append(items, navItem{"テナント", "/tenants", []string{"tenants", "assignments"}})
+		items = append(items, navItem{"テナント", "/tenants", []string{"tenants"}})
 	}
 	if authz.Allowed(a, authz.AccountManage, target) {
 		items = append(items, navItem{"アカウント", "/accounts", []string{"accounts"}})
-	}
-	if authz.Allowed(a, authz.ProvisionerView, target) {
-		items = append(items, navItem{"操作の記録", "/operations", []string{"operations"}})
 	}
 	if authz.Allowed(a, authz.AuditView, target) {
 		items = append(items, navItem{"監査ログ", "/audit", []string{"audit"}})
@@ -212,8 +215,6 @@ type errorData struct {
 	Relogin bool
 	// Link と LinkLabel は案内のリンク（一覧へ戻るなど。空なら出さない）。
 	Link, LinkLabel string
-	// OperationID は provisioner の操作の記録の ID（運用担当・システム管理者にだけ入る）。
-	OperationID string
 }
 
 // renderError はエラーの画面を返す。
@@ -226,9 +227,9 @@ func (h *Handler) renderErrorLink(w http.ResponseWriter, r *http.Request, status
 	h.renderErrorData(w, r, errorData{Status: status, Message: msg, Link: link, LinkLabel: linkLabel})
 }
 
-// renderFailure は provisioner の呼び出しの失敗をエラーの画面で返す。
+// renderFailure は aka-provisioner の呼び出しの失敗をエラーの画面で返す。
 func (h *Handler) renderFailure(w http.ResponseWriter, r *http.Request, f apiFailure, link, linkLabel string) {
-	h.renderErrorData(w, r, errorData{Status: f.Status, Message: f.Message, Link: link, LinkLabel: linkLabel, OperationID: f.OperationID})
+	h.renderErrorData(w, r, errorData{Status: f.Status, Message: f.Message, Link: link, LinkLabel: linkLabel})
 }
 
 // renderErrorData はエラーの画面を返す。htmx の要求では、差し替え先によらず本文全体をエラーの表示に置き換える。
@@ -243,7 +244,7 @@ func (h *Handler) renderErrorData(w http.ResponseWriter, r *http.Request, data e
 	h.render(w, r, data.Status, "error", title, data)
 }
 
-// forbidden は、範囲の中のものに対して役割にない操作をしたときの 403 を返す（画面仕様 §1.2）。
+// forbidden は、範囲の中のものに対して役割にない操作をしたときの 403 を返す（もとの画面仕様 §1.2）。
 func (h *Handler) forbidden(w http.ResponseWriter, r *http.Request) {
 	h.renderError(w, r, http.StatusForbidden, "この操作の権限がありません。")
 }

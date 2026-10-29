@@ -1,0 +1,44 @@
+{{define "content" -}}
+{{with .Data -}}
+<h1 class="text-2xl font-bold mb-4">監査ログ</h1>
+{{template "audit-tabs" .Tabs}}
+<p class="mb-2">{{.Title}} の監査ログ（aka-provisioner を通して読む）。新しい順。テナントでは絞れません。</p>
+<p class="text-sm text-base-content/60 mb-4">
+  {{- if eq .Source "provisioner"}}下流を書き換える中継が成功したときに残ります（操作は「下流: 口」、内容は本文の項目の名前だけ）。
+  {{- else}}変更操作と、ノードの上のコマンドの操作（管理クライアント cli）が残ります。{{end -}}
+  操作者は aka-ossbss の利用者のメールアドレス、トレースID は aka-ossbss の監査ログと同じ値です。
+</p>
+{{template "alerts" (dict "Error" .Error)}}
+{{- if .Rows}}
+<div class="overflow-x-auto bg-base-100 rounded-box shadow">
+  <table class="table table-sm">
+    <thead>
+      <tr><th>日時</th><th>操作者</th><th>管理クライアント</th><th>操作</th><th>対象</th><th>内容</th><th>トレースID</th></tr>
+    </thead>
+    <tbody id="audit-rows">
+      {{- range .Rows}}{{template "audit-row" .}}{{end}}
+    </tbody>
+  </table>
+</div>
+{{template "audit-pager" .}}
+{{- else if not .Error}}
+<p>記録はありません。</p>
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{define "audit-row" -}}
+<tr><td class="whitespace-nowrap">{{datetime .Time}}</td><td>{{or .Operator "-"}}</td><td>{{or .MgmtClient "-"}}</td><td>{{actionLabel .Action}}</td>
+<td class="font-mono">{{.Target}}</td><td><code class="break-all text-sm">{{detailText .Detail}}</code></td><td><code class="break-all text-sm">{{.TraceID}}</code></td></tr>
+{{- end}}
+
+{{define "audit-pager" -}}
+{{template "more-button" (dict "URL" (and .Next (printf "/audit/%s?before=%s" .Source .Next)))}}
+{{- end}}
+
+{{/* 「さらに古いものを表示」の応答。行を一覧の末尾に足し、ボタンを置き換える。 */}}
+{{define "audit-more" -}}
+{{template "audit-pager" .}}
+{{template "alerts" (dict "Error" .Error)}}
+{{- if .Rows}}<template><tbody hx-swap-oob="beforeend:#audit-rows">{{range .Rows}}{{template "audit-row" .}}{{end}}</tbody></template>{{end}}
+{{- end}}

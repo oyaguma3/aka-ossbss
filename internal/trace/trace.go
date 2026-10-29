@@ -1,8 +1,8 @@
 // Package trace はトレースID を扱う。
 //
-// 本BFF はブラウザのリクエストごとにトレースID を採番してアクセスログに出し、provisioner の呼び出しに
+// aka-ossbss はブラウザのリクエストごとにトレースID を採番してアクセスログに出し、provisioner の呼び出しに
 // X-Trace-ID ヘッダーで渡す。provisioner と下流は受け取った値をログと監査ログに使うので、
-// 本BFF の操作と provisioner・下流の記録をトレースID で突き合わせられる。
+// aka-ossbss の操作と provisioner・下流の記録をトレースID で突き合わせられる。
 package trace
 
 import (

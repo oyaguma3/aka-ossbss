@@ -10,7 +10,7 @@
        履歴のスナップショットは画面の HTML（鍵情報を含みうる）をブラウザに保存するので使わない。
        入力の誤りなどは 4xx で説明つきの HTML を返すので、4xx と 5xx の応答も差し替える（htmx の既定では差し替えない）。 */ -}}
   <meta name="htmx-config" content='{"allowEval":false,"includeIndicatorStyles":false,"historyCacheSize":0,"refreshOnHistoryMiss":true,"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
-  <title>{{.Title}} | EAP-AKA OSS/BSS サンプル</title>
+  <title>{{.Title}} | aka-ossbss</title>
   <link rel="icon" href="data:,">
   {{- /* URL に内容のハッシュを付ける（途中のキャッシュに古い版が残っていても使われないように）。 */}}
   <link rel="stylesheet" href="{{asset "app.css"}}">
@@ -19,7 +19,7 @@
 <body class="min-h-screen bg-base-200 flex flex-col">
   <header class="navbar bg-base-100 shadow-sm px-4 gap-2">
     <div class="flex-1">
-      <a href="/" class="text-lg font-bold">EAP-AKA OSS/BSS サンプル</a>
+      <a href="/" class="text-lg font-bold">aka-ossbss</a>
     </div>
     {{- if .Dev}}
     <span class="badge badge-warning" title="JWT を検証せず、決まった利用者として動いています">開発用の設定</span>

@@ -5,32 +5,28 @@ import (
 	"testing"
 )
 
-// 設計概要 §6.2 の表を、実装の表とは別に書き写した期待値。
+// 設計概要 §5 の表を、実装の表とは別に書き写した期待値。
 // 列は A（テナントユーザー）・B（テナント管理者）・C（運用担当）・D（システム管理者）。
-// "o" はできる、"x" はできない、"t" は自分のテナントのものだけ（テナントなし・他のテナントは不可）。
+// "o" はできる、"x" はできない、"t" は自分のテナントのものだけ（テナントに属さないもの・他のテナントは不可）。
 var table = map[Op]string{
-	SubscriberCreate:       "xxoo",
-	SubscriberView:         "ttoo",
-	SubscriberDetailView:   "xxoo",
-	SubscriberKeysView:     "xxoo",
-	SubscriberPolicyUpdate: "xtoo",
-	SubscriberKeysUpdate:   "xxoo",
-	SubscriberAuthUpdate:   "xxxo",
-	SubscriberDelete:       "xxoo",
-	SubscriberSuspend:      "ttoo",
-	ClientCreate:           "xtoo",
-	ClientView:             "ttoo",
-	ClientUpdate:           "xtoo",
-	ClientSecretView:       "xtoo",
-	AssignmentUpdate:       "xxxo",
-	SessionView:            "ttoo",
-	AuditView:              "xtoo",
-	DownstreamAuditView:    "xxxo",
-	ProvisionerView:        "xxoo",
-	OperationManage:        "xxxo",
-	TenantManage:           "xxxo",
-	AccountManage:          "xtxo",
-	OrphanDelete:           "xxxo",
+	SubscriberView:        "ttoo",
+	SubscriberDetailView:  "xxoo",
+	SubscriberStateChange: "ttoo",
+	SubscriberReinstate:   "xxxo",
+	VecgenRegister:        "xxxo",
+	RadiusRegister:        "xxoo",
+	VecgenUpdate:          "xxxo",
+	PolicyUpdate:          "xtoo",
+	SourceUpdate:          "xxoo",
+	SubscriberDelete:      "xxoo",
+	ReregisterApprove:     "xxxo",
+	TenantMove:            "xxxo",
+	SessionView:           "ttoo",
+	AuditView:             "xtoo",
+	DownstreamAuditView:   "xxoo",
+	ProvisionerView:       "xxoo",
+	TenantManage:          "xxxo",
+	AccountManage:         "xtxo",
 }
 
 func TestAllowedMatrix(t *testing.T) {
@@ -68,7 +64,7 @@ func TestAllowedMatrix(t *testing.T) {
 // A・B なのにテナントがない（DB の制約で起きないはずの）利用者や、未知の役割・操作は、何もできない。
 func TestAllowedInvalid(t *testing.T) {
 	if Allowed(Actor{Role: TenantAdmin}, SubscriberView, NoTenant) {
-		t.Error("tenant admin without tenant can view tenantless subscribers")
+		t.Error("tenant admin without tenant can view things outside tenants")
 	}
 	if Allowed(Actor{Role: "owner"}, SubscriberView, NoTenant) {
 		t.Error("unknown role is allowed")

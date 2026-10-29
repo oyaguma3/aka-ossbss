@@ -1,5 +1,5 @@
 // Package certs は、provisioner に提示するクライアント証明書の生成と、証明書のフィンガープリントを扱う
-// （既存の BFF の internal/certs から、本BFF に要る部分だけを持ってきたもの。ブラウザとの HTTPS は Cloudflare が終端する）。
+// （既存の BFF の internal/certs から、aka-ossbss に要る部分だけを持ってきたもの。ブラウザとの HTTPS は Cloudflare が終端する）。
 package certs
 
 import (
@@ -30,7 +30,7 @@ func SelfSigned(commonName string, hosts []string, validFor time.Duration) (cert
 }
 
 // SelfSignedClient はクライアント認証用の ECDSA P-256 の鍵と自己署名証明書を生成し、PEM で返す。
-// provisioner に提示する本BFF のクライアント証明書に使う（provisioner はフィンガープリントで照合する）。
+// provisioner に提示するaka-ossbss のクライアント証明書に使う（provisioner はフィンガープリントで照合する）。
 func SelfSignedClient(commonName string, validFor time.Duration) (certPEM, keyPEM []byte, err error) {
 	return selfSigned(commonName, nil, validFor, x509.ExtKeyUsageClientAuth)
 }

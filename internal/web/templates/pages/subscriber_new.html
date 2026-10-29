@@ -1,72 +1,121 @@
 {{define "content" -}}
 <div class="breadcrumbs text-sm mb-2"><ul><li><a href="/subscribers">加入者</a></li><li>登録</li></ul></div>
 <h1 class="text-2xl font-bold mb-4">加入者の登録</h1>
-{{template "subscriber-form" .Data}}
+{{- with .Data}}
+{{- if and .CanVecgen .CanRadius}}
+<div role="tablist" class="tabs tabs-border mb-4">
+  <a role="tab" href="/subscribers/new?side=vecgen{{with .IMSI}}&imsi={{.}}{{end}}" class="tab{{if eq .Side "vecgen"}} tab-active{{end}}">vecgen 側（aka-vecgen）</a>
+  <a role="tab" href="/subscribers/new?side=radius{{with .IMSI}}&imsi={{.}}{{end}}" class="tab{{if eq .Side "radius"}} tab-active{{end}}">radius 側（aka-radius）</a>
+</div>
+{{- end}}
+{{- end}}
+{{template "register-form" .Data}}
 {{- end}}
 
-{{/* 既定の動作の切り替えと登録の失敗のたびに、htmx でこの部分を差し替える。 */}}
-{{define "subscriber-form" -}}
-<div id="subscriber-new" class="card bg-base-100 shadow">
-  <div class="card-body">
-    {{template "alerts" (dict "Error" .Error "Op" .ErrorOperation)}}
-    <form id="subscriber-new-form" method="post" action="/subscribers" hx-post="/subscribers" hx-target="#subscriber-new" hx-swap="outerHTML" autocomplete="off">
+{{/* 送るたびに htmx でこの部分を差し替える（成功したら詳細へ移る）。Ki・OPc は誤りのときも入れ直してもらう（画面に戻さない）。 */}}
+{{define "register-form" -}}
+<div id="register">
+  {{template "alerts" (dict "Error" .Error)}}
+  {{- with .LoadError}}<div role="alert" class="alert alert-warning mb-4"><span>{{.}}</span></div>{{end}}
+  <form class="card bg-base-100 shadow" hx-post="/subscribers/new/{{.Side}}" hx-target="#register" hx-swap="outerHTML" autocomplete="off">
+    <div class="card-body">
+      <h2 class="card-title">{{sideLabel .Side}}に登録</h2>
       <input type="hidden" name="idem" value="{{.IdemKey}}">
       <div class="grid gap-x-6 md:grid-cols-2">
-        {{template "tenant-choice" (dict "Value" .Tenant "Tenants" .Tenants "Error" .Errors.tenant)}}
         <fieldset class="fieldset">
           <legend class="fieldset-legend">IMSI</legend>
-          <input name="imsi" value="{{.IMSI}}" required maxlength="15" inputmode="numeric" pattern="[0-9]{15}" class="input w-full font-mono{{if .Errors.imsi}} input-error{{end}}">
+          <input name="imsi" value="{{.IMSI}}" required maxlength="15" inputmode="numeric" spellcheck="false" class="input w-full font-mono{{if .Errors.imsi}} input-error{{end}}">
           {{- if .Errors.imsi}}{{template "field-error" .Errors.imsi}}{{else}}<p class="label">15 桁の数字</p>{{end}}
         </fieldset>
+        {{- if .ShowTenantChoice}}
+        {{template "tenant-choice" (dict "Value" .Tenant "Tenants" .Tenants "Error" .Errors.tenant)}}
+        {{- else}}
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">所属のテナント</legend>
+          <p class="py-2">{{.Tenants.Name .FixedTenant}}</p>
+          <p class="label">もう一方の側の登録で決まっています（付け替えはシステム管理者が詳細で行います）</p>
+        </fieldset>
+        {{- end}}
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">登録のときの状態</legend>
+          <select name="state" class="select w-full">
+            <option value="active"{{if eq .State "active"}} selected{{end}}>利用中（Active）</option>
+            <option value="inactive"{{if eq .State "inactive"}} selected{{end}}>停止中（Inactive）</option>
+          </select>
+          {{template "field-error" .Errors.state}}
+        </fieldset>
+      </div>
+
+      {{- if eq .Side "vecgen"}}
+      <div class="grid gap-x-6 md:grid-cols-2">
         <fieldset class="fieldset">
           <legend class="fieldset-legend">Ki</legend>
-          <input name="ki" value="{{.Ki}}" required maxlength="32" pattern="[0-9A-Fa-f]{32}" spellcheck="false" class="input w-full font-mono{{if .Errors.ki}} input-error{{end}}">
-          {{- if .Errors.ki}}{{template "field-error" .Errors.ki}}{{else}}<p class="label">16 進 32 桁</p>{{end}}
+          <input name="ki" required maxlength="32" spellcheck="false" class="input w-full font-mono{{if .Errors.ki}} input-error{{end}}">
+          {{- if .Errors.ki}}{{template "field-error" .Errors.ki}}{{else}}<p class="label">16 進 32 桁。aka-vecgen に送るだけで、aka-ossbss には残しません</p>{{end}}
         </fieldset>
         <fieldset class="fieldset">
           <legend class="fieldset-legend">OPc</legend>
-          <input name="opc" value="{{.OPc}}" required maxlength="32" pattern="[0-9A-Fa-f]{32}" spellcheck="false" class="input w-full font-mono{{if .Errors.opc}} input-error{{end}}">
-          {{- if .Errors.opc}}{{template "field-error" .Errors.opc}}{{else}}<p class="label">16 進 32 桁</p>{{end}}
+          <input name="opc" required maxlength="32" spellcheck="false" class="input w-full font-mono{{if .Errors.opc}} input-error{{end}}">
+          {{- if .Errors.opc}}{{template "field-error" .Errors.opc}}{{else}}<p class="label">16 進 32 桁。登録の後は変えられず、画面にも出しません</p>{{end}}
         </fieldset>
         <fieldset class="fieldset">
           <legend class="fieldset-legend">AMF</legend>
-          <input name="amf" value="{{.AMF}}" required maxlength="4" pattern="[0-9A-Fa-f]{4}" spellcheck="false" class="input w-full font-mono{{if .Errors.amf}} input-error{{end}}">
-          {{- if .Errors.amf}}{{template "field-error" .Errors.amf}}{{else}}<p class="label">16 進 4 桁</p>{{end}}
+          <input name="amf" value="{{.AMF}}" required maxlength="4" spellcheck="false" class="input w-full font-mono{{if .Errors.amf}} input-error{{end}}">
+          {{template "field-error" .Errors.amf}}
         </fieldset>
         <fieldset class="fieldset">
           <legend class="fieldset-legend">SQN</legend>
-          <input name="sqn" value="{{.SQN}}" required maxlength="12" pattern="[0-9A-Fa-f]{12}" spellcheck="false" class="input w-full font-mono{{if .Errors.sqn}} input-error{{end}}">
-          {{- if .Errors.sqn}}{{template "field-error" .Errors.sqn}}{{else}}<p class="label">16 進 12 桁</p>{{end}}
+          <input name="sqn" value="{{.SQN}}" required maxlength="12" spellcheck="false" class="input w-full font-mono{{if .Errors.sqn}} input-error{{end}}">
+          {{template "field-error" .Errors.sqn}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">SQN の方式</legend>
+          <select name="sqn_type" class="select w-full">
+            {{- range (list "inc1" "inc32" "inc33")}}<option value="{{.}}"{{if eq . $.SQNType}} selected{{end}}>{{.}}</option>{{end}}
+          </select>
+          {{- if .Errors.sqnType}}{{template "field-error" .Errors.sqnType}}{{else}}<p class="label">USIM の SQN の検証方式に合わせます</p>{{end}}
         </fieldset>
       </div>
       <fieldset class="fieldset">
-        <legend class="fieldset-legend">認可ポリシーの既定の動作（どのルールにも一致しないとき）</legend>
-        <div class="flex gap-6">
-          <label class="label cursor-pointer gap-2">
-            <input type="radio" name="default" value="deny" class="radio"{{if eq .Default "deny"}} checked{{end}} hx-post="/subscribers/new/form" hx-trigger="change">
-            deny（拒否）
-          </label>
-          <label class="label cursor-pointer gap-2">
-            <input type="radio" name="default" value="allow" class="radio"{{if eq .Default "allow"}} checked{{end}} hx-post="/subscribers/new/form" hx-trigger="change">
-            allow（許可）
-          </label>
+        <legend class="fieldset-legend">許可クライアント（認証ベクターを払い出してよい AVクライアント）</legend>
+        <div class="flex flex-wrap gap-4">
+          {{- range .AllClients}}
+          <label class="label cursor-pointer gap-2"><input type="checkbox" name="clients" value="{{.ID}}" class="checkbox checkbox-sm"{{if hasID $.Clients .ID}} checked{{end}}>{{.Name}}（#{{.ID}}{{if not .Enabled}}、無効{{end}}）</label>
+          {{- else}}<span class="text-base-content/60">AVクライアントがありません（aka-vecgen のコマンドで登録します）。</span>{{end}}
         </div>
-        <p class="label">認可ポリシーはルールなしで一緒に作ります。ルールは登録の後に認可ポリシーの画面で編集します。</p>
+        {{template "field-error" .Errors.clients}}
       </fieldset>
-      <p class="text-sm text-base-content/60 my-2">
-        鍵の置き場所は、IMSI の PLMN と provisioner の PLMN マップで決まります{{if .PLMNKnown}}（{{template "plmn-map" .PLMNMap}}）{{end}}。
-      </p>
-      {{- if eq .Default "allow"}}
-      <button type="button" class="btn btn-primary" command="show-modal" commandfor="dialog-create">登録する</button>
       {{- else}}
-      <button type="submit" class="btn btn-primary">登録する</button>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">取得先（認証ベクターを取る先）</legend>
+        <select name="source" class="select w-full max-w-md{{if .Errors.source}} select-error{{end}}">
+          <option value=""{{if not .Source}} selected{{end}} disabled>選んでください</option>
+          {{- range .Sources}}<option value="{{.ID}}"{{if eq .ID $.Source}} selected{{end}}>{{.ID}}（{{.Name}}）</option>{{end}}
+        </select>
+        {{template "field-error" .Errors.source}}
+      </fieldset>
+      <h3 class="font-semibold mt-2">最初のルール</h3>
+      <p class="text-sm text-base-content/60">ルールのテナントは所属のテナントです。登録の後に、認可ポリシーの編集でルールを足し、並べ替えられます。</p>
+      {{template "rule-fields" .Rule}}
       {{- end}}
-    </form>
-    {{- /* ダイアログの中の form（method="dialog"）は、フォームの入れ子にならないよう外に置く。 */}}
-    {{- if eq .Default "allow"}}
-    {{template "confirm" (dict "ID" "dialog-create" "Title" "既定の動作が allow です" "Form" "subscriber-new-form" "Label" "登録する" "Class" "btn-warning"
-      "Message" "認可ポリシーの既定の動作が allow です。どのルールにも一致しない接続も許可します。登録してよろしいですか？")}}
-    {{- end}}
-  </div>
+
+      {{- if .Deleted}}
+      <div role="alert" class="alert alert-warning mt-4">
+        <div>
+          <p class="font-bold">この IMSI は削除済みです。</p>
+          <p class="text-sm">登録し直すと、新しい回線として扱います（選んだテナントに属します）。システム管理者の承認が要り、承認は監査ログに残ります。</p>
+        </div>
+      </div>
+      <label class="label cursor-pointer gap-2 mt-2"><input type="checkbox" name="approve" value="1" class="checkbox"{{if .Approve}} checked{{end}}>登録し直すことを承認する</label>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">承認の理由</legend>
+        <input name="approve_reason" value="{{.ApproveReason}}" maxlength="500" class="input w-full{{if .Errors.approve}} input-error{{end}}">
+        {{template "field-error" .Errors.approve}}
+      </fieldset>
+      {{- end}}
+
+      <div class="card-actions mt-4"><button type="submit" class="btn btn-primary">登録する</button></div>
+    </div>
+  </form>
 </div>
 {{- end}}

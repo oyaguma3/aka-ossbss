@@ -1,13 +1,10 @@
 {{/* 複数の画面で使う部品。すべてのページから使える。 */}}
 
-{{/* alerts は画面の上部の成功とエラーの文。引数は dict で Message、Error、Op（provisioner の操作の記録の ID。空なら出さない）。 */}}
+{{/* alerts は画面の上部の成功とエラーの文。引数は dict で Message、Error。 */}}
 {{define "alerts" -}}
 {{- with .Message}}<div role="status" class="alert alert-success mb-4"><span>{{.}}</span></div>{{end}}
-{{- with .Error}}<div role="alert" class="alert alert-error mb-4"><span>{{.}}{{template "op-ref" $.Op}}</span></div>{{end}}
+{{- with .Error}}<div role="alert" class="alert alert-error mb-4"><span>{{.}}</span></div>{{end}}
 {{- end}}
-
-{{/* op-ref は provisioner の操作の記録へのリンク（引数は操作の ID。運用担当・システム管理者にだけ渡す。空なら何も出さない）。 */}}
-{{define "op-ref"}}{{with .}} <a class="link" href="/operations/{{.}}">操作の記録を開く</a>{{end}}{{end}}
 
 {{/* confirm は確認ダイアログ（画面仕様 §1.4）。開くボタンは command="show-modal" commandfor="ID" を持つ。
      引数は dict で ID、Title、Message、Form（確認のボタンで送るフォームの id）、Label（確認のボタンの文字）、Class（ボタンの色）。 */}}
@@ -25,141 +22,53 @@
 </dialog>
 {{- end}}
 
-{{/* policy-status は加入者の状態（認可ポリシーの状態）と、停止・再開のボタン（画面仕様 §2.4）。引数は dict で、
-     IMSI、HasPolicy（認可ポリシーがあるか）、Status（空なら接続先が停止・再開に対応していない）、Can（停止・再開ができるか）、
-     URL（送り先）、Target（差し替える要素）、Include（一緒に送るフォーム。空なら送らない）、Key（Idempotency-Key）。 */}}
-{{define "policy-status" -}}
-{{- if not .HasPolicy -}}
-<span class="text-base-content/60">認可ポリシーがないため、停止・再開できません（認可ポリシーがない加入者の認証は、もともと拒否されます）。</span>
-{{- else if not .Status -}}
-<span class="text-base-content/60">接続先が停止・再開に対応していません（aka-provisioner 0.3.0 以降と本PoCの provisioning-api 0.4.0 以降で使えます）。</span>
-{{- else -}}
-<div class="flex flex-wrap items-center gap-2">
-  {{- if eq .Status "active"}}
-  <span class="badge badge-success badge-outline">利用中</span>
-  {{- else if eq .Status "suspended"}}
-  <span class="badge badge-error">停止中</span><span class="text-sm text-base-content/60">（認証を拒否します）</span>
-  {{- else}}
-  <span class="badge badge-warning">{{policyStatusLabel .Status}}</span><span class="text-sm text-base-content/60">（認証を拒否します。停止または再開で正しい状態に戻せます）</span>
-  {{- end}}
-  {{- if .Can}}
-  {{- if ne .Status "suspended"}}
-  <form id="status-suspend" hx-post="{{.URL}}" hx-target="{{.Target}}" hx-swap="outerHTML"{{with .Include}} hx-include="{{.}}"{{end}}>
-    <input type="hidden" name="status" value="suspended">
-    <input type="hidden" name="status_idem" value="{{.Key}}">
-  </form>
-  <button type="button" class="btn btn-sm btn-error btn-outline" command="show-modal" commandfor="dialog-suspend">停止する</button>
-  {{template "confirm" (dict "ID" "dialog-suspend" "Title" "加入者の停止" "Form" "status-suspend" "Label" "停止する" "Class" "btn-error"
-    "Message" (printf "加入者 %s を停止します。次の認証から拒否します（接続中のセッションは切れません）。よろしいですか？" .IMSI))}}
-  {{- end}}
-  {{- if ne .Status "active"}}
-  <form id="status-resume" hx-post="{{.URL}}" hx-target="{{.Target}}" hx-swap="outerHTML"{{with .Include}} hx-include="{{.}}"{{end}}>
-    <input type="hidden" name="status" value="active">
-    <input type="hidden" name="status_idem" value="{{.Key}}">
-  </form>
-  <button type="button" class="btn btn-sm btn-primary btn-outline" command="show-modal" commandfor="dialog-resume">再開する</button>
-  {{template "confirm" (dict "ID" "dialog-resume" "Title" "加入者の再開" "Form" "status-resume" "Label" "再開する" "Class" "btn-primary"
-    "Message" (printf "加入者 %s を再開します。次の認証から認可ポリシーのルールに従います。よろしいですか？" .IMSI))}}
-  {{- end}}
-  {{- end}}
-</div>
-{{- end}}
+{{/* state-badge は加入者の状態（引数は状態。空は「なし」）。 */}}
+{{define "state-badge" -}}
+{{- if eq . "active"}}<span class="badge badge-success badge-sm badge-outline">{{stateLabel .}}</span>
+{{- else if eq . "inactive"}}<span class="badge badge-warning badge-sm">{{stateLabel .}}</span>
+{{- else if eq . "terminated"}}<span class="badge badge-error badge-sm">{{stateLabel .}}</span>
+{{- else}}<span class="text-base-content/40">{{stateLabel .}}</span>{{end -}}
 {{- end}}
 
-{{/* status-badge は一覧の状態の欄（引数は加入者。認可ポリシーがなければ「-」）。 */}}
-{{define "status-badge" -}}
-{{- if not .Policy}}-
-{{- else if eq .Status "suspended"}}<span class="badge badge-error badge-sm">停止中</span>
-{{- else if eq .Status "active"}}利用中
-{{- else if .Status}}<span class="badge badge-warning badge-sm">{{policyStatusLabel .Status}}</span>
-{{- else}}-{{end -}}
-{{- end}}
-
-{{/* tenant-filter-options はテナントの絞り込みの選択肢（引数は dict で Value（選んでいる値）と Tenants（tenantInfo））。 */}}
+{{/* tenant-filter-options はテナントの絞り込みの選択肢（引数は dict で Value（選んでいる値）、Tenants（tenantInfo）、
+     AllowNone（「なし」を出すか。アカウントと監査ログ））。 */}}
 {{define "tenant-filter-options" -}}
 <option value=""{{if eq .Value ""}} selected{{end}}>すべて</option>
-<option value="none"{{if eq .Value "none"}} selected{{end}}>テナントなし</option>
+{{- if .AllowNone}}
+<option value="none"{{if eq .Value "none"}} selected{{end}}>なし（運用担当・システム管理者など）</option>
+{{- end}}
 {{- range .Tenants.List}}
 <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Value}} selected{{end}}>{{.Name}}</option>
 {{- end}}
 {{- end}}
 
-{{/* tenant-choice は登録のときの所属のテナントの選択（引数は dict で Value、Tenants、Error）。うっかりテナントなしにしないよう、
-     既定は「選んでください」にする（画面仕様 §2.2）。 */}}
+{{/* tenant-choice は登録のときの所属のテナントの選択（引数は dict で Value、Tenants、Error）。うっかり選び違えないよう、
+     既定は「選んでください」にする。すべての加入者はどれかのテナントに属する（設計概要 §6）。 */}}
 {{define "tenant-choice" -}}
 <fieldset class="fieldset">
   <legend class="fieldset-legend">所属のテナント</legend>
   {{- /* required は付けない（確認ダイアログから送ると、ブラウザの入力の検査の表示がダイアログの裏に隠れるため。サーバーで確かめる）。 */}}
   <select name="tenant" class="select w-full{{if .Error}} select-error{{end}}">
     <option value=""{{if eq .Value ""}} selected{{end}} disabled>選んでください</option>
-    <option value="none"{{if eq .Value "none"}} selected{{end}}>テナントなし</option>
     {{- range .Tenants.List}}
     <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Value}} selected{{end}}>{{.Name}}</option>
     {{- end}}
   </select>
-  {{- if .Error}}<p class="label text-error">{{.Error}}</p>{{else}}<p class="label">テナントなしのものは、運用担当とシステム管理者だけが扱えます</p>{{end}}
+  {{- if .Error}}<p class="label text-error">{{.Error}}</p>{{else}}<p class="label">もう一方の側を登録するときは、このテナントで固定します</p>{{end}}
 </fieldset>
-{{- end}}
-
-{{/* plmn-map は provisioner の PLMN マップ（引数は []provisioner.PLMNEntry）。 */}}
-{{define "plmn-map" -}}
-{{- if .}}{{range $i, $e := .}}{{if $i}}、{{end}}<code>{{$e.PLMN}}</code> → {{keyStoreLabel $e.KeyStore}}{{end}}。それ以外の PLMN は本PoC
-{{- else}}なし（すべての加入者の鍵を本PoCに置く）{{end -}}
 {{- end}}
 
 {{/* field-error は入力の項目の下の誤り（引数は文。空なら何も出さない）。 */}}
 {{define "field-error"}}{{with .}}<p class="label text-error">{{.}}</p>{{end}}{{end}}
 
-{{/* tenant-select は付け替え先のテナントの選択（引数は dict で Value（選んでいる値。"none" はテナントなし）、Tenants、Form（属するフォームの id。空なら付けない））。 */}}
-{{define "tenant-select" -}}
-<select name="tenant" class="select"{{with .Form}} form="{{.}}"{{end}} aria-label="付け替え先のテナント">
-  <option value=""{{if eq .Value ""}} selected{{end}}>付け替え先を選んでください</option>
-  <option value="none"{{if eq .Value "none"}} selected{{end}}>テナントなし</option>
-  {{- range .Tenants.List}}
-  <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Value}} selected{{end}}>{{.Name}}</option>
-  {{- end}}
-</select>
-{{- end}}
-
-{{/* bulk-assign は一覧のまとめての付け替え（システム管理者。画面仕様 §7.1）。引数は dict で Action（送り先）、Back（戻り先）、Tenants、
-     What（「加入者」など）。行のチェックボックスは form="bulk-assign" でこのフォームに属させる。 */}}
-{{define "bulk-assign" -}}
-<form id="bulk-assign" method="post" action="{{.Action}}" class="flex flex-wrap items-center gap-2 mb-2">
-  <input type="hidden" name="back" value="{{.Back}}">
-  <span class="text-sm">チェックした{{.What}}の所属を</span>
-  {{template "tenant-select" (dict "Value" "" "Tenants" .Tenants)}}
-  <span class="text-sm">に</span>
-  <button type="button" class="btn" command="show-modal" commandfor="dialog-bulk">変える</button>
-</form>
-{{template "confirm" (dict "ID" "dialog-bulk" "Title" "所属の付け替え" "Form" "bulk-assign" "Label" "変える" "Class" "btn-primary"
-  "Message" (printf "チェックした%sの所属を、選んだテナントに変えます。provisioner にないものは飛ばします。よろしいですか？" .What))}}
-{{- end}}
-
-{{/* assign-card は詳細の所属の変更（システム管理者。画面仕様 §7.1）。引数は dict で URL（送り先）、Target（差し替える要素）、
-     Current（今のテナントの ID。0 はテナントなし）、Tenants、What。 */}}
-{{define "assign-card" -}}
-<div class="card bg-base-100 shadow mb-6">
-  <div class="card-body">
-    <h2 class="card-title">所属の変更</h2>
-    <form id="assign-form" hx-post="{{.URL}}" hx-target="{{.Target}}" hx-swap="outerHTML" class="flex flex-wrap items-center gap-2">
-      {{template "tenant-select" (dict "Value" (or (and .Current (printf "%d" .Current)) "none") "Tenants" .Tenants)}}
-      <button type="button" class="btn" command="show-modal" commandfor="dialog-assign">変える</button>
-    </form>
-    <p class="text-sm text-base-content/60">テナントの利用者は、自分のテナントに属するものだけを扱えます。テナントなしのものは、運用担当とシステム管理者だけが扱えます。</p>
-    {{template "confirm" (dict "ID" "dialog-assign" "Title" "所属の変更" "Form" "assign-form" "Label" "変える" "Class" "btn-primary"
-      "Message" (printf "この%sの所属を、選んだテナントに変えます。よろしいですか？" .What))}}
-  </div>
-</div>
-{{- end}}
-
-{{/* audit-tabs は監査ログの種類のタブ（引数は auditTabs）。provisioner と下流のタブはシステム管理者だけ。 */}}
+{{/* audit-tabs は監査ログの種類のタブ（引数は auditTabs）。aka-provisioner と下流のタブは運用担当・システム管理者だけ。 */}}
 {{define "audit-tabs" -}}
 {{- if .Downstream}}
 <div role="tablist" class="tabs tabs-border mb-4">
-  <a role="tab" href="/audit" class="tab{{if eq .Current "bff"}} tab-active{{end}}">本BFF</a>
-  <a role="tab" href="/audit/provisioner" class="tab{{if eq .Current "provisioner"}} tab-active{{end}}">provisioner</a>
-  <a role="tab" href="/audit/prov" class="tab{{if eq .Current "prov"}} tab-active{{end}}">provisioning-api</a>
-  <a role="tab" href="/audit/aka" class="tab{{if eq .Current "aka"}} tab-active{{end}}">aka-vecgen</a>
+  <a role="tab" href="/audit" class="tab{{if eq .Current "ossbss"}} tab-active{{end}}">aka-ossbss</a>
+  <a role="tab" href="/audit/provisioner" class="tab{{if eq .Current "provisioner"}} tab-active{{end}}">aka-provisioner</a>
+  <a role="tab" href="/audit/vecgen" class="tab{{if eq .Current "vecgen"}} tab-active{{end}}">aka-vecgen</a>
+  <a role="tab" href="/audit/radius" class="tab{{if eq .Current "radius"}} tab-active{{end}}">aka-radius</a>
 </div>
 {{- end}}
 {{- end}}
@@ -171,4 +80,40 @@
   <button type="button" class="btn btn-sm" hx-get="{{.}}" hx-target="#audit-pager" hx-swap="outerHTML">さらに古いものを表示</button>
   {{- end}}
 </div>
+{{- end}}
+
+{{/* rule-fields は認可ポリシーのルール 1 件の入力（引数は ruleForm。名前の同じ項目を並べて送る）。 */}}
+{{define "rule-fields" -}}
+<div class="grid gap-x-6 md:grid-cols-3">
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">NAS-Identifier</legend>
+    <input name="nas_id" value="{{.NASID}}" maxlength="253" spellcheck="false" class="input w-full font-mono{{if .Errors.nasId}} input-error{{end}}">
+    {{- if .Errors.nasId}}{{template "field-error" .Errors.nasId}}{{else}}<p class="label">AP が名乗る値（* はすべての AP）</p>{{end}}
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">VLAN</legend>
+    <input name="vlan_id" value="{{.VLANID}}" maxlength="4" inputmode="numeric" class="input w-full{{if .Errors.vlanId}} input-error{{end}}">
+    {{- if .Errors.vlanId}}{{template "field-error" .Errors.vlanId}}{{else}}<p class="label">1〜4094。空なら付けない</p>{{end}}
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">Session-Timeout（秒）</legend>
+    <input name="session_timeout" value="{{.SessionTimeout}}" maxlength="5" inputmode="numeric" class="input w-full{{if .Errors.sessionTimeout}} input-error{{end}}">
+    {{- if .Errors.sessionTimeout}}{{template "field-error" .Errors.sessionTimeout}}{{else}}<p class="label">1〜86400。空なら付けない</p>{{end}}
+  </fieldset>
+</div>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">SSID</legend>
+  <textarea name="ssids" rows="2" spellcheck="false" class="textarea w-full font-mono{{if .Errors.ssids}} textarea-error{{end}}">{{.SSIDs}}</textarea>
+  {{- if .Errors.ssids}}{{template "field-error" .Errors.ssids}}{{else}}<p class="label">1 行に 1 つ（32 個まで、32 バイトまで。* はすべての SSID で、ほかと一緒に書けない）</p>{{end}}
+</fieldset>
+{{- end}}
+
+{{/* tenant-select はアカウントのテナントの選択（引数は dict で Value（選んでいる値。"none" はテナントに属さない）、Tenants）。 */}}
+{{define "tenant-select" -}}
+<select name="tenant" class="select w-full" aria-label="テナント">
+  <option value="none"{{if or (eq .Value "none") (eq .Value "")}} selected{{end}}>なし（運用担当・システム管理者）</option>
+  {{- range .Tenants.List}}
+  <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Value}} selected{{end}}>{{.Name}}</option>
+  {{- end}}
+</select>
 {{- end}}

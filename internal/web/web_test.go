@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/oyaguma3/aka-ossbss/internal/access"
 	"github.com/oyaguma3/aka-ossbss/internal/access/accesstest"
+	"github.com/oyaguma3/aka-ossbss/internal/audit"
 	"github.com/oyaguma3/aka-ossbss/internal/auth"
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
@@ -29,17 +31,18 @@ var discard = slog.New(slog.DiscardHandler)
 
 // fakeDB はテスト用の DB。err を設定すると、すべての呼び出しがそのエラーを返す。
 // テナントは 10（テナントA）と 20（テナントB）。テナントユーザー a とテナント管理者 b はテナントA に属する。
+// 台帳は db.Transition で書く（本物の DB と同じ移り方）。
 type fakeDB struct {
 	mu       sync.Mutex
 	version  int
 	err      error
 	accounts map[string]db.Account
 	tenants  []db.Tenant
-	// subTenants と clientTenants は加入者・RADIUSクライアントの所属の記録。
-	subTenants    map[string]int64
-	clientTenants map[int64]int64
-	// assignErr を設定すると、所属の記録の書き込みだけがそのエラーを返す。auditErr は監査ログの書き込みだけ。
-	assignErr, auditErr error
+	// subs は台帳、events は状態の事実。
+	subs   map[string]db.Entry
+	events []db.ChargingEvent
+	// ledgerErr を設定すると、台帳の書き込み（Apply）だけがそのエラーを返す。auditErr は監査ログの書き込みだけ。
+	ledgerErr, auditErr error
 	audit               []db.AuditEntry
 }
 
@@ -51,8 +54,8 @@ func newFakeDB() *fakeDB {
 		"d@example.com": {ID: 4, Email: "d@example.com", Role: authz.SystemAdmin},
 		"x@example.com": {ID: 5, Email: "x@example.com", Role: authz.Operator, Disabled: true},
 	},
-		tenants:    []db.Tenant{{ID: 10, Name: "テナントA"}, {ID: 20, Name: "テナントB"}},
-		subTenants: map[string]int64{}, clientTenants: map[int64]int64{}}
+		tenants: []db.Tenant{{ID: 10, Name: "テナントA"}, {ID: 20, Name: "テナントB"}},
+		subs:    map[string]db.Entry{}}
 }
 
 func (f *fakeDB) Ping(context.Context) error { return f.err }
@@ -79,88 +82,182 @@ func (f *fakeDB) Tenants(context.Context) ([]db.Tenant, error) {
 	defer f.mu.Unlock()
 	return slices.Clone(f.tenants), f.err
 }
-func (f *fakeDB) SubscriberTenant(_ context.Context, imsi string) (int64, error) {
+
+// put は台帳に行を置く（試験の準備）。
+func (f *fakeDB) put(e db.Entry) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.subTenants[imsi], f.err
+	f.subs[e.IMSI] = e
 }
-func (f *fakeDB) SubscriberTenants(_ context.Context, imsis []string) (map[string]int64, error) {
+
+// entry は台帳の行を返す。
+func (f *fakeDB) entry(imsi string) (db.Entry, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := map[string]int64{}
-	for _, imsi := range imsis {
-		if t, ok := f.subTenants[imsi]; ok {
-			out[imsi] = t
-		}
-	}
-	return out, f.err
+	e, ok := f.subs[imsi]
+	return e, ok
 }
-func (f *fakeDB) TenantSubscribers(_ context.Context, tenantID int64, prefix, after string, limit int) ([]string, error) {
+
+// eventTexts は状態の事実を「事実 側 テナント 前→後」で返す。
+func (f *fakeDB) eventTexts() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []string
-	for _, imsi := range slices.Sorted(maps.Keys(f.subTenants)) {
-		if f.subTenants[imsi] == tenantID && strings.HasPrefix(imsi, prefix) && imsi > after && len(out) < limit {
-			out = append(out, imsi)
+	for _, ev := range f.events {
+		out = append(out, strings.TrimSpace(fmt.Sprintf("%s %s %d %s→%s", ev.Event, ev.Side, ev.TenantID, ev.From, ev.To)))
+	}
+	return out
+}
+
+func (f *fakeDB) Subscriber(_ context.Context, imsi string) (db.Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return db.Entry{}, f.err
+	}
+	e, ok := f.subs[imsi]
+	if !ok {
+		return db.Entry{}, db.ErrNotFound
+	}
+	return e, nil
+}
+
+// match は台帳の絞り込みに当たるか。
+func match(e db.Entry, flt db.SubscriberFilter) bool {
+	state := func(present bool, s, want string) bool {
+		switch want {
+		case "":
+			return true
+		case db.FilterAbsent:
+			return !present
+		}
+		return s == want
+	}
+	return (flt.TenantID == 0 || e.TenantID == flt.TenantID) && strings.HasPrefix(e.IMSI, flt.Prefix) &&
+		state(e.VecgenPresent, e.VecgenState, flt.VecgenState) && state(e.RadiusPresent, e.RadiusState, flt.RadiusState) &&
+		(flt.SourceID == "" || e.RadiusSourceID == flt.SourceID) && (!flt.Mismatch || e.Mismatch()) &&
+		e.Deleted() == flt.Deleted && (!flt.CheckNeeded || e.CheckNeeded)
+}
+
+func (f *fakeDB) ListSubscribers(_ context.Context, flt db.SubscriberFilter, after string, limit int) ([]db.Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []db.Entry
+	for _, imsi := range slices.Sorted(maps.Keys(f.subs)) {
+		if e := f.subs[imsi]; imsi > after && match(e, flt) && len(out) < limit {
+			out = append(out, e)
 		}
 	}
 	return out, f.err
 }
-func (f *fakeDB) CountTenantSubscribers(_ context.Context, tenantID int64, prefix string) (int64, error) {
+func (f *fakeDB) CountSubscribers(_ context.Context, flt db.SubscriberFilter) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var n int64
-	for imsi, t := range f.subTenants {
-		if t == tenantID && strings.HasPrefix(imsi, prefix) {
+	for _, e := range f.subs {
+		if match(e, flt) {
 			n++
 		}
 	}
 	return n, f.err
 }
-func (f *fakeDB) AssignSubscriber(_ context.Context, imsi string, tenantID int64, _ string) error {
+func (f *fakeDB) SubscriberSources(_ context.Context, tenant int64) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := cmp.Or(f.err, f.assignErr); err != nil {
+	var out []string
+	for _, e := range f.subs {
+		if e.RadiusSourceID != "" && (tenant == 0 || e.TenantID == tenant) && !slices.Contains(out, e.RadiusSourceID) {
+			out = append(out, e.RadiusSourceID)
+		}
+	}
+	slices.Sort(out)
+	return out, f.err
+}
+func (f *fakeDB) CountLedger(_ context.Context, tenant int64) (db.LedgerCounts, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := db.LedgerCounts{Vecgen: map[string]int64{}, Radius: map[string]int64{}}
+	for _, e := range f.subs {
+		switch {
+		case tenant != 0 && e.TenantID != tenant:
+			continue
+		case e.Deleted():
+			c.Deleted++
+			continue
+		}
+		c.Total++
+		c.Vecgen[cmp.Or(e.VecgenState, db.FilterAbsent)]++
+		c.Radius[cmp.Or(e.RadiusState, db.FilterAbsent)]++
+		if e.Mismatch() {
+			c.Mismatch++
+		}
+		if e.CheckNeeded {
+			c.CheckNeeded++
+		}
+	}
+	return c, f.err
+}
+
+// fakeLedger は WithSubscriber の中の台帳（書いた変更は fn が成功したときだけ残す）。
+type fakeLedger struct {
+	f      *fakeDB
+	meta   db.Meta
+	cur    db.Entry
+	exists bool
+	events []db.ChargingEvent
+}
+
+func (l *fakeLedger) Entry() (db.Entry, bool) { return l.cur, l.exists }
+func (l *fakeLedger) Apply(ch db.Change) error {
+	if l.f.ledgerErr != nil {
+		return l.f.ledgerErr
+	}
+	res, err := db.Transition(l.cur, l.exists, ch, l.meta, time.Now())
+	if err != nil {
 		return err
 	}
-	if tenantID == 0 {
-		delete(f.subTenants, imsi)
-	} else {
-		f.subTenants[imsi] = tenantID
+	if e := res.Entry; res.Changed && !res.Remove && !e.Deleted() && !slices.ContainsFunc(l.f.tenants, func(t db.Tenant) bool { return t.ID == e.TenantID }) {
+		return db.ErrTenantNotFound
 	}
+	l.cur, l.exists = res.Entry, !res.Remove
+	l.events = append(l.events, res.Events...)
 	return nil
 }
-func (f *fakeDB) ClientTenant(_ context.Context, id int64) (int64, error) {
+
+func (f *fakeDB) WithSubscriber(_ context.Context, imsi string, meta db.Meta, fn func(db.Ledger) error) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.clientTenants[id], f.err
-}
-func (f *fakeDB) ClientTenants(context.Context) (map[int64]int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return maps.Clone(f.clientTenants), f.err
-}
-func (f *fakeDB) AssignClient(_ context.Context, id, tenantID int64, _ string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := cmp.Or(f.err, f.assignErr); err != nil {
+	if f.err != nil {
+		f.mu.Unlock()
+		return f.err
+	}
+	cur, ok := f.subs[imsi]
+	if !ok {
+		cur = db.Entry{IMSI: imsi}
+	}
+	l := &fakeLedger{f: f, meta: meta, cur: cur, exists: ok}
+	f.mu.Unlock()
+	if err := fn(l); err != nil {
 		return err
 	}
-	if tenantID == 0 {
-		delete(f.clientTenants, id)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if l.exists {
+		f.subs[imsi] = l.cur
 	} else {
-		f.clientTenants[id] = tenantID
+		delete(f.subs, imsi)
 	}
+	f.events = append(f.events, l.events...)
 	return nil
 }
-func (f *fakeDB) InsertAudit(_ context.Context, e db.AuditEntry) error {
+
+func (f *fakeDB) InsertAudit(_ context.Context, e db.AuditEntry) (int64, time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := cmp.Or(f.err, f.auditErr); err != nil {
-		return err
+		return 0, time.Time{}, err
 	}
 	f.audit = append(f.audit, e)
-	return nil
+	return int64(len(f.audit)), time.Now(), nil
 }
 
 // lastAudit は最後の監査ログを返す（なければゼロ値）。
@@ -179,7 +276,7 @@ func newHandler(t *testing.T, d *fakeDB, ident auth.Identifier, log *slog.Logger
 
 func newHandlerPV(t *testing.T, d *fakeDB, ident auth.Identifier, log *slog.Logger, pv *fakePV) http.Handler {
 	t.Helper()
-	h, err := New(Options{Log: log, Version: "test", DB: d, Identifier: ident, Provisioner: pv})
+	h, err := New(Options{Log: log, Version: "test", DB: d, Identifier: ident, Provisioner: pv, AuditFiles: audit.NewFiles(t.TempDir(), 14)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,9 +347,9 @@ func TestHomeByRole(t *testing.T) {
 		t.Fatalf("home = %d", w.Code)
 	}
 	body := w.Body.String()
-	mustContain(t, body, "<title>ダッシュボード | EAP-AKA OSS/BSS サンプル</title>", "a@example.com", "テナントユーザー", "テナントA",
-		"<td>加入者の停止・再開</td>\n            <td>自分のテナントのもの</td>",
-		"<td>加入者の登録</td>\n            <td>できない</td>", "開発用の設定", `<span class="badge badge-success">接続中</span> スキーマのバージョン 1`)
+	mustContain(t, body, "<title>ダッシュボード | aka-ossbss</title>", "a@example.com", "テナントユーザー", "テナントA",
+		"<td>加入者の状態の変更</td>\n            <td>自分のテナントのもの</td>",
+		"<td>radius 側の登録</td>\n            <td>できない</td>", "開発用の設定", `<span class="badge badge-success">接続中</span> スキーマのバージョン 1`)
 	// 開発用の設定ではログアウトのリンクを出さない（Access を通らないため）。
 	if strings.Contains(body, accessLogoutURL) {
 		t.Error("dev mode shows the access logout link")
@@ -266,10 +363,10 @@ func TestHomeByRole(t *testing.T) {
 	// テナント管理者: アカウントの管理は自分のテナントのテナントユーザーだけ。
 	body = do(newDevHandler(t, d, "b@example.com"), "GET", "/", nil).Body.String()
 	mustContain(t, body, "テナント管理者", "<td>アカウントの管理</td>\n            <td>自分のテナントのテナントユーザー</td>")
-	// 運用担当: テナントなし。AMF / SQN の変更はできない。
+	// 運用担当: テナントに属さない。vecgen 側の登録・変更はできない。
 	body = do(newDevHandler(t, d, "c@example.com"), "GET", "/", nil).Body.String()
-	mustContain(t, body, "運用担当", "なし（全テナントとテナントなしを扱う）",
-		"<td>加入者の登録</td>\n            <td>すべて</td>", "<td>AMF / SQN の変更</td>\n            <td>できない</td>")
+	mustContain(t, body, "運用担当", "なし（すべてのテナントを扱う）",
+		"<td>radius 側の登録</td>\n            <td>すべて</td>", "<td>vecgen 側の登録（鍵の入力）</td>\n            <td>できない</td>")
 	// システム管理者: すべて。
 	body = do(newDevHandler(t, d, "d@example.com"), "GET", "/", nil).Body.String()
 	if strings.Contains(body, "<td>できない</td>") {
@@ -413,50 +510,38 @@ func TestPermissions(t *testing.T) {
 	}
 }
 
-// provisioner の状態は、運用担当とシステム管理者にだけ出す（設計概要 §6.2）。
+// aka-provisioner と下流の状態は、運用担当とシステム管理者にだけ出す（設計概要 §5）。台帳の件数は役割の範囲で数える。
 func TestHomeProvisioner(t *testing.T) {
 	d := newFakeDB()
+	d.put(db.Entry{IMSI: imsiOwn, TenantID: 10, VecgenPresent: true, VecgenState: "active"})
+	d.put(db.Entry{IMSI: imsiOther, TenantID: 20, VecgenPresent: true, VecgenState: "active", RadiusPresent: true, RadiusState: "active", RadiusSourceID: "vecgen"})
 	for _, c := range []struct {
 		email string
 		shown bool
-	}{{"a@example.com", false}, {"b@example.com", false}, {"c@example.com", true}, {"d@example.com", true}} {
+		total string
+	}{{"a@example.com", false, "1"}, {"b@example.com", false, "1"}, {"c@example.com", true, "2"}, {"d@example.com", true, "2"}} {
 		pv := newFakePV()
 		body := do(newHandlerPV(t, d, auth.Dev(c.email), discard, pv), "GET", "/", nil).Body.String()
-		if got := strings.Contains(body, "<h2 class=\"card-title\">provisioner</h2>"); got != c.shown || (pv.calls > 0) != c.shown {
-			t.Errorf("%s: shown %v, calls %d", c.email, got, pv.calls)
+		if got := strings.Contains(body, "aka-provisioner と下流</h2>"); got != c.shown || (pv.statusCalls > 0) != c.shown {
+			t.Errorf("%s: shown %v, calls %d", c.email, got, pv.statusCalls)
 		}
+		mustContain(t, body, `<div class="stat-title">加入者（台帳）</div>
+    <div class="stat-value">`+c.total+`</div>`)
 		if c.shown {
-			mustContain(t, body, "バージョン 0.3.0", "バージョン 0.4.0（ノード poc-01、加入者 3）", `<span class="badge badge-error">切断</span> aka-vecgen に接続できません。`,
-				"実行中 0、やり直し中 0、失敗 1")
-			// aka-vecgen に接続できなければ、AVクライアントは確かめられていないので出さない。
-			if strings.Contains(body, "AVクライアント") {
-				t.Error("av client is shown while aka-vecgen is unreachable")
-			}
+			mustContain(t, body, "バージョン 2.0.0（起動", "バージョン 0.5.0（加入者 3）",
+				`<span class="badge badge-error">切断</span> aka-radius に届きません。`)
 		}
 	}
-
-	// provisioner に接続できなければ、原因の見当を出す（画面は返す）。
+	// aka-provisioner に接続できなければ、原因の見当を出す（画面は返す）。
 	pv := newFakePV()
-	pv.err = &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	pv.statusErr = &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
 	w := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil)
-	if w.Code != 200 || strings.Count(w.Body.String(), "provisioner に接続できません。") != 1 ||
-		!strings.Contains(w.Body.String(), "provisioner が起動しているか") {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "provisioner が起動しているか") {
 		t.Errorf("unavailable = %d %s", w.Code, w.Body)
 	}
-	// provisioner の応答に時間がかかっても、DB の状態は正しく出す。
-	pv.delay = 3500 * time.Millisecond
-	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "スキーマのバージョン 1") {
-		t.Error("db status is wrong while provisioner is slow")
-	}
-	pv.delay = 0
-	// provisioner がエラーを返した。
-	pv.err = &provisioner.Error{Status: 500}
-	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "provisioner がエラーを返しました。") {
-		t.Error("error is not shown")
-	}
-	// provisioner でない相手（本PoCの provisioning-api など）。
-	pv.err, pv.status = nil, provisioner.Status{Version: "0.4.0"}
-	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "provisioner ではないようです") {
+	// aka-provisioner 2.0.0 でない相手。
+	pv.statusErr, pv.status = nil, provisioner.Status{Version: "0.3.0"}
+	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "aka-provisioner 2.0.0 ではないようです") {
 		t.Error("not provisioner is not shown")
 	}
 }
@@ -474,14 +559,9 @@ func (f *fakeDB) tenantName(id int64) string {
 
 func (f *fakeDB) summary(t db.Tenant) db.TenantSummary {
 	s := db.TenantSummary{Tenant: t}
-	for _, v := range f.subTenants {
-		if v == t.ID {
+	for _, e := range f.subs {
+		if e.TenantID == t.ID && !e.Deleted() {
 			s.Subscribers++
-		}
-	}
-	for _, v := range f.clientTenants {
-		if v == t.ID {
-			s.Clients++
 		}
 	}
 	for _, a := range f.accounts {
@@ -513,7 +593,7 @@ func (f *fakeDB) TenantSummary(_ context.Context, id int64) (db.TenantSummary, e
 	return db.TenantSummary{}, cmp.Or(f.err, db.ErrNotFound)
 }
 
-func (f *fakeDB) CreateTenant(_ context.Context, name string) (db.Tenant, error) {
+func (f *fakeDB) CreateTenant(_ context.Context, name string, _ db.Meta) (db.Tenant, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, t := range f.tenants {
@@ -526,28 +606,29 @@ func (f *fakeDB) CreateTenant(_ context.Context, name string) (db.Tenant, error)
 	return t, f.err
 }
 
-func (f *fakeDB) RenameTenant(_ context.Context, id int64, name string) error {
+func (f *fakeDB) RenameTenant(_ context.Context, id int64, name string, _ db.Meta) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	i := slices.IndexFunc(f.tenants, func(t db.Tenant) bool { return t.ID == id })
 	if i < 0 {
-		return db.ErrNotFound
+		return "", db.ErrNotFound
 	}
 	if slices.ContainsFunc(f.tenants, func(t db.Tenant) bool { return t.Name == name && t.ID != id }) {
-		return db.ErrConflict
+		return "", db.ErrConflict
 	}
+	before := f.tenants[i].Name
 	f.tenants[i].Name = name
-	return f.err
+	return before, f.err
 }
 
-func (f *fakeDB) DeleteTenant(_ context.Context, id int64) error {
+func (f *fakeDB) DeleteTenant(_ context.Context, id int64, _ db.Meta) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	i := slices.IndexFunc(f.tenants, func(t db.Tenant) bool { return t.ID == id })
 	if i < 0 {
 		return db.ErrNotFound
 	}
-	if s := f.summary(f.tenants[i]); s.Subscribers+s.Clients+s.Accounts > 0 {
+	if s := f.summary(f.tenants[i]); s.Subscribers+s.Accounts > 0 {
 		return db.ErrInUse
 	}
 	f.tenants = slices.Delete(f.tenants, i, i+1)
@@ -657,28 +738,6 @@ func (f *fakeDB) ListAudit(_ context.Context, q db.AuditQuery) ([]db.AuditRecord
 		}
 		out = append(out, db.AuditRecord{ID: id, ActorEmail: e.ActorEmail, ActorRole: e.ActorRole, TenantID: e.TenantID,
 			Action: e.Action, Target: e.Target, Detail: e.Detail, TraceID: e.TraceID, Remote: e.Remote})
-	}
-	return out, f.err
-}
-
-func (f *fakeDB) SubscriberAssignments(_ context.Context, after string, limit int) ([]db.Assignment, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []db.Assignment
-	for _, imsi := range slices.Sorted(maps.Keys(f.subTenants)) {
-		if imsi > after && len(out) < limit {
-			out = append(out, db.Assignment{IMSI: imsi, TenantID: f.subTenants[imsi], AssignedBy: "c@example.com"})
-		}
-	}
-	return out, f.err
-}
-
-func (f *fakeDB) ClientAssignments(context.Context) ([]db.Assignment, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []db.Assignment
-	for _, id := range slices.Sorted(maps.Keys(f.clientTenants)) {
-		out = append(out, db.Assignment{ClientID: id, TenantID: f.clientTenants[id]})
 	}
 	return out, f.err
 }
