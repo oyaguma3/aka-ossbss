@@ -1,9 +1,11 @@
-// Package db は本BFF 専用の PostgreSQL への接続と、スキーマの移行を扱う（設計概要 §11）。
+// Package db は aka-ossbss 専用の PostgreSQL への接続と、スキーマの移行、台帳・テナント・アカウント・監査ログの読み書きを扱う
+// （設計概要 §14）。
 package db
 
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -117,6 +119,11 @@ func loadMigrations() ([]migration, error) {
 	return out, nil
 }
 
+// ErrPoCSchema は、DB が PoC のスキーマ（eapaka-ossbss-sample の所属の記録）であること。MVP のスキーマには移さないので、
+// 新しい DB（空のボリューム）で始める。
+var ErrPoCSchema = errors.New("the database has the PoC schema (table subscriber_tenants); " +
+	"aka-ossbss does not migrate it. Start with a new, empty database")
+
 // Migrate は、まだ適用していない移行を番号の順に適用し、適用した番号を返す。
 // 全体を 1 つのトランザクションで行い、advisory lock で他のプロセスの移行と重ならないようにする
 // （途中で失敗したら、何も適用しなかった状態に戻る）。DB にあってこのプログラムが知らない番号があれば、
@@ -137,6 +144,14 @@ func (d *DB) Migrate(ctx context.Context) ([]int, error) {
 			applied_at timestamptz NOT NULL DEFAULT now()
 		)`); err != nil {
 			return fmt.Errorf("create schema_migrations: %w", err)
+		}
+		// PoC のスキーマ（所属の記録 subscriber_tenants）の DB は引き継がない（段階 3-1 の W2）。
+		var poc bool
+		if err := tx.QueryRow(ctx, "SELECT to_regclass('subscriber_tenants') IS NOT NULL").Scan(&poc); err != nil {
+			return err
+		}
+		if poc {
+			return ErrPoCSchema
 		}
 		rows, err := tx.Query(ctx, "SELECT version FROM schema_migrations")
 		if err != nil {

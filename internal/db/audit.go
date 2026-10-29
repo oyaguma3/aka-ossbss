@@ -10,7 +10,7 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 )
 
-// AuditEntry は本BFF の監査ログの 1 件（設計概要 §13）。Detail に秘密の値（Ki / OPc、共有シークレット）を入れてはならない。
+// AuditEntry は aka-ossbss の監査ログの 1 件（設計概要 §14）。Detail に秘密の値（Ki / OPc、共有シークレット）を入れてはならない。
 type AuditEntry struct {
 	ActorEmail string
 	ActorRole  authz.Role
@@ -21,15 +21,17 @@ type AuditEntry struct {
 	Detail   map[string]any
 	TraceID  string
 	Remote   string
+	// JobID は一括投入のジョブ（段階 3-2。画面の操作では空）。
+	JobID string
 }
 
-// InsertAudit は監査ログを 1 件書き込む。
-func (d *DB) InsertAudit(ctx context.Context, e AuditEntry) error {
+// InsertAudit は監査ログを 1 件書き込み、番号と時刻を返す。
+func (d *DB) InsertAudit(ctx context.Context, e AuditEntry) (int64, time.Time, error) {
 	detail := []byte("{}")
 	if len(e.Detail) > 0 {
 		b, err := json.Marshal(e.Detail, json.Deterministic(true))
 		if err != nil {
-			return fmt.Errorf("insert audit: encode detail: %w", err)
+			return 0, time.Time{}, fmt.Errorf("insert audit: encode detail: %w", err)
 		}
 		detail = b
 	}
@@ -37,14 +39,16 @@ func (d *DB) InsertAudit(ctx context.Context, e AuditEntry) error {
 	if e.TenantID != 0 {
 		tenant = &e.TenantID
 	}
-	_, err := d.Pool.Exec(ctx, `
-		INSERT INTO audit_log (actor_email, actor_role, tenant_id, action, target, detail, trace_id, remote)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
-		e.ActorEmail, string(e.ActorRole), tenant, e.Action, e.Target, string(detail), e.TraceID, e.Remote)
+	var id int64
+	var at time.Time
+	err := d.Pool.QueryRow(ctx, `
+		INSERT INTO audit_log (actor_email, actor_role, tenant_id, action, target, detail, trace_id, remote, job_id)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9) RETURNING id, time`,
+		e.ActorEmail, string(e.ActorRole), tenant, e.Action, e.Target, string(detail), e.TraceID, e.Remote, e.JobID).Scan(&id, &at)
 	if err != nil {
-		return fmt.Errorf("insert audit: %w", err)
+		return 0, time.Time{}, fmt.Errorf("insert audit: %w", err)
 	}
-	return nil
+	return id, at, nil
 }
 
 // AuditRecord は監査ログの 1 件（読み出し）。
@@ -60,6 +64,7 @@ type AuditRecord struct {
 	Detail   map[string]any
 	TraceID  string
 	Remote   string
+	JobID    string
 }
 
 // AuditQuery は監査ログの読み出しの条件（画面仕様 §11）。
@@ -94,7 +99,7 @@ func (d *DB) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, error)
 	if q.Before != 0 {
 		add("id < $%d", q.Before)
 	}
-	sql := "SELECT id, time, actor_email, actor_role, tenant_id, action, target, detail, trace_id, remote FROM audit_log"
+	sql := "SELECT id, time, actor_email, actor_role, tenant_id, action, target, detail, trace_id, remote, job_id FROM audit_log"
 	if len(where) > 0 {
 		sql += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -110,7 +115,7 @@ func (d *DB) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, error)
 		var r AuditRecord
 		var tenant *int64
 		var detail []byte
-		if err := rows.Scan(&r.ID, &r.Time, &r.ActorEmail, &r.ActorRole, &tenant, &r.Action, &r.Target, &detail, &r.TraceID, &r.Remote); err != nil {
+		if err := rows.Scan(&r.ID, &r.Time, &r.ActorEmail, &r.ActorRole, &tenant, &r.Action, &r.Target, &detail, &r.TraceID, &r.Remote, &r.JobID); err != nil {
 			return nil, fmt.Errorf("list audit: %w", err)
 		}
 		if tenant != nil {

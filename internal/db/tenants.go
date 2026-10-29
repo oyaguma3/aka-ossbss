@@ -10,12 +10,13 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// テナントの管理（システム管理者だけ。設計概要 §7、画面仕様 §8）。
+// テナントの管理（システム管理者だけ。設計概要 §6）。テナントの作成・変更・削除は、課金レコードの状態の事実
+// （charging_events）と同じトランザクションで書く。削除しても行を残し、ID を使い回さない（ID は刻印の値になる）。
 
 var (
 	// ErrConflict は一意の値（テナント名、メールアドレス）が既にあることを表す。
 	ErrConflict = errors.New("already exists")
-	// ErrInUse は、所属の記録やアカウントが残っていて削除できないことを表す（外部キーの ON DELETE RESTRICT）。
+	// ErrInUse は、加入者やアカウントが残っていて削除できないことを表す。
 	ErrInUse = errors.New("in use")
 )
 
@@ -30,51 +31,65 @@ func pgErrorCode(err error) string {
 const (
 	pgUniqueViolation     = "23505"
 	pgForeignKeyViolation = "23503"
-	// pgRestrictViolation は ON DELETE RESTRICT の外部キーで削除を断ったときの SQLSTATE（NO ACTION なら 23503）。
-	pgRestrictViolation = "23001"
 )
+
+// Tenant はテナント（削除していないもの）。
+type Tenant struct {
+	ID   int64
+	Name string
+}
+
+// Tenants は削除していないテナントの一覧を名前の順に返す（選択肢と、名前の表示に使う）。
+func (d *DB) Tenants(ctx context.Context) ([]Tenant, error) {
+	rows, err := d.Pool.Query(ctx, "SELECT id, name FROM tenants WHERE deleted_at IS NULL ORDER BY name, id")
+	if err != nil {
+		return nil, fmt.Errorf("tenants: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, pgx.RowToStructByPos[Tenant])
+	if err != nil {
+		return nil, fmt.Errorf("tenants: %w", err)
+	}
+	return out, nil
+}
 
 // TenantSummary はテナントと、属するものの件数（画面仕様 §8）。
 type TenantSummary struct {
 	Tenant
-	// Subscribers と Clients は所属の記録の件数、Accounts はアカウントの件数。
-	Subscribers, Clients, Accounts int64
-	CreatedAt                      time.Time
+	ExternalCustomerID string
+	// Subscribers は台帳の加入者（削除済みを除く）、Accounts はアカウントの件数。
+	Subscribers, Accounts int64
+	CreatedAt             time.Time
 }
 
-// TenantSummaries はテナントの一覧を、属するものの件数つきで名前の順に返す。
+const tenantSummarySelect = `
+	SELECT t.id, t.name, t.external_customer_id,
+		(SELECT count(*) FROM subscribers s WHERE s.tenant_id = t.id AND s.deleted_at IS NULL),
+		(SELECT count(*) FROM accounts a WHERE a.tenant_id = t.id),
+		t.created_at
+	FROM tenants t WHERE t.deleted_at IS NULL`
+
+func scanTenantSummary(row pgx.Row) (TenantSummary, error) {
+	var s TenantSummary
+	err := row.Scan(&s.ID, &s.Name, &s.ExternalCustomerID, &s.Subscribers, &s.Accounts, &s.CreatedAt)
+	return s, err
+}
+
+// TenantSummaries は削除していないテナントの一覧を、属するものの件数つきで名前の順に返す。
 func (d *DB) TenantSummaries(ctx context.Context) ([]TenantSummary, error) {
-	rows, err := d.Pool.Query(ctx, `
-		SELECT t.id, t.name,
-			(SELECT count(*) FROM subscriber_tenants s WHERE s.tenant_id = t.id),
-			(SELECT count(*) FROM client_tenants c WHERE c.tenant_id = t.id),
-			(SELECT count(*) FROM accounts a WHERE a.tenant_id = t.id),
-			t.created_at
-		FROM tenants t ORDER BY t.name, t.id`)
+	rows, err := d.Pool.Query(ctx, tenantSummarySelect+" ORDER BY t.name, t.id")
 	if err != nil {
 		return nil, fmt.Errorf("tenant summaries: %w", err)
 	}
-	var out []TenantSummary
-	var s TenantSummary
-	if _, err := pgx.ForEachRow(rows, []any{&s.ID, &s.Name, &s.Subscribers, &s.Clients, &s.Accounts, &s.CreatedAt}, func() error {
-		out = append(out, s)
-		return nil
-	}); err != nil {
+	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (TenantSummary, error) { return scanTenantSummary(row) })
+	if err != nil {
 		return nil, fmt.Errorf("tenant summaries: %w", err)
 	}
 	return out, nil
 }
 
-// TenantSummary は 1 つのテナントを件数つきで返す。なければ ErrNotFound。
+// TenantSummary は 1 つのテナントを件数つきで返す。ない・削除済みなら ErrNotFound。
 func (d *DB) TenantSummary(ctx context.Context, id int64) (TenantSummary, error) {
-	var s TenantSummary
-	err := d.Pool.QueryRow(ctx, `
-		SELECT t.id, t.name,
-			(SELECT count(*) FROM subscriber_tenants s WHERE s.tenant_id = t.id),
-			(SELECT count(*) FROM client_tenants c WHERE c.tenant_id = t.id),
-			(SELECT count(*) FROM accounts a WHERE a.tenant_id = t.id),
-			t.created_at
-		FROM tenants t WHERE t.id = $1`, id).Scan(&s.ID, &s.Name, &s.Subscribers, &s.Clients, &s.Accounts, &s.CreatedAt)
+	s, err := scanTenantSummary(d.Pool.QueryRow(ctx, tenantSummarySelect+" AND t.id = $1", id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return TenantSummary{}, ErrNotFound
 	}
@@ -84,10 +99,25 @@ func (d *DB) TenantSummary(ctx context.Context, id int64) (TenantSummary, error)
 	return s, nil
 }
 
+// tenantEvent はテナントの状態の事実を書く（時刻はトランザクションの時刻）。
+func tenantEvent(ctx context.Context, tx pgx.Tx, meta Meta, event string, id int64, from, to string) error {
+	var now time.Time
+	if err := tx.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+		return err
+	}
+	return insertChargingEvents(ctx, tx, []ChargingEvent{{Time: now, Event: event, TenantID: id, From: from, To: to,
+		Operator: meta.Operator, JobID: meta.JobID, TraceID: meta.TraceID}})
+}
+
 // CreateTenant はテナントを作る。名前が既にあれば ErrConflict。
-func (d *DB) CreateTenant(ctx context.Context, name string) (Tenant, error) {
+func (d *DB) CreateTenant(ctx context.Context, name string, meta Meta) (Tenant, error) {
 	t := Tenant{Name: name}
-	err := d.Pool.QueryRow(ctx, "INSERT INTO tenants (name) VALUES ($1) RETURNING id", name).Scan(&t.ID)
+	err := pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, "INSERT INTO tenants (name) VALUES ($1) RETURNING id", name).Scan(&t.ID); err != nil {
+			return err
+		}
+		return tenantEvent(ctx, tx, meta, EventTenantCreated, t.ID, "", name)
+	})
 	if pgErrorCode(err) == pgUniqueViolation {
 		return Tenant{}, ErrConflict
 	}
@@ -97,30 +127,66 @@ func (d *DB) CreateTenant(ctx context.Context, name string) (Tenant, error) {
 	return t, nil
 }
 
-// RenameTenant はテナントの名前を変える。なければ ErrNotFound、名前が既にあれば ErrConflict。
-func (d *DB) RenameTenant(ctx context.Context, id int64, name string) error {
-	tag, err := d.Pool.Exec(ctx, "UPDATE tenants SET name = $2, updated_at = now() WHERE id = $1", id, name)
+// RenameTenant はテナントの名前を変え、変える前の名前を返す。ない・削除済みなら ErrNotFound、名前が既にあれば ErrConflict。
+// 名前が変わらなければ何も書かない。
+func (d *DB) RenameTenant(ctx context.Context, id int64, name string, meta Meta) (string, error) {
+	var before string
+	err := pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, "SELECT name FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id).Scan(&before)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil || before == name {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "UPDATE tenants SET name = $2, updated_at = now() WHERE id = $1", id, name); err != nil {
+			return err
+		}
+		return tenantEvent(ctx, tx, meta, EventTenantUpdated, id, before, name)
+	})
 	switch {
+	case errors.Is(err, ErrNotFound):
+		return "", ErrNotFound
 	case pgErrorCode(err) == pgUniqueViolation:
-		return ErrConflict
+		return "", ErrConflict
 	case err != nil:
-		return fmt.Errorf("rename tenant: %w", err)
-	case tag.RowsAffected() == 0:
-		return ErrNotFound
+		return "", fmt.Errorf("rename tenant: %w", err)
 	}
-	return nil
+	return before, nil
 }
 
-// DeleteTenant はテナントを削除する。なければ ErrNotFound、所属の記録やアカウントが残っていれば ErrInUse。
-func (d *DB) DeleteTenant(ctx context.Context, id int64) error {
-	tag, err := d.Pool.Exec(ctx, "DELETE FROM tenants WHERE id = $1", id)
+// DeleteTenant はテナントを削除済みにする（行は残す）。ない・削除済みなら ErrNotFound、加入者（削除済みを除く）や
+// アカウントが残っていれば ErrInUse。
+func (d *DB) DeleteTenant(ctx context.Context, id int64, meta Meta) error {
+	err := pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
+		var name string
+		err := tx.QueryRow(ctx, "SELECT name FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id).Scan(&name)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		// 加入者とアカウントを足すときの外部キーの確かめは、テナントの行の共有ロックを取るので、この行のロック
+		// （FOR UPDATE）と順になる。ここで数えれば、数えた後に足されることはない。
+		var inUse bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM subscribers WHERE tenant_id = $1 AND deleted_at IS NULL)
+			OR EXISTS (SELECT 1 FROM accounts WHERE tenant_id = $1)`, id).Scan(&inUse); err != nil {
+			return err
+		}
+		if inUse {
+			return ErrInUse
+		}
+		if _, err := tx.Exec(ctx, "UPDATE tenants SET deleted_at = now(), updated_at = now() WHERE id = $1", id); err != nil {
+			return err
+		}
+		return tenantEvent(ctx, tx, meta, EventTenantDeleted, id, name, "")
+	})
 	switch {
-	case pgErrorCode(err) == pgRestrictViolation || pgErrorCode(err) == pgForeignKeyViolation:
-		return ErrInUse
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrInUse):
+		return err
 	case err != nil:
 		return fmt.Errorf("delete tenant: %w", err)
-	case tag.RowsAffected() == 0:
-		return ErrNotFound
 	}
 	return nil
 }

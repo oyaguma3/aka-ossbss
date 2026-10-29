@@ -83,6 +83,17 @@ func TestMigrate(t *testing.T) {
 	if _, err := d.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "newer than this program") {
 		t.Errorf("future schema: %v", err)
 	}
+
+	// PoC のスキーマ（所属の記録 subscriber_tenants）の DB では起動しない（段階 3-1 の W2）。
+	if _, err := d.Pool.Exec(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+		CREATE TABLE schema_migrations (version integer PRIMARY KEY, name text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());
+		INSERT INTO schema_migrations (version, name) VALUES (1, 'init');
+		CREATE TABLE subscriber_tenants (imsi text PRIMARY KEY, tenant_id bigint NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Migrate(ctx); !errors.Is(err, ErrPoCSchema) {
+		t.Errorf("PoC schema: %v", err)
+	}
 }
 
 // pgCode は PostgreSQL のエラーの SQLSTATE を返す。
@@ -143,31 +154,68 @@ func TestSchemaConstraints(t *testing.T) {
 		}
 	}
 
-	// 所属の記録の形式。
-	if code := pgCode(exec("INSERT INTO subscriber_tenants (imsi, tenant_id) VALUES ('00101000000000x', $1)", tenant)); code != checkViolation {
-		t.Errorf("bad imsi: %q", code)
+	// 台帳の形式と、有無と状態・取得先の組み合わせ。
+	addSub := func(imsi string, vp bool, vs any, rp bool, rs, src any, deleted bool) error {
+		var del any
+		if deleted {
+			del = "2026-10-30T00:00:00Z"
+		}
+		return exec(`INSERT INTO subscribers (imsi, tenant_id, vecgen_present, vecgen_state, radius_present, radius_state, radius_source_id, deleted_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, imsi, tenant, vp, vs, rp, rs, src, del)
 	}
-	if err := exec("INSERT INTO subscriber_tenants (imsi, tenant_id) VALUES ('001010000000001', $1)", tenant); err != nil {
-		t.Fatal(err)
+	for _, c := range []struct {
+		imsi    string
+		vp      bool
+		vs      any
+		rp      bool
+		rs, src any
+		deleted bool
+		code    string
+	}{
+		{"001010000000001", true, "active", true, "inactive", "vecgen", false, ""},
+		{"001010000000002", false, nil, false, nil, nil, true, ""},  // 削除済み
+		{"001010000000003", false, nil, false, nil, nil, false, ""}, // 登録の結果を確かめている
+		{"00101000000000x", true, "active", false, nil, nil, false, checkViolation},
+		{"001010000000004", true, nil, false, nil, nil, false, checkViolation},         // ある側には状態が要る
+		{"001010000000005", false, "active", false, nil, nil, false, checkViolation},   // ない側に状態はない
+		{"001010000000006", false, nil, true, "active", nil, false, checkViolation},    // radius 側には取得先が要る
+		{"001010000000007", true, "suspended", false, nil, nil, false, checkViolation}, // 未知の状態
+		{"001010000000008", true, "active", false, nil, nil, true, checkViolation},     // 削除済みにはどちらの側もない
+		{"001010000000001", false, nil, false, nil, nil, true, uniqueViolation},
+	} {
+		if got := pgCode(addSub(c.imsi, c.vp, c.vs, c.rp, c.rs, c.src, c.deleted)); got != c.code {
+			t.Errorf("subscriber %s: code %q, want %q", c.imsi, got, c.code)
+		}
 	}
-	if code := pgCode(exec("INSERT INTO client_tenants (client_id, tenant_id) VALUES (0, $1)", tenant)); code != checkViolation {
-		t.Errorf("bad client id: %q", code)
+	if code := pgCode(exec("INSERT INTO subscribers (imsi, tenant_id) VALUES ('001010000000009', 999999)")); code != fkViolation {
+		t.Errorf("unknown tenant: %q", code)
+	}
+	// 状態の事実の種類と、回線・側の有無の組み合わせ。
+	for _, c := range []struct {
+		event      string
+		side, imsi any
+		code       string
+	}{
+		{"line_registered", "vecgen", "001010000000001", ""},
+		{"line_tenant_moved", nil, "001010000000001", ""},
+		{"tenant_created", nil, nil, ""},
+		{"line_registered", nil, "001010000000001", checkViolation},
+		{"tenant_created", nil, "001010000000001", checkViolation},
+		{"line_paused", "vecgen", "001010000000001", checkViolation},
+	} {
+		if got := pgCode(exec("INSERT INTO charging_events (event, side, tenant_id, imsi) VALUES ($1, $2, $3, $4)", c.event, c.side, tenant, c.imsi)); got != c.code {
+			t.Errorf("event %s: code %q, want %q", c.event, got, c.code)
+		}
 	}
 
-	// 所属・利用者が残るテナントは削除できない。
+	// 台帳の行・アカウントが残るテナントは物理削除できない（テナントの削除は deleted_at で行うが、念のため）。
 	if code := pgCode(exec("DELETE FROM tenants WHERE id = $1", tenant)); code != restrictViolation {
 		t.Errorf("delete tenant in use: %q", code)
 	}
-	if err := exec("DELETE FROM subscriber_tenants; DELETE FROM accounts WHERE tenant_id IS NOT NULL"); err != nil {
-		t.Fatal(err)
-	}
-	if err := exec("DELETE FROM tenants WHERE id = $1", tenant); err != nil {
-		t.Errorf("delete unused tenant: %v", err)
-	}
 
-	// 監査ログは、テナントを消しても残る（外部キーにしない）。detail は JSON。
+	// 監査ログは、テナントを外部キーにしない（削除した記録も残す）。detail は JSON。
 	if err := exec(`INSERT INTO audit_log (actor_email, actor_role, tenant_id, action, target, detail)
-		VALUES ('d@example.com', 'system_admin', $1, 'tenant.delete', $2, '{"name":"テナントA"}')`, tenant, "tenant"); err != nil {
+		VALUES ('d@example.com', 'system_admin', 999999, 'tenant.delete', $1, '{"name":"テナントA"}')`, "tenant"); err != nil {
 		t.Errorf("audit: %v", err)
 	}
 }
