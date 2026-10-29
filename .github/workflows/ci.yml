@@ -89,7 +89,7 @@ jobs:
             -e 's|^OSSBSS_INITIAL_ADMIN_EMAIL=.*|OSSBSS_INITIAL_ADMIN_EMAIL=admin@example.com|' .env
           docker compose config -q
           docker compose config --services
-          # 本BFF・PostgreSQL・cloudflared の 3 つ（運用ガイド 1 章）。
+          # aka-ossbss・PostgreSQL・cloudflared の 3 つ。
           docker compose config --format json > config.json
           jq -e '.services | keys == ["aka-ossbss", "cloudflared", "postgres"]' config.json
           # ホストにポートを公開しない（要求は cloudflared から届く）。開発用の設定は compose には書かない。
@@ -103,6 +103,13 @@ jobs:
           # （省く値が true の版と false の版がある）、compose.yaml そのものを確かめる。
           grep -q 'create_host_path: false' compose.yaml
           ! grep -qi 'TUNNEL_TOKEN' config.json
+          # 監査ログのファイルのディレクトリをマウントする。
+          jq -e '.services["aka-ossbss"].volumes[] | select(.target == "/data/audit") | .source | endswith("/audit")' config.json
+          jq -e '.services["aka-ossbss"].environment.OSSBSS_PROVISIONER_URL | endswith("/admin/v2")' config.json
+          # 管理面の Fluent Bit に送る重ね合わせ（3 つのサービスにタグを付ける）。
+          docker compose -f compose.yaml -f compose.fluent-bit.yaml config --format json > fluent.json
+          jq -e '[.services[] | .logging.driver] == ["fluentd", "fluentd", "fluentd"]' fluent.json
+          jq -e '[.services | to_entries[] | .value.logging.options.tag] | sort == ["app.ossbss", "app.ossbss-cloudflared", "app.ossbss-postgres"]' fluent.json
           # 必須の設定が空なら、compose が断る。
           sed -i -e 's|^OSSBSS_ACCESS_AUD=.*|OSSBSS_ACCESS_AUD=|' .env
           ! docker compose config -q 2>/dev/null
@@ -112,40 +119,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      # 契約テストの相手にする aka-provisioner と、その下流（本PoC、aka-vecgen）のコミット。
-      # provisioner の API を変えたら、その main のコミットに更新する（下流は provisioner の ci.yml の RADIUS_REF / VECGEN_REF に合わせる）。
-      PROVISIONER_REF: 08218003d7399bf015932aa9d5fbadc0842420a3
-      RADIUS_REF: dd107b36aa6d5d8f43af71d26d5bf96b0306044b
-      VECGEN_REF: 481a7cc69cda775e9ad63635a10ec9b41d8f8970
-    services:
-      # provisioning-api、aka-vecgen、provisioner がそれぞれ使う Valkey（このジョブ専用）。
-      valkey-prov:
-        image: valkey/valkey:9.1.2
-        ports:
-          - 16401:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-      valkey-aka:
-        image: valkey/valkey:9.1.2
-        ports:
-          - 16402:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-      valkey-provisioner:
-        image: valkey/valkey:9.1.2
-        ports:
-          - 16403:6379
-        options: >-
-          --health-cmd "valkey-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+      # 契約テストの相手にする aka-provisioner と、その下流（aka-vecgen・aka-radius）のコミット。
+      # 下流は aka-provisioner の ci.yml の VECGEN_REF・RADIUS_REF（aka-mvpset の versions.env）に合わせる。
+      # aka-provisioner や下流の API を変えたら、その main のコミットに更新する。
+      PROVISIONER_REF: ff21ac4f711112b175bceeb8c190bf0f2ebb4389
+      VECGEN_REF: 2d4837939660fbadcec67b27b4ac333f96a77374
+      RADIUS_REF: ac2f05aeda99472284f48b09943c1553476a6a7b
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
@@ -155,96 +134,49 @@ jobs:
           path: aka-provisioner
       - uses: actions/checkout@v7
         with:
-          repository: oyaguma3/aka-radius
-          ref: ${{ env.RADIUS_REF }}
-          path: aka-radius
-      - uses: actions/checkout@v7
-        with:
           repository: oyaguma3/aka-vecgen
           ref: ${{ env.VECGEN_REF }}
           path: aka-vecgen
+      - uses: actions/checkout@v7
+        with:
+          repository: oyaguma3/aka-radius
+          ref: ${{ env.RADIUS_REF }}
+          path: aka-radius
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: provisioner・下流・aka-ossbss のビルド
+      - name: aka-provisioner・下流・aka-ossbss のビルド
         run: |
           git -C aka-provisioner log -1 --format='aka-provisioner: %h %s'
-          git -C aka-radius log -1 --format='本PoC: %h %s'
           git -C aka-vecgen log -1 --format='aka-vecgen: %h %s'
-          (cd aka-provisioner && go build -o "$RUNNER_TEMP/aka-provisioner" ./cmd/aka-provisioner)
-          (cd aka-radius/apps/provisioning-api && go build -o "$RUNNER_TEMP/provisioning-api" .)
-          (cd aka-vecgen && go build -o "$RUNNER_TEMP/aka-vecgen" ./cmd/aka-vecgen)
+          git -C aka-radius log -1 --format='aka-radius: %h %s'
+          mkdir -p "$RUNNER_TEMP/bin"
+          (cd aka-provisioner && go build -o "$RUNNER_TEMP/bin/aka-provisioner" ./cmd/aka-provisioner)
+          (cd aka-vecgen && go build -o "$RUNNER_TEMP/bin/aka-vecgen" ./cmd/aka-vecgen)
+          (cd aka-radius && go build -o "$RUNNER_TEMP/bin/aka-radius" ./cmd/aka-radius)
           go build -o "$RUNNER_TEMP/aka-ossbss" ./cmd/aka-ossbss
-      - name: 証明書の作成と起動
-        working-directory: ${{ runner.temp }}
-        run: |
-          # provisioner のクライアント証明書を作り、表示された値で下流 2 つに登録する（provisioner の運用ガイド 2 章と同じ流れ）。
-          ./aka-provisioner gen-client-cert -name provisioner-ci > pclient.pem 2> pgen.txt
-          prov_clients=$(sed -n 's/^PROVISIONING_API_ADMIN_CLIENTS=//p' pgen.txt)
-          aka_clients=$(sed -n 's/^VECGEN_ADMIN_CLIENTS=//p' pgen.txt)
-
-          # provisioning-api。サーバー証明書は本PoCの B-02 §15.2 と同じ手順で作る。
-          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-            -keyout prov-server.key -out prov-server.pem -days 825 -subj "/CN=provisioning-api" \
-            -addext "subjectAltName=DNS:provisioning-api,DNS:localhost,IP:127.0.0.1"
-          PROVISIONING_API_LISTEN_ADDR=127.0.0.1:19444 \
-          PROVISIONING_API_TLS_CERT=prov-server.pem PROVISIONING_API_TLS_KEY=prov-server.key \
-          PROVISIONING_API_ADMIN_CLIENTS="$prov_clients" PROVISIONING_API_NODE_NAME=ci-node \
-          REDIS_HOST=127.0.0.1 REDIS_PORT=16401 LOG_LEVEL=INFO \
-            nohup ./provisioning-api > provisioning-api.log 2>&1 &
-
-          # aka-vecgen。vector-gateway の AVクライアント（ID 1）を登録しておく。
-          export VECGEN_VALKEY_ADDR=127.0.0.1:16402
-          ./aka-vecgen client gen-cert -name vector-gateway > vector-gateway.pem
-          ./aka-vecgen client add -name vector-gateway -cert vector-gateway.pem
-          VECGEN_ADMIN_ADDR=127.0.0.1:19443 VECGEN_AV_TLS_ADDR=127.0.0.1:18443 \
-          VECGEN_ADMIN_TLS_HOSTS=localhost,127.0.0.1 VECGEN_AV_TLS_HOSTS=localhost,127.0.0.1 \
-          VECGEN_ADMIN_CLIENTS="$aka_clients" \
-            nohup ./aka-vecgen > aka-vecgen.log 2>&1 &
-          for i in $(seq 1 30); do
-            ./aka-vecgen admin-cert > aka-server.pem 2>/dev/null && grep -q 'BEGIN CERTIFICATE' aka-server.pem && break
-            sleep 1
-          done
-          grep -q 'BEGIN CERTIFICATE' aka-server.pem
-          unset VECGEN_VALKEY_ADDR
-
-          # 本BFF のクライアント証明書を作り、表示された値で provisioner に登録する。
-          ./aka-ossbss gen-client-cert -name ossbss-ci > ossbss.pem 2> ogen.txt
-          cat ogen.txt
-
-          # provisioner。PLMN 00102 を aka-vecgen に置く（契約テストは 00102 の加入者で aka-vecgen の側を確かめる）。
-          export PROVISIONER_ADDR=127.0.0.1:19446 \
-            PROVISIONER_TLS_CERT="$PWD/pv-tls-cert.pem" PROVISIONER_TLS_KEY="$PWD/pv-tls-key.pem" PROVISIONER_TLS_HOSTS=localhost,127.0.0.1 \
-            PROVISIONER_ADMIN_CLIENTS="$(sed -n 's/^PROVISIONER_ADMIN_CLIENTS=//p' ogen.txt)" \
-            PROVISIONER_CLIENT_CERT="$PWD/pclient.pem" \
-            PROVISIONER_PROV_URL=https://127.0.0.1:19444/admin/v1 PROVISIONER_PROV_SERVER_CERT="$PWD/prov-server.pem" \
-            PROVISIONER_AKA_URL=https://127.0.0.1:19443/admin/v1 PROVISIONER_AKA_SERVER_CERT="$PWD/aka-server.pem" \
-            PROVISIONER_AKA_AV_CLIENT_ID=1 PROVISIONER_PLMN_MAP=00102:01 PROVISIONER_VALKEY_ADDR=127.0.0.1:16403
-          ./aka-provisioner server-cert > pv-server.pem
-          nohup ./aka-provisioner serve > provisioner.log 2>&1 &
-      - name: provisioner に接続できるまで待つ
+      - name: 下流と aka-provisioner の起動
+        # aka-provisioner の scripts/contract.sh が、Valkey 3 つ（Docker）と aka-vecgen・aka-radius の admin・aka-provisioner を
+        # ループバックで起動し、管理クライアント（ossbss-ci）の証明書と試験の環境変数（contract.env）を作る。
+        run: aka-provisioner/scripts/contract.sh up "$RUNNER_TEMP/bin" "$RUNNER_TEMP/work"
+      - name: aka-provisioner に接続できることの確認
         env:
           # check-provisioner は設定をすべて読むので、DB と利用者の識別の設定も与える（DB には接続しない）。
           OSSBSS_ADDR: 127.0.0.1:18446
           OSSBSS_DB_PASSWORD: unused
           OSSBSS_INITIAL_ADMIN_EMAIL: admin@example.com
           OSSBSS_DEV_USER_EMAIL: admin@example.com
-          OSSBSS_PROVISIONER_URL: https://127.0.0.1:19446/admin/v1
-          OSSBSS_PROVISIONER_CLIENT_CERT: ${{ runner.temp }}/ossbss.pem
-          OSSBSS_PROVISIONER_SERVER_CERT: ${{ runner.temp }}/pv-server.pem
         run: |
-          for i in $(seq 1 30); do
-            "$RUNNER_TEMP/aka-ossbss" check-provisioner && exit 0
-            sleep 1
-          done
-          exit 1
+          . "$RUNNER_TEMP/work/contract.env"
+          OSSBSS_PROVISIONER_URL="$PROVISIONER_TEST_URL" OSSBSS_PROVISIONER_CLIENT_CERT="$PROVISIONER_TEST_CLIENT_CERT" \
+          OSSBSS_PROVISIONER_SERVER_CERT="$PROVISIONER_TEST_SERVER_CERT" "$RUNNER_TEMP/aka-ossbss" check-provisioner
       - name: 契約テスト
-        env:
-          OSSBSS_TEST_PROVISIONER_URL: https://127.0.0.1:19446/admin/v1
-          OSSBSS_TEST_PROVISIONER_CLIENT_CERT: ${{ runner.temp }}/ossbss.pem
-          OSSBSS_TEST_PROVISIONER_SERVER_CERT: ${{ runner.temp }}/pv-server.pem
         run: |
           set -o pipefail
+          . "$RUNNER_TEMP/work/contract.env"
+          export OSSBSS_TEST_PROVISIONER_URL="$PROVISIONER_TEST_URL" OSSBSS_TEST_PROVISIONER_CLIENT_CERT="$PROVISIONER_TEST_CLIENT_CERT" \
+            OSSBSS_TEST_PROVISIONER_SERVER_CERT="$PROVISIONER_TEST_SERVER_CERT" OSSBSS_TEST_PROVISIONER_AV_CLIENT_ID="$PROVISIONER_TEST_AV_CLIENT_ID" \
+            OSSBSS_TEST_PROVISIONER_SOURCE_ID="$PROVISIONER_TEST_SOURCE_ID"
           go test -count=1 -race -run Integration -v ./internal/provisioner/ | tee contract.log
           # 接続先の指定が漏れると契約テストはスキップされ、テスト自体は成功してしまうので、別に確かめる。
           if grep -q -- '--- SKIP' contract.log; then
@@ -254,6 +186,9 @@ jobs:
       - name: ログ（失敗時）
         if: failure()
         run: |
-          echo "---- provisioner ----"; cat "$RUNNER_TEMP/provisioner.log"
-          echo "---- provisioning-api ----"; cat "$RUNNER_TEMP/provisioning-api.log"
-          echo "---- aka-vecgen ----"; cat "$RUNNER_TEMP/aka-vecgen.log"
+          for f in aka-vecgen aka-radius aka-provisioner; do
+            echo "---- $f ----"; cat "$RUNNER_TEMP/work/$f.log" || true
+          done
+      - name: 片付け
+        if: always()
+        run: aka-provisioner/scripts/contract.sh down "$RUNNER_TEMP/work" || true

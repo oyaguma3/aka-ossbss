@@ -13,6 +13,8 @@ CLAUDE.md
 /certs/
 # Cloudflare Tunnel のトークン（compose の cloudflared がマウントする）
 /secrets/
+# 監査ログの日ごとのファイル（compose がマウントする）
+/audit/
 
 # リポジトリ直下で go build したときの成果物
 /aka-ossbss

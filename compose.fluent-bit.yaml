@@ -1,0 +1,35 @@
+# ログを管理面の Fluent Bit に送るときに重ねる設定（設計概要 §3.1 の決定事項 10。段階 3-1 の W12）。
+# 管理面の Fluent Bit は aka-provisioner の compose が動かし、ホストのループバック（既定 24224）で受ける。
+# タグごとのファイル（ossbss.log・ossbss-postgres.log・ossbss-cloudflared.log）は aka-provisioner の
+# configs/fluent-bit/fluent-bit.yaml に書いてある。aka-provisioner を先に起動する（Fluent Bit に届かないと、
+# fluentd-async でコンテナは起動し、ログはバッファーに溜めて送り直す）。
+# .env の COMPOSE_FILE に compose.fluent-bit.yaml を足すと有効になる。
+
+x-logging: &fluent-bit-logging
+  driver: fluentd
+  options: &fluent-bit-options
+    fluentd-address: localhost:${PROVISIONER_FLUENT_BIT_PORT:-24224}
+    fluentd-async: "true"
+    fluentd-buffer-limit: "1048576"
+
+services:
+  aka-ossbss:
+    logging:
+      <<: *fluent-bit-logging
+      options:
+        <<: *fluent-bit-options
+        tag: app.ossbss
+
+  postgres:
+    logging:
+      <<: *fluent-bit-logging
+      options:
+        <<: *fluent-bit-options
+        tag: app.ossbss-postgres
+
+  cloudflared:
+    logging:
+      <<: *fluent-bit-logging
+      options:
+        <<: *fluent-bit-options
+        tag: app.ossbss-cloudflared

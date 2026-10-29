@@ -4,6 +4,8 @@
 .cache
 .env
 certs
+audit
+secrets
 *.pem
 *.key
 CLAUDE.md
