@@ -25,8 +25,8 @@ func TestGenClientCertStdout(t *testing.T) {
 		t.Errorf("CN = %q", cert.Leaf.Subject.CommonName)
 	}
 	// provisioner の .env に書く行を出す。
-	want := "\nPROVISIONER_ADMIN_CLIENTS=ossbss-01=" + certs.Fingerprint(cert.Leaf) + "\n"
-	if !strings.Contains(stderr.String(), want) || strings.Contains(stderr.String(), "PROVISIONING_API_ADMIN_CLIENTS") {
+	want := "\nossbss-01=" + certs.Fingerprint(cert.Leaf) + "\n"
+	if !strings.Contains(stderr.String(), want) || strings.Contains(stderr.String(), "ADMIN_CLIENTS") {
 		t.Errorf("stderr = %q, want %q", stderr.String(), want)
 	}
 }

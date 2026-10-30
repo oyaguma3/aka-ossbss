@@ -72,7 +72,7 @@ services:
     command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/etc/cloudflared/token"]
     volumes:
       # Tunnel のトークン（秘密の値）はファイルで渡す（.env に書くと docker compose config の出力やコンテナの環境変数に出るため）。
-      # コンテナは UID 65532 で動くので、ファイルはこの UID で読めるようにする（chmod 600。運用ガイド 2.6）。
+      # コンテナは UID 65532 で動くので、ファイルはこの UID で読めるようにする（chmod 600。運用ガイド 2.2）。
       # ファイルがなければ起動しない（ディレクトリを作らせない）。
       - type: bind
         source: ./secrets/tunnel-token
@@ -81,7 +81,7 @@ services:
         bind:
           create_host_path: false
     # ヘルスチェックは付けない（イメージにシェルや curl がない）。状態は docker compose logs cloudflared と
-    # Cloudflare のダッシュボードの Tunnel の状態で確かめる（運用ガイド 10 章）。
+    # Cloudflare のダッシュボードの Tunnel の状態で確かめる（運用ガイド 13 章）。
     networks:
       - default
 
@@ -105,7 +105,7 @@ services:
       retries: 10
 
 secrets:
-  # aka-ossbss gen-kek で作る（UID 65532 で読めるようにする。chown 65532 secrets/kek、chmod 400）。
+  # aka-ossbss gen-kek で作る（UID 65532 で読めるようにする。chown 65532 secrets/kek、chmod 600）。
   kek:
     file: ./secrets/kek
 

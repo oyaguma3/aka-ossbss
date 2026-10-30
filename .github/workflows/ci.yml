@@ -123,6 +123,66 @@ jobs:
           sed -i -e 's|^OSSBSS_ACCESS_AUD=.*|OSSBSS_ACCESS_AUD=|' .env
           ! docker compose config -q 2>/dev/null
 
+  guide:
+    name: 運用ガイドの手順の通し確認
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: 準備（KEK、クライアント証明書、証明書の置き場所）
+        run: |
+          cp .env.example .env
+          sed -i -e 's|^OSSBSS_DB_PASSWORD=.*|OSSBSS_DB_PASSWORD=ci-db-password|' \
+            -e 's|^OSSBSS_ACCESS_TEAM_DOMAIN=.*|OSSBSS_ACCESS_TEAM_DOMAIN=ci.cloudflareaccess.com|' \
+            -e 's|^OSSBSS_ACCESS_AUD=.*|OSSBSS_ACCESS_AUD=ci-aud|' \
+            -e 's|^OSSBSS_INITIAL_ADMIN_EMAIL=.*|OSSBSS_INITIAL_ADMIN_EMAIL=admin@example.com|' \
+            -e 's|^COMPOSE_FILE=.*|COMPOSE_FILE=compose.yaml|' .env
+          # KEK はコンテナを動かす前に作る（ないと Docker が同じ名前のディレクトリを作る）
+          mkdir -p secrets certs audit backups
+          (umask 077; openssl rand -hex 32 > secrets/kek)
+          docker compose build -q
+          docker compose run --rm --no-deps -T aka-ossbss gen-client-cert -name ossbss-ci > certs/provisioner-client.pem 2> gen.txt
+          grep -E '^ossbss-ci=[0-9a-f]{64}$' gen.txt
+          docker compose run --rm --no-deps -T aka-ossbss gen-kek | grep -E '^[0-9a-f]{64}$'
+          # aka-provisioner は立てない（やり取りは「aka-provisioner との契約テスト」で確かめる）。証明書は形だけ
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=aka-provisioner \
+            -keyout "$RUNNER_TEMP/server.key" -out certs/provisioner-server.pem 2>/dev/null
+          sudo chown -R 65532:65532 secrets certs audit
+          sudo chmod 600 secrets/kek certs/provisioner-client.pem certs/provisioner-server.pem
+      - name: 起動と healthcheck
+        # cloudflared は Tunnel のトークンがないので動かさない（Cloudflare を通すのは検証機の通し）。
+        run: |
+          docker compose up -d --wait --wait-timeout 180 aka-ossbss postgres
+          docker compose ps
+          docker compose exec -T aka-ossbss /aka-ossbss healthcheck
+          docker compose logs aka-ossbss > start.log
+          grep -q '"msg":"listening"' start.log
+          grep -q '"msg":"kek"' start.log
+          # aka-provisioner に届かなくても起動し、ログに出す
+          grep -q '"event_id":"PROVISIONER_UNAVAILABLE"' start.log
+          # ホストにポートを公開しない
+          test -z "$(docker compose ps --format '{{.Publishers}}' | grep -v '^\[\]$' | grep -E '0\.0\.0\.0|127\.0\.0\.1' || true)"
+      - name: DB のバックアップと戻し（運用ガイド 11 章）
+        run: |
+          q() { docker compose exec -T postgres psql -U ossbss -d ossbss -At -c "$1"; }
+          q "INSERT INTO tenants (name) VALUES ('before') RETURNING id"
+          scripts/backup-db.sh backups/ossbss.dump
+          test "$(stat -c %a backups/ossbss.dump)" = 600
+          # 写しの後の変更は、戻すと消える（行も、写しの後に増えた表も）
+          q "INSERT INTO tenants (name) VALUES ('after') RETURNING id"
+          q "CREATE TABLE after_backup (id int)"
+          scripts/restore-db.sh backups/ossbss.dump
+          docker compose up -d --wait --wait-timeout 180 aka-ossbss postgres
+          test "$(q "SELECT string_agg(name, ',') FROM tenants")" = before
+          test "$(q "SELECT to_regclass('after_backup') IS NULL")" = t
+          docker compose exec -T aka-ossbss /aka-ossbss healthcheck
+      - name: compose のログ（失敗時）
+        if: failure()
+        run: docker compose logs --no-color || true
+      - name: 片付け
+        if: always()
+        run: docker compose down -v || true
+
   provisioner:
     name: aka-provisioner との契約テスト
     runs-on: ubuntu-latest

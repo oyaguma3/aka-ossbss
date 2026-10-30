@@ -5,14 +5,14 @@
 
 > このリポジトリは、VPS に分けて置いて顧客を収容する **MVP セット**（[aka-mvpset](https://github.com/oyaguma3/aka-mvpset)）の、運用者とテナントの利用者が使う画面と管理面の業務の処理を受け持つノードです。PoC セット（[eapaka-pocset](https://github.com/oyaguma3/eapaka-pocset) の `pocset-v1.0.1`）の [eapaka-ossbss-sample](https://github.com/oyaguma3/eapaka-ossbss-sample) の履歴を引き継いで作りました（もとのコミット `d970d48`）。
 >
-> MVP のための改修は、[設計概要](docs/design-overview.md)のとおりに MVP セットの段階 3・4 で行っています。段階 3-1（加入者の台帳、[aka-provisioner](https://github.com/oyaguma3/aka-provisioner) 2.0.0 の型つきのクライアント、加入者の画面、認可ポリシーの編集、セッション）、3-2（一括投入と一括の物理削除）、3-3（台帳と下流の突き合わせ、定期の処理）を終えました（設計概要 §19.2）。課金レコード（3-4）、RadSec の受け口の管理（段階 4）はこれからです。[画面仕様](docs/screen-spec.md)と[運用ガイド](docs/operation-guide.md)は段階 3-5 で書き直すまで PoC の作りのままです。
+> MVP のための改修は、[設計概要](docs/design-overview.md)のとおりに MVP セットの段階 3・4 で行っています。段階 3（加入者の台帳、[aka-provisioner](https://github.com/oyaguma3/aka-provisioner) 2.0.0 の型つきのクライアント、加入者の画面、認可ポリシーの編集、セッション、一括投入と一括の物理削除、台帳と下流の突き合わせ、定期の処理、課金レコード）を終えました（設計概要 §19.2）。RadSec の受け口の管理は段階 4 で足します。
 
 運用者とテナントの利用者が使う画面と、管理面の業務の処理（加入者の台帳など）を受け持つノード（コマンド名 `aka-ossbss`）です。aka-provisioner 2.0.0 を通して、[aka-vecgen](https://github.com/oyaguma3/aka-vecgen)（vecgen 側: 鍵・SQN・状態）と [aka-radius](https://github.com/oyaguma3/aka-radius)（radius 側: 状態・取得先・認可ポリシーのルール）の加入者を、テナントと役割に基づく権限で別々に操作します。
 
 ```
 [ブラウザ] ─> Cloudflare Access（メール認証）─ Tunnel ─> aka-ossbss ─mTLS─> aka-provisioner ─> aka-vecgen / aka-radius
                                                             │
-                                                       PostgreSQL（テナント・アカウント・台帳・一括投入のジョブ・突き合わせの結果・状態の事実・監査ログ）
+                                                       PostgreSQL（テナント・アカウント・台帳・一括投入のジョブ・突き合わせの結果・課金レコード・監査ログ）
 ```
 
 - すべての加入者（IMSI）はどれか 1 つのテナントに属し、テナントの利用者は自分のテナントのものだけを扱います。
@@ -24,24 +24,70 @@
 
 | 画面 | 内容 | 使える役割 |
 |---|---|---|
-| ダッシュボード | 台帳の件数（全体・食い違い・結果を確かめているもの・側と状態ごと）、一括投入のジョブ、突き合わせの結果、定期の処理の失敗、aka-provisioner と下流の状態（運用担当・システム管理者） | 全員 |
-| 加入者 | 台帳の一覧と絞り込み、vecgen 側と radius 側を並べた詳細、状態の変更（側ごと・両方）、解約からの戻し、物理削除、vecgen 側の変更、取得先の変更、所属の付け替え | 全員（操作は役割による） |
+| ダッシュボード | 台帳の件数（全体・食い違い・結果を確かめているもの・側と状態ごと）、一括投入のジョブ、突き合わせの結果、定期の処理の失敗、課金レコードの締めと鍵の警告、aka-provisioner と下流の状態（運用担当・システム管理者） | 全員 |
+| 加入者 | 台帳の一覧と絞り込み、vecgen 側と radius 側を並べた詳細、状態の変更（側ごと・両方）、解約からの戻し、物理削除、vecgen 側の変更、取得先の変更、所属の付け替え、回線の外部の番号 | 全員（操作は役割による） |
 | 加入者の登録 | vecgen 側（鍵の入力）、radius 側（取得先と最初のルール）、削除済みの IMSI の登録し直しの承認 | 運用担当（radius 側）・システム管理者 |
 | 認可ポリシー | ルールの編集（テナントは所属のテナント） | テナント管理者・運用担当・システム管理者 |
 | セッション | テナント（刻印のテナント）か IMSI で絞った aka-radius のセッション | 全員 |
 | 一括投入 | CSV での登録と物理削除のジョブ（全行を確かめてから確定、対象ごとの待ち行列、進み具合、中断、成功以外の行の CSV） | 運用担当（閲覧）・システム管理者 |
 | 突き合わせ | 台帳と下流の突き合わせの履歴とずれの一覧、手動の実行、台帳にない IMSI の取り込みと下流からの削除、大量のずれの保留の承認、定期の処理の状態 | 運用担当（閲覧）・システム管理者 |
-| テナント | 作成・名前の変更・削除 | システム管理者 |
+| 課金レコード | 月次のまとめの一覧とダウンロード、利用の集計の取り込みと締めの状態、外部の番号の設定、PGP の公開鍵の登録・作り直し・今すぐ取り込む・今すぐ締める（システム管理者） | 運用担当・システム管理者 |
+| テナント | 作成・名前の変更・削除（システム管理者）、一覧と詳細の閲覧・外部の顧客番号の設定（運用担当・システム管理者） | 運用担当・システム管理者 |
 | アカウント | 作成・役割とテナントの変更・無効化・削除 | テナント管理者（自分のテナントのテナントユーザー）・システム管理者 |
 | 監査ログ | aka-ossbss の監査ログ（テナントの範囲）、aka-provisioner・aka-vecgen・aka-radius の監査ログ | テナント管理者（aka-ossbss の分）・運用担当・システム管理者 |
 
-役割はテナントユーザー・テナント管理者・運用担当・システム管理者の 4 つです。権限の詳細は [設計概要](docs/design-overview.md) §5 を参照してください。
+役割はテナントユーザー・テナント管理者・運用担当・システム管理者の 4 つです。権限の詳細は [設計概要](docs/design-overview.md) §5、画面ごとの項目と操作は[画面仕様](docs/screen-spec.md)を参照してください。
 
 ## 導入と運用
 
 Docker Compose（aka-ossbss、PostgreSQL、cloudflared）で動かします。ログを管理面の Fluent Bit（aka-provisioner の compose が動かす）に送るときは `compose.fluent-bit.yaml` を重ねます。監査ログの日ごとのファイルは `audit/`（UID 65532 で書けるようにする）に書きます。一括投入の待ちのファイルを暗号化する KEK は `secrets/kek` に置きます（`openssl rand -hex 32` か `aka-ossbss gen-kek` で作り、UID 65532 で読めるようにする。なければ起動しません）。ホストの受信のポートは開けません（cloudflared が外向きに Cloudflare へ接続します）。aka-provisioner が導入済みで、Cloudflare に公開ホスト名に使うドメインのゾーンと Zero Trust があることが前提です。
 
-導入（Cloudflare Access / Tunnel の準備、provisioner との証明書のやり取り、起動）、アカウントの運用、バックアップ、更新、障害時の確認は [運用ガイド](docs/operation-guide.md) を参照してください。
+導入（Cloudflare Access / Tunnel の準備、aka-provisioner との証明書のやり取り、起動）、アカウントとテナント、一括投入、突き合わせ、課金レコード、定期の処理、ログと監査ログ、バックアップと戻し、更新、障害時の確かめは [運用ガイド](docs/operation-guide.md) を参照してください。
+
+### コマンド
+
+| コマンド | 内容 |
+|---|---|
+| `serve` | サーバーを起動する（既定）。起動のときに DB のスキーマを移行する |
+| `migrate` | DB のスキーマを移行して終わる |
+| `check-provisioner` | aka-provisioner に接続できるか確かめる（つながらなければ原因の見当を出す） |
+| `gen-client-cert -name <識別名>` | aka-provisioner に提示するクライアント証明書と秘密鍵を作り、aka-provisioner のピンのファイルに書く 1 行を出す |
+| `gen-kek [-out <ファイル>]` | KEK を作る |
+| `healthcheck` | 動いている aka-ossbss の `/healthz` を確かめる（compose の healthcheck） |
+
+DB のバックアップと戻しは `scripts/backup-db.sh`・`scripts/restore-db.sh` です（運用ガイド 11 章）。
+
+### 設定
+
+`.env` に書く項目（`.env.example`）:
+
+| 名前 | 内容 | 既定 |
+|---|---|---|
+| `COMPOSE_FILE` | 重ねる compose ファイル。別のホストの aka-provisioner につなぐときは `compose.aka-provisioner.yaml` を外す | `compose.yaml:compose.aka-provisioner.yaml:compose.fluent-bit.yaml` |
+| `PROVISIONER_SHARED_NETWORK` | aka-provisioner の共有ネットワークの名前（aka-provisioner の `.env` と同じ） | `aka-provisioner` |
+| `PROVISIONER_FLUENT_BIT_PORT` | 管理面の Fluent Bit の口（aka-provisioner の `.env` と同じ） | `24224` |
+| `OSSBSS_DB_PASSWORD` | PostgreSQL のパスワード | （必須） |
+| `OSSBSS_ACCESS_TEAM_DOMAIN`・`OSSBSS_ACCESS_AUD` | Cloudflare Access のチームのドメインと、アプリの AUD タグ（カンマ区切りで複数） | （必須） |
+| `OSSBSS_INITIAL_ADMIN_EMAIL` | 最初のシステム管理者のメールアドレス | （必須） |
+| `OSSBSS_PROVISIONER_URL` | aka-provisioner のベース URL | `https://aka-provisioner:9446/admin/v2` |
+| `OSSBSS_PROVISIONER_CLIENT_KEY` | クライアント証明書の秘密鍵を別のファイルにしたときの、コンテナの中のパス（`/certs/…`） | （空） |
+| `OSSBSS_PROVISIONER_TIMEOUT` | aka-provisioner の 1 回の呼び出しの上限時間 | `15s` |
+| `OSSBSS_BULK_CONCURRENCY` | 一括投入の同時の呼び出しの数（1〜8） | `5` |
+| `OSSBSS_RECONCILE_AT`・`OSSBSS_RECONCILE_MAX_FIXES` | 毎日の突き合わせの時刻（日本時間）と、自動で直す数の上限 | `04:00`・`1000` |
+| `OSSBSS_USAGE_IMPORT_AT` | 毎日の利用の集計の取り込みの時刻（日本時間） | `03:00` |
+| `OSSBSS_LOG_LEVEL` | ログのレベル | `info` |
+| `OSSBSS_VERSION` | 画面とログに出す版（ビルドのときに渡す） | `dev` |
+| `TZ` | コンテナのタイムゾーン（画面の日時の表示） | `Asia/Tokyo` |
+
+compose が固定で渡す項目: `OSSBSS_ADDR`（`:8446`）、`OSSBSS_DB_ADDR`（`postgres:5432`）、`OSSBSS_DB_NAME`・`OSSBSS_DB_USER`（`ossbss`）、`OSSBSS_PROVISIONER_CLIENT_CERT`（`/certs/provisioner-client.pem`）、`OSSBSS_PROVISIONER_SERVER_CERT`（`/certs/provisioner-server.pem`）、`OSSBSS_AUDIT_DIR`（`/data/audit`）、`OSSBSS_KEK_FILE`（`/run/secrets/kek`）。Tunnel のトークンは環境変数でなく `secrets/tunnel-token` です。
+
+## ドキュメント
+
+| ファイル | 内容 |
+|---|---|
+| [docs/design-overview.md](docs/design-overview.md) | 設計概要（MVP。決定事項と段階の記録） |
+| [docs/screen-spec.md](docs/screen-spec.md) | 画面仕様（画面ごとの URL・役割・項目・操作・誤り、監査ログの操作の名前） |
+| [docs/operation-guide.md](docs/operation-guide.md) | 運用ガイド |
 
 ## 開発
 
