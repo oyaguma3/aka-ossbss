@@ -206,7 +206,7 @@ func serve(ctx context.Context) error {
 	}()
 
 	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv,
-		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail, KEK: key, Jobs: jobs})
+		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail, KEK: key, Jobs: jobs, Reconciler: rec})
 	if err != nil {
 		return err
 	}

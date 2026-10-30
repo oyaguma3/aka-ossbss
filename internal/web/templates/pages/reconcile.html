@@ -1,0 +1,131 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/reconcile">突き合わせ</a></li><li>実行 {{.Data.Run.ID}}</li></ul></div>
+{{- with .Data}}
+<h1 class="text-2xl font-bold mb-4">突き合わせ {{.Run.ID}} {{template "run-state" .Run.State}}</h1>
+{{template "alerts" (dict "Message" .Message "Error" .Error)}}
+{{- if .ActionErrors}}
+<ul class="list-disc pl-6 mb-4 text-sm">{{range .ActionErrors}}<li>{{.}}</li>{{end}}</ul>
+{{- end}}
+{{template "reconcile-progress" .}}
+
+{{- if and (eq .Run.State "held") .Latest}}
+<div role="alert" class="alert alert-warning mb-4">
+  <div>
+    <p class="font-bold">直す数（{{.Run.FixableCount}} 件）が上限を超えたので、何も直していません。</p>
+    <p class="text-sm">下流を古いバックアップから戻したときや接続先の設定を誤ったときに、台帳と課金レコードを大量に書き換えないための保留です。内容を確かめてください。</p>
+  </div>
+</div>
+{{- if .CanManage}}
+<form method="post" action="/reconcile/{{.Run.ID}}/approve" class="card bg-base-100 shadow mb-4">
+  <div class="card-body">
+    <h2 class="card-title">このまま直す</h2>
+    <p class="text-sm text-base-content/60">下流をもう一度読み直してから、台帳を下流に合わせます。承認は監査ログに残ります。</p>
+    <fieldset class="fieldset">
+      <legend class="fieldset-legend">承認の理由（必須）</legend>
+      <input name="reason" value="{{.Reason}}" maxlength="500" class="input w-full">
+    </fieldset>
+    <div class="card-actions"><button type="submit" class="btn btn-warning">このまま直す</button></div>
+  </div>
+</form>
+{{- end}}
+{{- end}}
+
+{{- if .Counts}}
+<div class="flex flex-wrap items-center gap-2 mb-3">
+  <a class="btn btn-sm{{if and (not .Kind) (not .Status)}} btn-active{{end}}" href="{{.FilterURL "" ""}}">すべて</a>
+  <a class="btn btn-sm{{if eq .Status "pending"}} btn-active{{end}}" href="{{.FilterURL "" "pending"}}">対応待ち（{{.Pending}}）</a>
+  {{- range .Counts}}
+  <a class="btn btn-sm{{if and (eq $.Data.Kind .Kind) (eq $.Data.Status .Status)}} btn-active{{end}}" href="{{$.Data.FilterURL .Kind .Status}}">{{findingKind .Kind}}・{{findingStatus .Status}}（{{.Count}}）</a>
+  {{- end}}
+</div>
+{{- if gt .Run.FindingsTotal .Stored}}
+<p class="text-sm text-warning mb-2">見つけたずれ {{.Run.FindingsTotal}} 件のうち、行として残したのは {{.Stored}} 件です。</p>
+{{- end}}
+{{- end}}
+
+{{- if .Findings}}
+<form id="reconcile-actions" method="post" action="/reconcile/{{.Run.ID}}/findings">
+  <div class="overflow-x-auto bg-base-100 rounded-box shadow mb-4">
+    <table class="table table-sm">
+      <thead><tr><th></th><th>IMSI</th><th>ずれ</th><th>側</th><th>台帳</th><th>下流</th><th>テナント</th><th>状態</th></tr></thead>
+      <tbody>
+        {{- range .Findings}}
+        <tr>
+          <td>{{if $.Data.Selectable .}}<input type="checkbox" name="finding" value="{{.ID}}" class="checkbox checkbox-sm" aria-label="{{.IMSI}} を選ぶ">{{end}}</td>
+          <td class="font-mono whitespace-nowrap">{{.IMSI}}</td>
+          <td>{{findingKind .Kind}}</td>
+          <td class="whitespace-nowrap">{{sideLabel .Side}}</td>
+          <td class="whitespace-nowrap">{{or .LedgerVal "-"}}</td>
+          <td class="whitespace-nowrap">{{or .DownstreamVal "-"}}</td>
+          <td class="whitespace-nowrap">{{if .TenantID}}{{$.Data.Tenants.Name .TenantID}}{{else}}-{{end}}</td>
+          <td class="whitespace-nowrap">{{findingStatus .Status}}{{with .ResolvedBy}}<span class="text-xs text-base-content/60">（{{.}}）</span>{{end}}</td>
+        </tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+  {{- with .NextURL}}<p class="mb-4"><a class="btn btn-sm" href="{{.}}">次のページ</a></p>{{end}}
+  {{- if .HasActions}}
+  <div class="card bg-base-100 shadow">
+    <div class="card-body">
+      <h2 class="card-title">選んだものに対応する</h2>
+      <p class="text-sm text-base-content/60">1 回に 100 件まで。実行のときに下流を読み直し、解消していれば何もしません。</p>
+      <div class="grid gap-x-6 md:grid-cols-2">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">取り込むテナント</legend>
+          <select name="tenant" class="select w-full">
+            <option value="">行のテナントの候補を使う</option>
+            {{- range .Tenants.List}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+          </select>
+          <p class="label">ルールのテナントが選んだテナントと違えば、ルールを書き換えてから取り込みます</p>
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">理由</legend>
+          <input name="reason" value="{{.Reason}}" maxlength="500" class="input w-full">
+          <p class="label">台帳で削除済みの IMSI を取り込むときは必須です</p>
+        </fieldset>
+      </div>
+      <div class="card-actions mt-2">
+        <button type="submit" name="op" value="import" class="btn btn-primary">取り込む</button>
+        <button type="button" class="btn btn-error btn-outline" command="show-modal" commandfor="dialog-reconcile-delete">下流から削除する</button>
+      </div>
+    </div>
+  </div>
+  <dialog id="dialog-reconcile-delete" class="modal">
+    <div class="modal-box">
+      <h3 class="text-lg font-bold">下流から削除します</h3>
+      <p class="py-4">選んだ側の加入者を下流から物理削除します。利用中（Active）のものは止めてから消します。元に戻せません。</p>
+      <div class="modal-action">
+        <button type="button" class="btn" command="close" commandfor="dialog-reconcile-delete">やめる</button>
+        <button type="submit" name="op" value="delete" class="btn btn-error">削除する</button>
+      </div>
+    </div>
+  </dialog>
+  {{- end}}
+</form>
+{{- else if ne .Run.State "running"}}
+<p class="text-base-content/60">ずれはありません。</p>
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{/* 実行の概要。実行中は 2 秒ごとに読み込み直す（状態が変わったら画面全体を読み直す）。 */}}
+{{define "reconcile-progress" -}}
+<div id="reconcile-progress" class="card bg-base-100 shadow mb-4"{{if eq .Run.State "running"}} hx-get="/reconcile/{{.Run.ID}}?state=running" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+  <div class="card-body">
+    <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+      <dt class="text-base-content/60">きっかけ</dt><dd>{{runTrigger .Run.Trigger}}（{{.Run.RequestedBy}}）</dd>
+      {{- with .Run.ApproveReason}}<dt class="text-base-content/60">承認の理由</dt><dd>{{.}}</dd>{{end}}
+      <dt class="text-base-content/60">開始</dt><dd>{{datetime .Run.StartedAt}}</dd>
+      <dt class="text-base-content/60">終了</dt><dd>{{datetime .Run.FinishedAt}}</dd>
+      <dt class="text-base-content/60">読んだ行</dt><dd>台帳 {{.Run.LedgerRows}}・vecgen 側 {{.Run.VecgenRows}}・radius 側 {{.Run.RadiusRows}}</dd>
+      <dt class="text-base-content/60">自動で直す対象</dt><dd>{{.Run.FixableCount}} 件（直した数 {{.Run.FixedCount}}）</dd>
+      <dt class="text-base-content/60">見つけたずれ</dt><dd>{{.Run.FindingsTotal}} 件</dd>
+      {{- with .Run.Error}}<dt class="text-base-content/60">誤り</dt><dd class="text-error">{{.}}</dd>{{end}}
+    </dl>
+    {{- if and (not .Latest) (.Pending) (ne .Run.State "running")}}
+    <p class="text-sm text-base-content/60">新しい実行があるので、この実行のずれには対応できません。最新の実行で対応してください。</p>
+    {{- end}}
+  </div>
+</div>
+{{- end}}

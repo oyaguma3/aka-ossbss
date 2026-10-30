@@ -49,6 +49,10 @@ type fakeDB struct {
 	jobDeleted map[int64][]string
 	jobSealed  map[int64][]byte
 	jobRows    map[int64][]db.JobRow
+	// 突き合わせ（reconcile_test.go）。
+	runs      []db.ReconcileRun
+	findings  []db.Finding
+	schedules []db.ScheduledRun
 }
 
 func newFakeDB() *fakeDB {

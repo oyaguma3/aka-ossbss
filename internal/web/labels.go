@@ -92,6 +92,13 @@ var auditActions = []struct{ Action, Label string }{
 	{audit.ActionJobCancel, "ジョブの取り消し"},
 	{audit.ActionJobInterrupt, "ジョブの中断"},
 	{audit.ActionJobReregister, "ジョブの削除済みの IMSI の承認"},
+	{audit.ActionSubscriberReconcile, "突き合わせでの台帳の修正"},
+	{audit.ActionReconcileStart, "突き合わせの開始"},
+	{audit.ActionReconcileFinish, "突き合わせの終了"},
+	{audit.ActionReconcileHold, "突き合わせの保留"},
+	{audit.ActionReconcileApprove, "突き合わせの修正の承認"},
+	{audit.ActionReconcileImport, "突き合わせでの取り込み"},
+	{audit.ActionReconcileDelete, "突き合わせでの下流からの削除"},
 }
 
 // otherActionLabels は、aka-provisioner と下流の監査ログにだけ出る操作の名前。

@@ -29,6 +29,8 @@ var table = map[Op]string{
 	AccountManage:         "xtxo",
 	JobView:               "xxoo",
 	JobManage:             "xxxo",
+	ReconcileView:         "xxoo",
+	ReconcileManage:       "xxxo",
 }
 
 func TestAllowedMatrix(t *testing.T) {

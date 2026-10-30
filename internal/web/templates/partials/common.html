@@ -149,3 +149,36 @@
 {{- else if eq . "interrupted"}}<span class="badge badge-warning badge-sm">{{jobState .}}</span>
 {{- else}}<span class="badge badge-neutral badge-sm">{{jobState .}}</span>{{end -}}
 {{- end}}
+
+{{/* run-state は突き合わせの実行の状態（引数は状態）。 */}}
+{{define "run-state" -}}
+{{- if eq . "completed"}}<span class="badge badge-success badge-sm badge-outline">{{runState .}}</span>
+{{- else if eq . "running"}}<span class="badge badge-info badge-sm">{{runState .}}</span>
+{{- else if eq . "held"}}<span class="badge badge-warning badge-sm">{{runState .}}</span>
+{{- else if eq . "failed"}}<span class="badge badge-error badge-sm">{{runState .}}</span>
+{{- else}}<span class="badge badge-neutral badge-sm">{{runState .}}</span>{{end -}}
+{{- end}}
+
+{{/* reconcile-summary はダッシュボードの突き合わせの欄（引数は reconcileSummary）。 */}}
+{{define "reconcile-summary" -}}
+<div class="card bg-base-100 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title">突き合わせ <a class="link text-sm font-normal" href="/reconcile">一覧へ</a></h2>
+    {{- if .Held}}
+    <div role="alert" class="alert alert-warning"><span>直す数が上限を超えたので、何も直さずに保留しています。<a class="link" href="/reconcile/{{.Held.ID}}">内容を確かめてください</a>。</span></div>
+    {{- end}}
+    {{- with .Last}}
+    <p>最後の実行: <a class="link" href="/reconcile/{{.ID}}">{{datetime .StartedAt}}</a> {{template "run-state" .State}}
+      {{- if eq .State "failed"}} <span class="text-sm">{{.Error}}</span>{{end}}</p>
+    {{- else}}
+    <p class="text-base-content/60">まだ実行していません。</p>
+    {{- end}}
+    {{- with .Finished}}
+    <p>直した数 {{.FixedCount}}、対応を待つもの <a class="link" href="/reconcile/{{.ID}}?status=pending">{{$.Pending}}</a>（{{datetime .StartedAt}} の実行）</p>
+    {{- end}}
+    {{- range .FailedSchedules}}
+    <div role="alert" class="alert alert-error"><span>定期の処理「{{scheduleName .Name}}」が失敗しました（{{datetime .StartedAt}}）: {{.Detail}}</span></div>
+    {{- end}}
+  </div>
+</div>
+{{- end}}

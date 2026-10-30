@@ -1,0 +1,55 @@
+{{define "content" -}}
+<div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+  <h1 class="text-2xl font-bold">突き合わせ</h1>
+  {{- if .Data.CanManage}}
+  <form method="post" action="/reconcile/run"><button type="submit" class="btn btn-primary btn-sm">今すぐ実行する</button></form>
+  {{- end}}
+</div>
+<p class="text-sm text-base-content/60 mb-4">台帳と下流（aka-vecgen・aka-radius）を突き合わせ、下流に合わせて台帳を直します。台帳にない IMSI はシステム管理者が決めます。</p>
+{{template "alerts" (dict "Error" .Data.Error)}}
+{{template "reconcile-table" .Data}}
+<h2 class="text-lg font-semibold mt-6 mb-2">定期の処理</h2>
+<div class="overflow-x-auto bg-base-100 rounded-box shadow">
+  <table class="table table-sm">
+    <thead><tr><th>処理</th><th>最後の記録</th><th>結果</th><th>内容</th></tr></thead>
+    <tbody>
+      {{- range .Data.Schedules}}
+      <tr>
+        <td class="whitespace-nowrap">{{scheduleName .Name}}</td>
+        <td class="whitespace-nowrap">{{datetime .StartedAt}}</td>
+        <td class="whitespace-nowrap">{{if eq .Status "failed"}}<span class="text-error">{{scheduleStatus .Status}}</span>{{else}}{{scheduleStatus .Status}}{{end}}</td>
+        <td>{{.Detail}}</td>
+      </tr>
+      {{- else}}
+      <tr><td colspan="4" class="text-base-content/60">記録はまだありません。</td></tr>
+      {{- end}}
+    </tbody>
+  </table>
+</div>
+<p class="text-sm text-base-content/60 mt-2">間隔の短い処理は、何かしたときと失敗のときだけ記録します。</p>
+{{- end}}
+
+{{/* 実行中は 2 秒ごとに読み込み直す。 */}}
+{{define "reconcile-table" -}}
+<div id="reconcile-table" class="overflow-x-auto bg-base-100 rounded-box shadow"{{if .Active}} hx-get="/reconcile" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+  <table class="table table-sm">
+    <thead><tr><th>ID</th><th>開始</th><th>きっかけ</th><th>状態</th><th>読んだ行（台帳 / vecgen / radius）</th><th>直した数</th><th>見つけたずれ</th><th>実行した人</th></tr></thead>
+    <tbody>
+      {{- range .Runs}}
+      <tr>
+        <td class="font-mono"><a class="link" href="/reconcile/{{.ID}}">{{.ID}}</a></td>
+        <td class="whitespace-nowrap">{{datetime .StartedAt}}</td>
+        <td>{{runTrigger .Trigger}}</td>
+        <td>{{template "run-state" .State}}</td>
+        <td class="whitespace-nowrap">{{.LedgerRows}} / {{.VecgenRows}} / {{.RadiusRows}}</td>
+        <td>{{.FixedCount}}</td>
+        <td>{{.FindingsTotal}}</td>
+        <td>{{.RequestedBy}}</td>
+      </tr>
+      {{- else}}
+      <tr><td colspan="8" class="text-base-content/60">まだ実行していません。</td></tr>
+      {{- end}}
+    </tbody>
+  </table>
+</div>
+{{- end}}

@@ -60,6 +60,13 @@ type DB interface {
 	CancelJob(ctx context.Context, id int64, reason string) (db.Job, error)
 	JobRows(ctx context.Context, id int64, afterLine, limit int) ([]db.JobRow, error)
 	SubscribersByIMSI(ctx context.Context, imsis []string) (map[string]db.Entry, error)
+	ReconcileRuns(ctx context.Context, limit int) ([]db.ReconcileRun, error)
+	ReconcileRun(ctx context.Context, id int64) (db.ReconcileRun, error)
+	LatestFinishedReconcileRun(ctx context.Context) (db.ReconcileRun, bool, error)
+	ReconcileFindings(ctx context.Context, q db.FindingQuery) ([]db.Finding, error)
+	ReconcileFinding(ctx context.Context, id int64) (db.Finding, error)
+	CountFindings(ctx context.Context, runID int64) ([]db.FindingCount, error)
+	LatestScheduledRuns(ctx context.Context) ([]db.ScheduledRun, error)
 }
 
 // JobRunner は一括投入のジョブの実行（internal/bulk の Runner が満たす）。
@@ -68,6 +75,15 @@ type JobRunner interface {
 	Wake(target db.Side)
 	// Interrupt はジョブを中断する（待ちならその場で、実行中なら処理中の行を終えてから）。
 	Interrupt(ctx context.Context, id int64, by string) (db.Job, error)
+}
+
+// Reconciler は突き合わせ（internal/reconcile の Runner が満たす）。
+type Reconciler interface {
+	// Start は手動の実行か承認の実行を始めてすぐに戻る（動いていれば reconcile.ErrRunning）。
+	Start(ctx context.Context, trigger, by, reason string) (db.ReconcileRun, error)
+	// Import は IMSI を台帳に取り込み、対応の結果を返す。Delete は下流のその側から削除し、対応の結果を返す。
+	Import(ctx context.Context, f db.Finding, tenant int64, by string) (string, error)
+	Delete(ctx context.Context, f db.Finding, by string) (string, error)
 }
 
 // Provisioner は画面が使う aka-provisioner の口。*provisioner.Client が満たす。
@@ -103,6 +119,8 @@ type Handler struct {
 	// kek は一括投入の待ちのファイルの暗号化の鍵、jobs はジョブの実行。
 	kek  *kek.KEK
 	jobs JobRunner
+	// reconciler は突き合わせ。
+	reconciler Reconciler
 	// initialAdmin は最初のシステム管理者のメールアドレス（画面からの削除・降格・無効化を断る）。
 	initialAdmin string
 	pages        pages
@@ -127,6 +145,8 @@ type Options struct {
 	KEK *kek.KEK
 	// Jobs は一括投入のジョブの実行。
 	Jobs JobRunner
+	// Reconciler は突き合わせ。
+	Reconciler Reconciler
 }
 
 // New は Handler を作る。テンプレートと静的ファイルはここで読み込む。
@@ -136,7 +156,7 @@ func New(opts Options) (*Handler, error) {
 	}
 	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner,
 		ops: &ledger.Ops{DB: opts.DB, PV: opts.Provisioner, Log: opts.Log}, rec: &audit.Recorder{DB: opts.DB, Files: opts.AuditFiles, Log: opts.Log},
-		kek: opts.KEK, jobs: opts.Jobs, initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
+		kek: opts.KEK, jobs: opts.Jobs, reconciler: opts.Reconciler, initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
 	var err error
 	if h.pages, err = parsePages(); err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -184,6 +204,13 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /jobs/{id}/confirm", h.jobConfirm)
 	mux.HandleFunc("POST /jobs/{id}/cancel", h.jobCancel)
 	mux.HandleFunc("POST /jobs/{id}/interrupt", h.jobInterrupt)
+
+	// 突き合わせ（設計概要 §9。Y12）。
+	mux.HandleFunc("GET /reconcile", h.reconcileList)
+	mux.HandleFunc("POST /reconcile/run", h.reconcileRun)
+	mux.HandleFunc("GET /reconcile/{id}", h.reconcileDetail)
+	mux.HandleFunc("POST /reconcile/{id}/approve", h.reconcileApprove)
+	mux.HandleFunc("POST /reconcile/{id}/findings", h.reconcileFindings)
 
 	// テナント。
 	mux.HandleFunc("GET /tenants", h.tenantList)
@@ -245,6 +272,8 @@ type homeData struct {
 	// Jobs は一括投入の待ちと実行中のジョブ（C・D）。JobsVisible は欄を出すか。
 	Jobs        []db.Job
 	JobsVisible bool
+	// Reconcile は突き合わせと定期の処理の欄（C・D）。
+	Reconcile *reconcileSummary
 }
 
 // provisionerData は aka-provisioner の状態のカードに出す値。
@@ -329,6 +358,9 @@ func (h *Handler) home(w http.ResponseWriter, r *http.Request) {
 			} else {
 				d.Jobs, d.JobsVisible = jobs, true
 			}
+		}
+		if authz.Allowed(a, authz.ReconcileView, authz.NoTenant) {
+			d.Reconcile = h.loadReconcileSummary(ctx)
 		}
 	}
 	cancel()

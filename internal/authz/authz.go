@@ -88,6 +88,8 @@ const (
 	AccountManage                       // アカウントの管理（B は自分のテナントの A だけ。CanManageAccount で対象を判定する）
 	JobView                             // 一括投入のジョブの閲覧
 	JobManage                           // 一括投入・一括の物理削除の登録・投入・中断
+	ReconcileView                       // 突き合わせの結果の閲覧
+	ReconcileManage                     // 突き合わせの手動の実行と対応
 )
 
 // rule は 1 つの操作の権限。
@@ -122,12 +124,14 @@ var rules = map[Op]rule{
 	AccountManage:         {"アカウントの管理", []Role{TenantAdmin, SystemAdmin}, true},
 	JobView:               {"一括投入のジョブの閲覧", []Role{Operator, SystemAdmin}, false},
 	JobManage:             {"一括投入・一括の物理削除", []Role{SystemAdmin}, false},
+	ReconcileView:         {"突き合わせの結果の閲覧", []Role{Operator, SystemAdmin}, false},
+	ReconcileManage:       {"突き合わせの実行と対応", []Role{SystemAdmin}, false},
 }
 
 // Ops は操作の一覧（画面の要約の順）。
 func Ops() []Op {
 	out := make([]Op, 0, len(rules))
-	for op := SubscriberView; op <= JobManage; op++ {
+	for op := SubscriberView; op <= ReconcileManage; op++ {
 		out = append(out, op)
 	}
 	return out
