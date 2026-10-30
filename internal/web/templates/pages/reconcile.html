@@ -103,6 +103,8 @@
   </dialog>
   {{- end}}
 </form>
+{{- else if or (eq .Run.State "failed") (eq .Run.State "interrupted")}}
+<p class="text-base-content/60">この実行は最後まで終わらなかったので、ずれの一覧はありません。もう一度実行して確かめてください。</p>
 {{- else if ne .Run.State "running"}}
 <p class="text-base-content/60">ずれはありません。</p>
 {{- end}}

@@ -138,9 +138,21 @@ func actionLabel(action string) string {
 	return action
 }
 
-// knownAction は、aka-ossbss の監査ログの操作の名前か。
-func knownAction(action string) bool {
-	return slices.ContainsFunc(auditActions, func(a struct{ Action, Label string }) bool { return a.Action == action })
+// externalIDActions は外部の番号の変更の操作。外部の番号は運用担当とシステム管理者だけの項目で（段階 3-4 の Z15）、監査ログの内容に
+// 値が入るので、テナント管理者の監査ログには出さない。
+var externalIDActions = []string{audit.ActionTenantExternal, audit.ActionLineExternal}
+
+// tenantAuditActions は、テナント管理者の操作の種類の絞り込みの選択肢（テナントに結び付かない突き合わせの実行と課金レコードの操作、
+// 外部の番号の変更を除く）。
+var tenantAuditActions = slices.DeleteFunc(slices.Clone(auditActions), func(a struct{ Action, Label string }) bool {
+	return slices.Contains(externalIDActions, a.Action) || slices.Contains([]string{audit.ActionReconcileStart, audit.ActionReconcileFinish,
+		audit.ActionReconcileHold, audit.ActionReconcileApprove, audit.ActionChargingImport, audit.ActionChargingClose,
+		audit.ActionChargingFile, audit.ActionChargingDownload, audit.ActionChargingKey}, a.Action)
+})
+
+// knownAction は、actions の中の操作の名前か。
+func knownAction(actions []struct{ Action, Label string }, action string) bool {
+	return slices.ContainsFunc(actions, func(a struct{ Action, Label string }) bool { return a.Action == action })
 }
 
 // detailText は監査ログの内容（JSON のオブジェクト）を、項目の名前の順に「名前: 値」で並べた 1 行にする。

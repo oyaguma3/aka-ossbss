@@ -454,7 +454,7 @@ func (h *Handler) subscriberState(w http.ResponseWriter, r *http.Request) {
 	}
 	key := formIdemKey(r, "idem")
 	var msgs []string
-	failed := false
+	failed, keep := false, false
 	for _, side := range sides {
 		o, err := h.runLedger(r, e.IMSI, ledger.Step{
 			Check: func(cur db.Entry, exists bool) string {
@@ -475,13 +475,13 @@ func (h *Handler) subscriberState(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		msg, f := h.sideResult(r, side, o, err, "状態の変更", sideLabel(side)+"を「"+stateLabel(state)+"」にしました。")
-		msgs, failed = append(msgs, msg), failed || f
+		msgs, failed, keep = append(msgs, msg), failed || f, keep || keepKey(o, err)
 		if !f || o.Unknown {
 			h.record(r, auditStateChange, e.IMSI, e.TenantID, map[string]any{"side": string(side), "state": state, "reason": reason,
 				"result": resultWord(o, err)})
 		}
 	}
-	h.renderOpResult(w, r, e.IMSI, msgs, failed, key)
+	h.renderOpResult(w, r, e.IMSI, msgs, failed, keep, key)
 }
 
 // resultWord は監査ログに残す結果（ok / unknown）。
@@ -492,15 +492,22 @@ func resultWord(o ledger.Outcome, err error) string {
 	return "ok"
 }
 
-// renderOpResult は操作の結果の文を詳細に出して返す。失敗したら、同じキーで送り直せるよう残す。
-func (h *Handler) renderOpResult(w http.ResponseWriter, r *http.Request, imsi string, msgs []string, failed bool, key string) {
+// keepKey は、失敗の後も同じ Idempotency-Key で送り直すかを返す（画面仕様 §1.5）。結果が分からないときは同じキーのまま送り直す。
+// aka-provisioner が断った（4xx）ときは、その応答を覚えているので、新しいキーにする（登録と認可ポリシーの keepIdemKey と同じ）。
+func keepKey(o ledger.Outcome, err error) bool { return err != nil || o.Unknown }
+
+// renderOpResult は操作の結果の文を詳細に出して返す。keep なら同じキーで送り直せるよう残し、そうでなければ新しいキーにする。
+func (h *Handler) renderOpResult(w http.ResponseWriter, r *http.Request, imsi string, msgs []string, failed, keep bool, key string) {
 	status := http.StatusOK
 	if failed {
 		status = http.StatusConflict
 	}
 	h.renderSubscriber(w, r, imsi, status, func(d *subscriberData) {
 		if failed {
-			d.Error, d.Key = strings.Join(msgs, " "), baseKey(key)
+			d.Error = strings.Join(msgs, " ")
+			if keep {
+				d.Key = baseKey(key)
+			}
 			return
 		}
 		d.Message = strings.Join(msgs, " ")
@@ -546,7 +553,7 @@ func (h *Handler) subscriberReinstate(w http.ResponseWriter, r *http.Request) {
 	if !failed || o.Unknown {
 		h.record(r, auditReinstate, e.IMSI, e.TenantID, map[string]any{"side": string(side), "reason": reason, "result": resultWord(o, err)})
 	}
-	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, key)
+	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, keepKey(o, err), key)
 }
 
 // subscriberDelete はその側を物理削除する（運用担当・システム管理者。Active は不可）。両側を消したら台帳は削除済み。
@@ -586,7 +593,7 @@ func (h *Handler) subscriberDelete(w http.ResponseWriter, r *http.Request) {
 	if !failed || o.Unknown {
 		h.record(r, auditSubscriberDelete, e.IMSI, e.TenantID, map[string]any{"side": string(side), "state": state, "result": resultWord(o, err)})
 	}
-	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, key)
+	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, keepKey(o, err), key)
 }
 
 // ---- 変更（vecgen 側・取得先） ----
@@ -663,7 +670,7 @@ func (h *Handler) vecgenUpdate(w http.ResponseWriter, r *http.Request) {
 	if !failed || o.Unknown {
 		h.record(r, auditVecgenUpdate, e.IMSI, e.TenantID, map[string]any{"fields": changed, "result": resultWord(o, err)})
 	}
-	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, key)
+	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, keepKey(o, err), key)
 }
 
 // sourceUpdate は radius 側の取得先を変える（運用担当・システム管理者）。
@@ -703,7 +710,7 @@ func (h *Handler) sourceUpdate(w http.ResponseWriter, r *http.Request) {
 		h.record(r, auditSourceUpdate, e.IMSI, e.TenantID, map[string]any{"sourceId": map[string]any{"from": from, "to": source},
 			"result": resultWord(o, err)})
 	}
-	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, key)
+	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, keepKey(o, err), key)
 }
 
 // ---- 所属のテナントの付け替え（W8） ----
@@ -763,5 +770,5 @@ func (h *Handler) tenantMove(w http.ResponseWriter, r *http.Request) {
 		h.recordMove(r, auditTenantMove, e.IMSI, from, to, map[string]any{"tenant": map[string]any{"from": from, "to": to},
 			"result": resultWord(o, err)})
 	}
-	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, key)
+	h.renderOpResult(w, r, e.IMSI, []string{msg}, failed, keepKey(o, err), key)
 }

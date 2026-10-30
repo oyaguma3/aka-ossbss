@@ -12,7 +12,8 @@
       {{- end}}
       {{- /* 利用者を確かめられなかった画面（401・登録のない 403・503）では、トップへ戻っても同じ画面になるので出さない。 */}}
       {{- if $user}}
-      <a href="/" class="btn btn-primary">トップへ</a>
+      {{- if .Link}}<a href="{{.Link}}" class="btn btn-primary">{{.LinkLabel}}</a>{{end}}
+      <a href="/" class="btn{{if not .Link}} btn-primary{{end}}">トップへ</a>
       {{- end}}
     </div>
   </div>

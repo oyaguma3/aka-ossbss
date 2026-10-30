@@ -54,6 +54,10 @@ func (h *Handler) auditList(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	d := auditData{Tabs: auditTabsFor(r, "ossbss"), Action: q.Get("action"), Actions: auditActions, More: q.Get("before") != ""}
+	var exclude []string
+	if !can(r, authz.ExternalIDUpdate) {
+		d.Actions, exclude = tenantAuditActions, externalIDActions
+	}
 	status := http.StatusOK
 	t, err := h.tenants(r)
 	if err != nil {
@@ -67,7 +71,7 @@ func (h *Handler) auditList(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case !ok:
 		status, d.Error = http.StatusBadRequest, "テナントの指定が正しくありません。"
-	case d.Action != "" && !knownAction(d.Action):
+	case d.Action != "" && !knownAction(d.Actions, d.Action):
 		status, d.Error = http.StatusBadRequest, "操作の種類の指定が正しくありません。"
 	case d.More && (berr != nil || before < 1):
 		status, d.Error = http.StatusBadRequest, "続きの位置の指定が正しくありません。"
@@ -75,7 +79,7 @@ func (h *Handler) auditList(w http.ResponseWriter, r *http.Request) {
 		// テナント管理者は readTenantFilter で自分のテナントに固定される。
 		ctx, cancel := dbContext(r)
 		rows, err := h.db.ListAudit(ctx, db.AuditQuery{AllTenants: f.All, NoTenant: f.None, TenantID: f.Tenant,
-			Action: d.Action, Before: before, Limit: auditPerPage + 1})
+			Action: d.Action, ExcludeActions: exclude, Before: before, Limit: auditPerPage + 1})
 		cancel()
 		if err != nil {
 			h.log.Error("list audit", "error", err)

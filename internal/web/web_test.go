@@ -745,7 +745,7 @@ func (f *fakeDB) ListAudit(_ context.Context, q db.AuditQuery) ([]db.AuditRecord
 		e, id := f.audit[i], int64(i+1)
 		switch {
 		case q.NoTenant && e.TenantID != 0, !q.AllTenants && !q.NoTenant && e.TenantID != q.TenantID,
-			q.Action != "" && e.Action != q.Action, q.Before != 0 && id >= q.Before:
+			q.Action != "" && e.Action != q.Action, q.Before != 0 && id >= q.Before, slices.Contains(q.ExcludeActions, e.Action):
 			continue
 		}
 		if len(out) == q.Limit {

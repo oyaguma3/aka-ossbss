@@ -58,11 +58,13 @@
       <h2 class="card-title">両方の状態</h2>
       <div class="flex flex-wrap gap-2">
         {{- if or (ne $e.VecgenState "inactive") (ne $e.RadiusState "inactive")}}
-        <form hx-post="/subscribers/{{$e.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
+        <form id="state-both-inactive" hx-post="/subscribers/{{$e.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
           <input type="hidden" name="side" value="both"><input type="hidden" name="state" value="inactive">
           <input type="hidden" name="idem" value="{{.Key}}-both-inactive">
-          <button type="submit" class="btn btn-warning btn-outline">両方を止める</button>
         </form>
+        <button type="button" class="btn btn-warning btn-outline" command="show-modal" commandfor="dialog-state-both-inactive">両方を止める</button>
+        {{template "confirm" (dict "ID" "dialog-state-both-inactive" "Title" "両方を止める" "Form" "state-both-inactive" "Label" "両方を止める" "Class" "btn-warning"
+          "Message" "vecgen 側と radius 側を止めます。次の認証から拒否します（接続中のセッションは切れません）。よろしいですか？")}}
         {{- end}}
         {{- if or (ne $e.VecgenState "active") (ne $e.RadiusState "active")}}
         <form hx-post="/subscribers/{{$e.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
@@ -174,7 +176,8 @@
     {{- else}}
     <div class="flex flex-wrap gap-2 mt-2">
       {{- if and $d.Perm.State (ne $state "terminated")}}
-        {{- if eq $state "active"}}{{template "state-button" (dict "D" $d "Side" $side "State" "inactive" "Label" "止める" "Class" "btn-warning btn-outline")}}
+        {{- if eq $state "active"}}{{template "state-button" (dict "D" $d "Side" $side "State" "inactive" "Label" "止める" "Class" "btn-warning btn-outline"
+          "Confirm" (printf "%sを止めます。次の認証から拒否します（接続中のセッションは切れません）。よろしいですか？" (sideLabel $side)))}}
         {{- else}}{{template "state-button" (dict "D" $d "Side" $side "State" "active" "Label" "使う" "Class" "btn-primary btn-outline")}}{{end}}
         <form id="state-{{$side}}-terminated" hx-post="/subscribers/{{$e.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
           <input type="hidden" name="side" value="{{$side}}"><input type="hidden" name="state" value="terminated">
@@ -212,13 +215,19 @@
 </div>
 {{- end}}
 
-{{/* state-button は状態の変更のボタン（引数は dict で D、Side、State、Label、Class）。 */}}
+{{/* state-button は状態の変更のボタン（引数は dict で D、Side、State、Label、Class。Confirm があれば確認ダイアログを出す）。 */}}
 {{define "state-button" -}}
-<form hx-post="/subscribers/{{.D.Entry.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
+<form id="state-{{.Side}}-{{.State}}" hx-post="/subscribers/{{.D.Entry.IMSI}}/state" hx-target="#subscriber" hx-swap="outerHTML" hx-include="#state-reason">
   <input type="hidden" name="side" value="{{.Side}}"><input type="hidden" name="state" value="{{.State}}">
   <input type="hidden" name="idem" value="{{.D.Key}}-state-{{.Side}}-{{.State}}">
+  {{- if not .Confirm}}
   <button type="submit" class="btn btn-sm {{.Class}}">{{.Label}}</button>
+  {{- end}}
 </form>
+{{- if .Confirm}}
+<button type="button" class="btn btn-sm {{.Class}}" command="show-modal" commandfor="dialog-state-{{.Side}}-{{.State}}">{{.Label}}</button>
+{{template "confirm" (dict "ID" (printf "dialog-state-%s-%s" .Side .State) "Title" .Label "Form" (printf "state-%s-%s" .Side .State) "Label" .Label "Class" "btn-warning" "Message" .Confirm)}}
+{{- end}}
 {{- end}}
 
 {{/* vecgen-edit は vecgen 側の変更（システム管理者）。誤りのときは入力（.Form）を残す。 */}}

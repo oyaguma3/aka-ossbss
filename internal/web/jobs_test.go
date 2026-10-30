@@ -322,6 +322,8 @@ func TestJobCreateVecgen(t *testing.T) {
 	}
 	mustNotContain(t, body, jobKi, jobOPc)
 	// C は件数を見られるが、操作のボタンはない。
+	// 投入は確認ダイアログを通す。
+	mustContain(t, body, `commandfor="job-confirm-dialog"`, `form="job-confirm"`)
 	mustNotContain(t, get(e.handler(t, "c@example.com"), "/jobs/1").Body.String(), "投入する", "取り消す")
 
 	// 確定すると待ち行列に入り、実行に知らせる。
@@ -631,4 +633,12 @@ func TestJobListAndSummary(t *testing.T) {
 		}
 	}
 	mustNotContain(t, get(d, "/jobs/new?kind=radius.delete").Body.String(), "所属のテナント", "ルールを追加")
+}
+
+// 一括投入のテナントの選択に、個別の登録の案内を出さない。
+func TestJobFormTenantHint(t *testing.T) {
+	e := newJobEnv(t)
+	h := e.handler(t, "d@example.com")
+	mustNotContain(t, get(h, "/jobs/new?kind=vecgen.create").Body.String(), "もう一方の側を登録するとき")
+	mustContain(t, get(h, "/subscribers/new?side=radius").Body.String(), "もう一方の側を登録するとき")
 }

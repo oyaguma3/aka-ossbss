@@ -459,3 +459,17 @@ func TestReconcileDashboard(t *testing.T) {
 		t.Errorf("list has no schedule state")
 	}
 }
+
+// 最後まで終わらなかった実行に「ずれはありません」と出さない。
+func TestReconcileUnfinishedRunHasNoFindings(t *testing.T) {
+	for _, state := range []string{db.RunFailed, db.RunInterrupted} {
+		e := newReconcileEnv(t)
+		r := e.addRun(state)
+		body := get(e.handler(t, "d@example.com"), "/reconcile/"+strconv.FormatInt(r.ID, 10)).Body.String()
+		mustContain(t, body, "最後まで終わらなかった")
+		mustNotContain(t, body, "ずれはありません")
+	}
+	e := newReconcileEnv(t)
+	r := e.addRun(db.RunCompleted)
+	mustContain(t, get(e.handler(t, "d@example.com"), "/reconcile/"+strconv.FormatInt(r.ID, 10)).Body.String(), "ずれはありません")
+}

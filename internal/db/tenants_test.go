@@ -240,6 +240,9 @@ func TestAuditList(t *testing.T) {
 	if l, _ := d.ListAudit(ctx, AuditQuery{AllTenants: true, Action: "subscriber.create", Limit: 10}); len(l) != 1 {
 		t.Errorf("action = %+v", l)
 	}
+	if l, _ := d.ListAudit(ctx, AuditQuery{AllTenants: true, ExcludeActions: []string{"subscriber.create"}, Limit: 10}); len(l) != len(all)-1 {
+		t.Errorf("exclude = %+v", l)
+	}
 	if l, _ := d.ListAudit(ctx, AuditQuery{AllTenants: true, Before: all[0].ID, Limit: 1}); len(l) != 1 || l[0].ID != all[1].ID {
 		t.Errorf("before = %+v", l)
 	}

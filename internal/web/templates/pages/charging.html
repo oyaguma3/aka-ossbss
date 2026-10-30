@@ -4,7 +4,10 @@
   {{- if .Data.CanManage}}
   <div class="flex flex-wrap gap-2">
     <form method="post" action="/charging/import"><button type="submit" class="btn btn-sm">今すぐ取り込む</button></form>
-    <form method="post" action="/charging/close"><button type="submit" class="btn btn-primary btn-sm">今すぐ締める</button></form>
+    <form id="charging-close" method="post" action="/charging/close"></form>
+    <button type="button" class="btn btn-primary btn-sm" command="show-modal" commandfor="dialog-charging-close">今すぐ締める</button>
+    {{template "confirm" (dict "ID" "dialog-charging-close" "Title" "今すぐ締める" "Form" "charging-close" "Label" "締める" "Class" "btn-primary"
+      "Message" "締めていない過去の月を締め、通し番号を割り当てます。締めた月は取り消せません。よろしいですか？")}}
   </div>
   {{- end}}
 </div>
@@ -76,7 +79,15 @@
           </td>
           {{- if $manage}}
           <td>
-            <form method="post" action="/charging/{{chargingMonth .Period}}/rebuild"><button type="submit" class="btn btn-xs whitespace-nowrap" title="今の鍵で版を上げて作ります">{{if .Files}}作り直す{{else}}作る{{end}}</button></form>
+            {{- $month := chargingMonth .Period}}
+            {{- if .Files}}
+            <form id="rebuild-{{$month}}" method="post" action="/charging/{{$month}}/rebuild"></form>
+            <button type="button" class="btn btn-xs whitespace-nowrap" title="今の鍵で版を上げて作ります" command="show-modal" commandfor="dialog-rebuild-{{$month}}">作り直す</button>
+            {{template "confirm" (dict "ID" (printf "dialog-rebuild-%s" $month) "Title" "作り直す" "Form" (printf "rebuild-%s" $month) "Label" "作り直す" "Class" "btn-primary"
+              "Message" (printf "%s のファイルを今の鍵で作り直し、版を上げます。古い版も残ります。外部のシステムには新しい版を渡してください。よろしいですか？" $month))}}
+            {{- else}}
+            <form method="post" action="/charging/{{$month}}/rebuild"><button type="submit" class="btn btn-xs whitespace-nowrap" title="今の鍵で作ります">作る</button></form>
+            {{- end}}
           </td>
           {{- end}}
         </tr>

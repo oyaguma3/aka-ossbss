@@ -72,8 +72,9 @@ type AuditQuery struct {
 	// AllTenants ならすべて、NoTenant ならテナントなし、どちらでもなければ TenantID のもの。
 	AllTenants, NoTenant bool
 	TenantID             int64
-	// Action が空でなければ、その操作だけ。
-	Action string
+	// Action が空でなければ、その操作だけ。ExcludeActions の操作は出さない。
+	Action         string
+	ExcludeActions []string
 	// Before が 0 でなければ、その ID より古いものだけ（続きの読み込み）。
 	Before int64
 	Limit  int
@@ -92,6 +93,9 @@ func (d *DB) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, error)
 		where = append(where, "tenant_id IS NULL")
 	case !q.AllTenants:
 		add("tenant_id = $%d", q.TenantID)
+	}
+	if len(q.ExcludeActions) > 0 {
+		add("action <> ALL($%d)", q.ExcludeActions)
 	}
 	if q.Action != "" {
 		add("action = $%d", q.Action)

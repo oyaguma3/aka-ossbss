@@ -78,9 +78,13 @@
         <button type="submit" name="choice" value="exclude" class="btn">除いて進める</button>
       </div>
       {{- else}}
-      <button type="submit" class="btn btn-primary mt-2">投入する</button>
+      <button type="button" class="btn btn-primary mt-2" command="show-modal" commandfor="job-confirm-dialog">投入する</button>
       {{- end}}
     </form>
+    {{- if not .Job.Deleted}}
+    {{template "confirm" (dict "ID" "job-confirm-dialog" "Title" "投入する" "Form" "job-confirm" "Label" "投入する" "Class" "btn-primary"
+      "Message" "待ち行列に入れます。処理した行は元に戻しません（中断はできますが、再開はしません）。よろしいですか？")}}
+    {{- end}}
     <form method="post" action="/jobs/{{.Job.ID}}/cancel" class="mt-2">
       <button type="submit" class="btn btn-ghost btn-sm">取り消す</button>
     </form>

@@ -54,7 +54,7 @@
     <option value="{{.ID}}"{{if eq (printf "%d" .ID) $.Value}} selected{{end}}>{{.Name}}</option>
     {{- end}}
   </select>
-  {{- if .Error}}<p class="label text-error">{{.Error}}</p>{{else}}<p class="label">もう一方の側を登録するときは、このテナントで固定します</p>{{end}}
+  {{- if .Error}}<p class="label text-error">{{.Error}}</p>{{else if .Hint}}<p class="label">{{.Hint}}</p>{{end}}
 </fieldset>
 {{- end}}
 

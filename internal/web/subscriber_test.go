@@ -633,3 +633,39 @@ func TestAuditFailureDoesNotFailOperation(t *testing.T) {
 		t.Errorf("state = %d", w.Code)
 	}
 }
+
+// エラーの画面の案内のリンク（renderErrorLink）を出す。
+func TestErrorPageLink(t *testing.T) {
+	e := newTestEnv()
+	w := get(e.handler(t, "d@example.com"), "/accounts/99999")
+	if w.Code != 404 {
+		t.Fatalf("code = %d", w.Code)
+	}
+	mustContain(t, w.Body.String(), `href="/accounts"`, "アカウントの一覧へ", "トップへ")
+}
+
+// aka-provisioner が断った（4xx）操作は、その応答を覚えているので新しいキーにする（画面仕様 §1.5）。
+func TestOperationKeyAfterRefusal(t *testing.T) {
+	e := newTestEnv()
+	h := e.handler(t, "d@example.com")
+	e.pv.errs["radius.state.inactive"] = pvError(409, "SUBSCRIBER_TERMINATED")
+	w := post(h, "/subscribers/"+imsiOwn+"/state", form("side", "radius", "state", "inactive", "idem", testKey+"-state-radius-inactive"))
+	if w.Code != 409 {
+		t.Fatalf("code = %d", w.Code)
+	}
+	mustNotContain(t, w.Body.String(), `value="`+testKey+`-`)
+	mustContain(t, w.Body.String(), `name="idem"`)
+}
+
+// 止める操作は確認ダイアログを通す。使う操作は通さない。
+func TestStateConfirmDialogs(t *testing.T) {
+	e := newTestEnv()
+	h := e.handler(t, "d@example.com")
+	body := get(h, "/subscribers/"+imsiOwn).Body.String()
+	mustContain(t, body, `commandfor="dialog-state-radius-inactive"`, `form="state-radius-inactive"`,
+		`commandfor="dialog-state-both-inactive"`, `form="state-both-inactive"`)
+	post(h, "/subscribers/"+imsiOwn+"/state", form("side", "radius", "state", "inactive", "idem", testKey+"-a"))
+	body = get(h, "/subscribers/"+imsiOwn).Body.String()
+	mustNotContain(t, body, `dialog-state-radius-active`, `dialog-state-both-active`)
+	mustContain(t, body, "両方を使う")
+}

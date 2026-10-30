@@ -28,7 +28,7 @@
           {{- if .Errors.imsi}}{{template "field-error" .Errors.imsi}}{{else}}<p class="label">15 桁の数字</p>{{end}}
         </fieldset>
         {{- if .ShowTenantChoice}}
-        {{template "tenant-choice" (dict "Value" .Tenant "Tenants" .Tenants "Error" .Errors.tenant)}}
+        {{template "tenant-choice" (dict "Hint" "もう一方の側を登録するときは、このテナントで固定します" "Value" .Tenant "Tenants" .Tenants "Error" .Errors.tenant)}}
         {{- else}}
         <fieldset class="fieldset">
           <legend class="fieldset-legend">所属のテナント</legend>

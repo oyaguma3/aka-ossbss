@@ -331,3 +331,43 @@ func TestExternalIDs(t *testing.T) {
 		t.Errorf("tenant admin line external = %d", w.Code)
 	}
 }
+
+// テナント管理者の監査ログに外部の番号の変更を出さない（外部の番号は C・D だけの項目。Z15）。
+func TestTenantAdminAuditHidesExternalIDs(t *testing.T) {
+	e := newChargingEnv()
+	c := e.handler(t, "c@example.com")
+	if w := post(c, "/subscribers/"+imsiOwn+"/external", url.Values{"external": {"L-SECRET"}}); w.Code != 200 {
+		t.Fatalf("line external = %d", w.Code)
+	}
+	if w := post(c, "/tenants/10/external", url.Values{"external": {"C-SECRET"}}); w.Code != 200 {
+		t.Fatalf("tenant external = %d", w.Code)
+	}
+	b := e.handler(t, "b@example.com")
+	w := get(b, "/audit")
+	if w.Code != 200 {
+		t.Fatalf("tenant admin audit = %d", w.Code)
+	}
+	mustNotContain(t, w.Body.String(), "L-SECRET", "C-SECRET", audit.ActionLineExternal, audit.ActionTenantExternal,
+		audit.ActionChargingDownload, audit.ActionReconcileStart)
+	if w := get(b, "/audit?action="+audit.ActionLineExternal); w.Code != 400 {
+		t.Errorf("tenant admin action filter = %d", w.Code)
+	}
+	// 運用担当には出す。
+	mustContain(t, get(c, "/audit").Body.String(), "L-SECRET", "C-SECRET")
+}
+
+// 今すぐ締めると作り直しは確認ダイアログを通す。ファイルのない月の「作る」は通さない。
+func TestChargingConfirmDialogs(t *testing.T) {
+	e := newChargingEnv()
+	e.db.periods = []db.ChargingPeriod{octoberPeriod(db.PeriodFiled)}
+	e.db.files = []db.ChargingFile{{ID: 7, Period: octoberPeriod("").Period, Version: 1, FileName: "charging_202610_000003_v1.zip.pgp",
+		KeyFingerprint: "ABCDEF0123456789", Size: 2048, CreatedAt: time.Now()}}
+	h := e.handler(t, "d@example.com")
+	body := get(h, "/charging").Body.String()
+	mustContain(t, body, `commandfor="dialog-charging-close"`, `form="charging-close"`,
+		`commandfor="dialog-rebuild-2026-10"`, `form="rebuild-2026-10"`, "作り直す")
+	e.db.files = nil
+	body = get(h, "/charging").Body.String()
+	mustNotContain(t, body, "dialog-rebuild-2026-10")
+	mustContain(t, body, "作る")
+}
