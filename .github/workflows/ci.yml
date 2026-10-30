@@ -107,6 +107,9 @@ jobs:
           jq -e '.services["aka-ossbss"].secrets[] | select(.source == "kek") | .target | endswith("kek")' config.json
           jq -e '.secrets.kek.file | endswith("/secrets/kek")' config.json
           jq -e '.services["aka-ossbss"].environment.OSSBSS_KEK_FILE == "/run/secrets/kek"' config.json
+          # 突き合わせの設定（時刻と安全弁の上限）。
+          jq -e '.services["aka-ossbss"].environment.OSSBSS_RECONCILE_AT == "04:00"' config.json
+          jq -e '.services["aka-ossbss"].environment.OSSBSS_RECONCILE_MAX_FIXES == "1000"' config.json
           # 監査ログのファイルのディレクトリをマウントする。
           jq -e '.services["aka-ossbss"].volumes[] | select(.target == "/data/audit") | .source | endswith("/audit")' config.json
           jq -e '.services["aka-ossbss"].environment.OSSBSS_PROVISIONER_URL | endswith("/admin/v2")' config.json

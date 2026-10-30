@@ -36,6 +36,9 @@ services:
       # 一括投入の待ちのファイルを暗号化する KEK（設計概要 §10.1）。ファイルがなければ起動しない。
       OSSBSS_KEK_FILE: /run/secrets/kek
       OSSBSS_BULK_CONCURRENCY: ${OSSBSS_BULK_CONCURRENCY:-5}
+      # 毎日の突き合わせの時刻（日本時間）と、自動で直す数の上限（超えたら保留にする。設計概要 §9）。
+      OSSBSS_RECONCILE_AT: ${OSSBSS_RECONCILE_AT:-04:00}
+      OSSBSS_RECONCILE_MAX_FIXES: ${OSSBSS_RECONCILE_MAX_FIXES:-1000}
     secrets:
       - kek
     volumes:
