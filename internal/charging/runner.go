@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,7 @@ var ErrRunning = errors.New("charging job is running")
 
 // Store は Runner が使う DB の操作。*db.DB が満たす。
 type Store interface {
+	FileSource
 	audit.Inserter
 	EnsureUsagePartition(ctx context.Context, date time.Time) error
 	UpsertUsage(ctx context.Context, date time.Time, rows []db.UsageRow) (int64, error)
@@ -50,9 +52,14 @@ type Store interface {
 	MonthTenantEvents(ctx context.Context, start, end time.Time) ([]db.ChargingEvent, error)
 	OldestChargingEvent(ctx context.Context) (time.Time, bool, error)
 	OpenLines(ctx context.Context, month time.Time, afterIMSI string, limit int) ([]db.OpenLine, error)
-	ChargingTenantsOf(ctx context.Context, month time.Time) ([]db.ChargingTenant, error)
 	LatestChargingPeriod(ctx context.Context) (db.ChargingPeriod, bool, error)
+	ChargingPeriodOf(ctx context.Context, month time.Time) (db.ChargingPeriod, error)
+	PendingChargingPeriods(ctx context.Context) ([]db.ChargingPeriod, error)
 	WriteChargingPeriod(ctx context.Context, c db.ChargingClose, fn func(w db.ChargingWriter) error) (db.ChargingPeriod, error)
+	NextChargingFileVersion(ctx context.Context, month time.Time) (int, error)
+	InsertChargingFile(ctx context.Context, f db.ChargingFile) (db.ChargingFile, error)
+	InsertPGPKey(ctx context.Context, k db.PGPKey) (db.PGPKey, error)
+	CurrentPGPKey(ctx context.Context) (db.PGPKey, bool, error)
 	InsertScheduledRun(ctx context.Context, name string, startedAt time.Time) (int64, error)
 	FinishScheduledRun(ctx context.Context, id int64, status, detail string, finishedAt time.Time) error
 	TryNamedLock(ctx context.Context, name string) (release func(), ok bool, err error)
@@ -274,7 +281,7 @@ func (r *Runner) importDay(ctx context.Context, day time.Time) (int64, error) {
 
 // ---- 締め ----
 
-// closeDue は締めていない過去の月を古い順に締める（Z8）。取り込みに失敗しても締める
+// closeDue は締めていない過去の月を古い順に締め、ファイルのない月のファイルを作る（Z8）。取り込みに失敗しても締める
 // （欠けは usage_complete で示し、翌月の訂正で直す）。
 func (r *Runner) closeDue(ctx context.Context, by string) (string, error) {
 	var notes []string
@@ -298,7 +305,16 @@ func (r *Runner) closeDue(ctx context.Context, by string) (string, error) {
 	if len(months) == 0 {
 		notes = append(notes, "締める月はありません。")
 	}
-	return strings.Join(notes, " "), nil
+	made, err := r.buildPending(ctx, by)
+	notes = append(notes, made...)
+	state, sErr := r.keyState(ctx)
+	if sErr != nil {
+		return strings.Join(notes, " "), sErr
+	}
+	if state.Warning != "" {
+		r.opts.Log.Warn("charging key", "event_id", "CHARGING_KEY_WARN", "warning", state.Warning)
+	}
+	return strings.Join(notes, " "), err
 }
 
 // dueMonths は締める月を古い順に返す。対象は最も古い事実の月から、今の月の前の月まで（事実のない月も）。
@@ -542,4 +558,152 @@ func (r *Runner) computeTenants(ctx context.Context, p Period, counter *TenantCo
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// ---- ファイル ----
+
+// keyState は今の鍵の状態を読む。
+func (r *Runner) keyState(ctx context.Context) (KeyState, error) {
+	pending, err := r.opts.DB.PendingChargingPeriods(ctx)
+	if err != nil {
+		return KeyState{}, err
+	}
+	k, ok, err := r.opts.DB.CurrentPGPKey(ctx)
+	if err != nil {
+		return KeyState{}, err
+	}
+	if !ok {
+		return EvaluateKey(r.opts.Now(), nil, len(pending)), nil
+	}
+	return EvaluateKey(r.opts.Now(), &k, len(pending)), nil
+}
+
+// buildPending は、使える鍵があれば、ファイルのない月のファイルを古い順に作る。作った文を返す。鍵がなければ何もしない（決定事項 21）。
+func (r *Runner) buildPending(ctx context.Context, by string) ([]string, error) {
+	state, err := r.keyState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pending, err := r.opts.DB.PendingChargingPeriods(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(pending) == 0 {
+		return nil, nil
+	}
+	if !state.Usable() {
+		return []string{fmt.Sprintf("鍵がないので %d か月分のファイルを保留しました。", len(pending))}, nil
+	}
+	var notes []string
+	for _, p := range pending {
+		f, err := r.buildFile(ctx, p, *state.Key, by)
+		if err != nil {
+			return notes, err
+		}
+		notes = append(notes, f.FileName+" を作りました。")
+	}
+	return notes, nil
+}
+
+// buildFile は月のファイルを作って保存する。
+func (r *Runner) buildFile(ctx context.Context, period db.ChargingPeriod, key db.PGPKey, by string) (db.ChargingFile, error) {
+	now := r.opts.Now()
+	p := NewPeriod(period.Period)
+	fail := func(err error) (db.ChargingFile, error) {
+		if ctx.Err() == nil {
+			r.opts.Log.Error("charging file failed", "event_id", "CHARGING_FILE_ERR", "period", p.Label(), "error", err)
+		}
+		return db.ChargingFile{}, fmt.Errorf("%s のファイルを作れませんでした: %w", p.Label(), err)
+	}
+	ent, _, err := ParsePublicKey(key.Armored, now)
+	if err != nil {
+		return fail(err)
+	}
+	version, err := r.opts.DB.NextChargingFileVersion(ctx, p.Start)
+	if err != nil {
+		return fail(err)
+	}
+	res, err := BuildFile(ctx, r.opts.DB, p, period.Sequence, version, ent, now)
+	if err != nil {
+		return fail(err)
+	}
+	f, err := r.opts.DB.InsertChargingFile(ctx, db.ChargingFile{Period: p.Start, Version: version, FileName: FileName(p, period.Sequence, version),
+		KeyFingerprint: key.Fingerprint, ZipSHA256: res.ZipSHA256, Manifest: res.Manifest, EventCount: res.EventCount, LineCount: res.LineCount,
+		TenantCount: res.TenantCount, AdjCount: res.AdjCount, CreatedAt: now, CreatedBy: by, Data: res.Data})
+	if err != nil {
+		return fail(err)
+	}
+	r.record(ctx, by, audit.ActionChargingFile, f.FileName, map[string]any{"period": p.Label(), "version": version, "fingerprint": key.Fingerprint,
+		"sha256": res.ZipSHA256, "events": res.EventCount, "lines": res.LineCount, "tenants": res.TenantCount, "adjustments": res.AdjCount})
+	return f, nil
+}
+
+// ErrNotClosed は、その月を締めていないこと。
+var ErrNotClosed = errors.New("the period is not closed")
+
+// StartRebuild はファイルの作り直しを始めてすぐに戻る。ファイルのある月と、最新でない月は、保存した月次の値から作る。ファイルのない最新の
+// 月だけ、計算し直してから作る（Z12）。
+func (r *Runner) StartRebuild(ctx context.Context, month time.Time, by string) error {
+	period, err := r.opts.DB.ChargingPeriodOf(ctx, month)
+	if errors.Is(err, db.ErrNotFound) {
+		return ErrNotClosed
+	}
+	if err != nil {
+		return err
+	}
+	state, err := r.keyState(ctx)
+	if err != nil {
+		return err
+	}
+	if !state.Usable() {
+		return ErrNoKey
+	}
+	latest, _, err := r.opts.DB.LatestChargingPeriod(ctx)
+	if err != nil {
+		return err
+	}
+	return r.startJob(ctx, JobRebuild, func(ctx context.Context) (string, error) {
+		var notes []string
+		if period.State == db.PeriodComputed && latest.Period.Equal(period.Period) {
+			p, err := r.closeMonth(ctx, NewPeriod(period.Period), by)
+			if err != nil {
+				return "", err
+			}
+			period = p
+			notes = append(notes, NewPeriod(p.Period).Label()+" を計算し直しました。")
+		}
+		f, err := r.buildFile(ctx, period, *state.Key, by)
+		if err != nil {
+			return strings.Join(notes, " "), err
+		}
+		return strings.Join(append(notes, f.FileName+" を作りました。"), " "), nil
+	})
+}
+
+// RegisterKey は公開鍵を今の鍵にする。ファイルのない月があれば、裏で作り始める（Z13）。登録できない鍵は *KeyError を返す。
+func (r *Runner) RegisterKey(ctx context.Context, armored, by string) (db.PGPKey, error) {
+	now := r.opts.Now()
+	_, info, err := ParsePublicKey(armored, now)
+	if err != nil {
+		return db.PGPKey{}, err
+	}
+	k, err := r.opts.DB.InsertPGPKey(ctx, db.PGPKey{Armored: armored, Fingerprint: info.Fingerprint, Algorithm: info.Algorithm, ExpiresAt: info.ExpiresAt, CreatedAt: now, CreatedBy: by})
+	if err != nil {
+		return db.PGPKey{}, err
+	}
+	r.record(ctx, by, audit.ActionChargingKey, k.Fingerprint, map[string]any{"algorithm": k.Algorithm, "expiresAt": formatTime(k.ExpiresAt), "id": strconv.FormatInt(k.ID, 10)})
+	pending, err := r.opts.DB.PendingChargingPeriods(ctx)
+	if err != nil {
+		return k, err
+	}
+	if len(pending) > 0 {
+		// 動いていれば、その実行か次の定刻の締めで作る。
+		if err := r.startJob(ctx, JobClose, func(ctx context.Context) (string, error) {
+			notes, err := r.buildPending(ctx, by)
+			return strings.Join(notes, " "), err
+		}); err != nil && !errors.Is(err, ErrRunning) {
+			return k, err
+		}
+	}
+	return k, nil
 }
