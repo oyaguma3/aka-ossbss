@@ -41,6 +41,10 @@ type Config struct {
 	KEKFile string
 	// BulkConcurrency は一括投入の同時の呼び出しの数（設計概要 §10.3）。
 	BulkConcurrency int
+	// ReconcileAt は毎日の突き合わせの時刻（日本時間の HH:MM。設計概要 §9）。ReconcileMaxFixes は自動で直す数の上限
+	// （超えたら保留にする。Y4）。
+	ReconcileAt       string
+	ReconcileMaxFixes int
 	// DevUserEmail は開発用の設定（もとの設計概要 §15 の 10）。JWT の検証の代わりに、このメールアドレスの利用者として動かす。
 	// Addr がループバックのときだけ使え、Access の設定とは同時に使えない。
 	DevUserEmail string
@@ -88,9 +92,11 @@ func Load() (Config, error) {
 			ServerCertFile: cmp.Or(os.Getenv("OSSBSS_PROVISIONER_SERVER_CERT"), "/certs/provisioner-server.pem"),
 			Timeout:        15 * time.Second,
 		},
-		AuditDir:        cmp.Or(os.Getenv("OSSBSS_AUDIT_DIR"), "/data/audit"),
-		KEKFile:         cmp.Or(os.Getenv("OSSBSS_KEK_FILE"), "/run/secrets/kek"),
-		BulkConcurrency: 5,
+		AuditDir:          cmp.Or(os.Getenv("OSSBSS_AUDIT_DIR"), "/data/audit"),
+		KEKFile:           cmp.Or(os.Getenv("OSSBSS_KEK_FILE"), "/run/secrets/kek"),
+		BulkConcurrency:   5,
+		ReconcileAt:       cmp.Or(os.Getenv("OSSBSS_RECONCILE_AT"), "04:00"),
+		ReconcileMaxFixes: 1000,
 		DB: DB{
 			Addr:     cmp.Or(os.Getenv("OSSBSS_DB_ADDR"), "postgres:5432"),
 			Name:     cmp.Or(os.Getenv("OSSBSS_DB_NAME"), "ossbss"),
@@ -110,8 +116,9 @@ func Load() (Config, error) {
 	if _, _, err := net.SplitHostPort(c.DB.Addr); err != nil {
 		errs = append(errs, fmt.Errorf("OSSBSS_DB_ADDR: %w", err))
 	}
-	// 画面に加えて、一括投入の 2 本の待ち行列（対象ごとに同時 5 件。行の処理の間 1 つ使う。ロックに 1 つ）が使う。
-	c.DB.MaxConns = 20
+	// 画面に加えて、一括投入の 2 本の待ち行列（対象ごとに同時 5 件。行の処理の間 1 つ使う。ロックに 1 つ）と、
+	// 定期の処理（処理ごとのロックに 1 つ、突き合わせはさらにロックと行の処理に 2 つ）が使う。
+	c.DB.MaxConns = 30
 	if v := os.Getenv("OSSBSS_DB_MAX_CONNS"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil || n < 1 || n > 100 {
@@ -125,6 +132,16 @@ func Load() (Config, error) {
 			errs = append(errs, fmt.Errorf("OSSBSS_BULK_CONCURRENCY: must be an integer between 1 and %d", maxBulkConcurrency))
 		}
 		c.BulkConcurrency = n
+	}
+	if _, err := time.Parse("15:04", c.ReconcileAt); err != nil {
+		errs = append(errs, errors.New("OSSBSS_RECONCILE_AT: must be a time such as 04:00"))
+	}
+	if v := os.Getenv("OSSBSS_RECONCILE_MAX_FIXES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			errs = append(errs, errors.New("OSSBSS_RECONCILE_MAX_FIXES: must be a positive integer"))
+		}
+		c.ReconcileMaxFixes = n
 	}
 	if u, err := url.Parse(c.Provisioner.URL); err != nil || u.Scheme != "https" || u.Host == "" {
 		errs = append(errs, errors.New("OSSBSS_PROVISIONER_URL: must be an https URL such as https://aka-provisioner:9446/admin/v2"))

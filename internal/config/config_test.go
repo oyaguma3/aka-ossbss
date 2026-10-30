@@ -22,8 +22,11 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Addr != ":8446" || c.LogLevel != slog.LevelInfo || c.DB != (DB{Addr: "postgres:5432", Name: "ossbss", User: "ossbss", Password: "pw", MaxConns: 20}) {
+	if c.Addr != ":8446" || c.LogLevel != slog.LevelInfo || c.DB != (DB{Addr: "postgres:5432", Name: "ossbss", User: "ossbss", Password: "pw", MaxConns: 30}) {
 		t.Errorf("config = %+v", c)
+	}
+	if c.ReconcileAt != "04:00" || c.ReconcileMaxFixes != 1000 {
+		t.Errorf("reconcile at = %q, max fixes = %d", c.ReconcileAt, c.ReconcileMaxFixes)
 	}
 	if c.KEKFile != "/run/secrets/kek" || c.BulkConcurrency != 5 {
 		t.Errorf("kek file = %q, bulk concurrency = %d", c.KEKFile, c.BulkConcurrency)
@@ -147,5 +150,24 @@ func TestBulkConcurrency(t *testing.T) {
 		if _, err := Load(); err == nil {
 			t.Errorf("OSSBSS_BULK_CONCURRENCY=%s was accepted", v)
 		}
+	}
+}
+
+func TestReconcileSettings(t *testing.T) {
+	setAccess(t)
+	t.Setenv("OSSBSS_RECONCILE_AT", "05:30")
+	t.Setenv("OSSBSS_RECONCILE_MAX_FIXES", "20")
+	c, err := Load()
+	if err != nil || c.ReconcileAt != "05:30" || c.ReconcileMaxFixes != 20 {
+		t.Errorf("config = %+v, %v", c, err)
+	}
+	t.Setenv("OSSBSS_RECONCILE_AT", "25:00")
+	if _, err := Load(); err == nil {
+		t.Error("OSSBSS_RECONCILE_AT=25:00 was accepted")
+	}
+	t.Setenv("OSSBSS_RECONCILE_AT", "04:00")
+	t.Setenv("OSSBSS_RECONCILE_MAX_FIXES", "0")
+	if _, err := Load(); err == nil {
+		t.Error("OSSBSS_RECONCILE_MAX_FIXES=0 was accepted")
 	}
 }

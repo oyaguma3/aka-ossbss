@@ -373,25 +373,5 @@ const jobLockClass = 0x0553_0003
 // TryJobLock は対象の待ち行列のロックを取る（aka-ossbss は 1 台だが念のため。X9）。取れたら解放の関数を返す。
 // ロックは接続に結び付くので、解放するまで接続を 1 つ持つ。
 func (d *DB) TryJobLock(ctx context.Context, target Side) (release func(), ok bool, err error) {
-	conn, err := d.Pool.Acquire(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("job lock: %w", err)
-	}
-	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1::int, hashtext($2))", jobLockClass, string(target)).Scan(&ok); err != nil {
-		conn.Release()
-		return nil, false, fmt.Errorf("job lock: %w", err)
-	}
-	if !ok {
-		conn.Release()
-		return nil, false, nil
-	}
-	return func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if _, err := conn.Exec(ctx, "SELECT pg_advisory_unlock($1::int, hashtext($2))", jobLockClass, string(target)); err != nil {
-			// 解放できなければ接続を閉じる（閉じればロックも外れる）。
-			_ = conn.Conn().Close(ctx)
-		}
-		conn.Release()
-	}, true, nil
+	return d.tryLock(ctx, jobLockClass, string(target))
 }
