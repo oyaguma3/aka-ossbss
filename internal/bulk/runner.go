@@ -234,6 +234,7 @@ func (r *Runner) Interrupt(ctx context.Context, id int64, by string) (db.Job, er
 		}
 	}
 	r.recordJob(ctx, job, by, audit.ActionJobInterrupt, resultDetail(job))
+	r.opts.Log.Warn("interrupted a queued job", "event_id", "JOB_INTERRUPTED", "job_id", job.ID, "kind", job.Kind, "reason", reasonRequested)
 	return job, nil
 }
 
@@ -264,7 +265,6 @@ func traceID(job db.Job) string { return "job-" + job.JobID() }
 func (r *Runner) runJob(ctx context.Context, job db.Job) {
 	log := r.opts.Log.With("job_id", job.ID, "kind", job.Kind)
 	abort := func(reason string) {
-		log.Warn("job interrupted before it started", "event_id", "JOB_INTERRUPTED", "reason", reason)
 		r.finish(ctx, job, db.JobCounts{Unprocessed: job.Total}, nil, db.JobInterrupted, reason, job.CreatedBy)
 	}
 	var settings Settings
@@ -420,8 +420,14 @@ func (r *Runner) finish(ctx context.Context, job db.Job, delta db.JobCounts, row
 		action = audit.ActionJobInterrupt
 	}
 	r.recordJob(ctx, done, by, action, resultDetail(done))
-	log.Info("job finished", "state", state, "ok", done.OK, "exists", done.Exists, "absent", done.Absent, "failed", done.Failed,
-		"unprocessed", done.Unprocessed, "excluded", done.Excluded, "reason", reason)
+	attrs := []any{"state", state, "ok", done.OK, "exists", done.Exists, "absent", done.Absent, "failed", done.Failed,
+		"unprocessed", done.Unprocessed, "excluded", done.Excluded, "reason", reason}
+	if state == db.JobInterrupted {
+		// 監視は event_id で拾う（運用ガイド 10.2）。
+		log.Warn("job interrupted", append([]any{"event_id", "JOB_INTERRUPTED"}, attrs...)...)
+		return
+	}
+	log.Info("job finished", attrs...)
 }
 
 // resultDetail はジョブの結果の監査ログの内容。

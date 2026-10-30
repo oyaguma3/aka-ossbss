@@ -974,3 +974,60 @@ func TestAAD(t *testing.T) {
 		t.Errorf("AAD = %q", got)
 	}
 }
+
+// 中断はどの道筋でも、監視が拾えるよう JOB_INTERRUPTED を 1 回だけログに出す（運用ガイド 6.3・10.2）。完了では出さない。
+func TestInterruptLogsEvent(t *testing.T) {
+	const event = `"event_id":"JOB_INTERRUPTED"`
+	capture := func(e *env) *bytes.Buffer {
+		var buf bytes.Buffer
+		e.r.opts.Log = slog.New(slog.NewJSONHandler(&buf, nil))
+		return &buf
+	}
+	t.Run("自動の中断", func(t *testing.T) {
+		e := newEnv(t, 1)
+		logs := capture(e)
+		e.p.fail = func(string, string) (error, bool) { return pvErr(503, provisioner.CauseDownstreamUnavailable), false }
+		e.p.batchErr = pvErr(503, provisioner.CauseDownstreamUnavailable)
+		e.queue(t, RadiusCreate, radiusSettings(), lines(1, 30))
+		e.run(t, db.SideRadius)
+		if n := strings.Count(logs.String(), event); n != 1 {
+			t.Errorf("count = %d\n%s", n, logs)
+		}
+		if !strings.Contains(logs.String(), `"level":"WARN"`) || !strings.Contains(logs.String(), reasonAuto) {
+			t.Errorf("logs = %s", logs)
+		}
+	})
+	t.Run("待ちのジョブの中断", func(t *testing.T) {
+		e := newEnv(t, 1)
+		logs := capture(e)
+		id := e.queue(t, VecgenDelete, Settings{}, lines(1, 3))
+		if _, err := e.r.Interrupt(t.Context(), id, "d@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(logs.String(), event); n != 1 {
+			t.Errorf("count = %d\n%s", n, logs)
+		}
+	})
+	t.Run("始まる前の中断", func(t *testing.T) {
+		e := newEnv(t, 1)
+		logs := capture(e)
+		id := e.queue(t, RadiusCreate, radiusSettings(), lines(1, 3))
+		e.s.sealed[id] = []byte("broken") // 復号できないファイル
+		e.run(t, db.SideRadius)
+		if j := e.s.job(id); j.State != db.JobInterrupted {
+			t.Errorf("state = %s", j.State)
+		}
+		if n := strings.Count(logs.String(), event); n != 1 {
+			t.Errorf("count = %d\n%s", n, logs)
+		}
+	})
+	t.Run("完了では出さない", func(t *testing.T) {
+		e := newEnv(t, 1)
+		logs := capture(e)
+		e.queue(t, RadiusCreate, radiusSettings(), lines(1, 3))
+		e.run(t, db.SideRadius)
+		if strings.Contains(logs.String(), event) {
+			t.Errorf("logs = %s", logs)
+		}
+	})
+}
