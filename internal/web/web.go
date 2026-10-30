@@ -18,6 +18,7 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/auth"
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/ledger"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
@@ -78,8 +79,9 @@ type Handler struct {
 	db      DB
 	ident   auth.Identifier
 	pv      Provisioner
-	// audit は監査ログの日ごとのファイル（nil なら書かない）。
-	audit *audit.Files
+	// ops は加入者の操作の手順、rec は監査ログ。
+	ops *ledger.Ops
+	rec *audit.Recorder
 	// initialAdmin は最初のシステム管理者のメールアドレス（画面からの削除・降格・無効化を断る）。
 	initialAdmin string
 	pages        pages
@@ -108,7 +110,8 @@ func New(opts Options) (*Handler, error) {
 		return nil, fmt.Errorf("web: identifier and provisioner are required")
 	}
 	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner,
-		audit: opts.AuditFiles, initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
+		ops: &ledger.Ops{DB: opts.DB, PV: opts.Provisioner, Log: opts.Log}, rec: &audit.Recorder{DB: opts.DB, Files: opts.AuditFiles, Log: opts.Log},
+		initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
 	var err error
 	if h.pages, err = parsePages(); err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"maps"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -230,15 +229,15 @@ func keepIdemKey(err error, key string) string {
 
 // aka-ossbss の監査ログの操作の名前。
 const (
-	auditVecgenCreate     = "subscriber.vecgen.create"
-	auditRadiusCreate     = "subscriber.radius.create"
+	auditVecgenCreate     = audit.ActionVecgenCreate
+	auditRadiusCreate     = audit.ActionRadiusCreate
 	auditReregister       = "subscriber.reregister"
 	auditVecgenUpdate     = "subscriber.vecgen.update"
 	auditSourceUpdate     = "subscriber.radius.source"
 	auditPolicyUpdate     = "subscriber.radius.rules"
 	auditStateChange      = "subscriber.state"
 	auditReinstate        = "subscriber.reinstate"
-	auditSubscriberDelete = "subscriber.delete"
+	auditSubscriberDelete = audit.ActionSubscriberDelete
 	auditTenantMove       = "subscriber.tenant"
 	auditCheck            = "subscriber.check"
 	auditTenantCreate     = "tenant.create"
@@ -252,29 +251,16 @@ const (
 )
 
 // record は、成功した操作を aka-ossbss の監査ログ（PostgreSQL と日ごとのファイル）に残す。tenant は対象のテナント
-// （テナントに属さないものは 0）。detail に秘密の値（Ki / OPc）を入れてはならない。書き込みに失敗しても操作は済んでいるので、
-// ERROR のログを出して続ける。
+// （テナントに属さないものは 0）。detail に秘密の値（Ki / OPc）を入れてはならない。
 func (h *Handler) record(r *http.Request, action, target string, tenant int64, detail map[string]any) {
+	h.recordEntry(r, db.AuditEntry{TenantID: tenant, Action: action, Target: target, Detail: detail})
+}
+
+// recordEntry は監査ログを書く（操作者・トレースID・接続元は要求から入れる）。
+func (h *Handler) recordEntry(r *http.Request, e db.AuditEntry) {
 	u := userFrom(r.Context())
-	e := db.AuditEntry{ActorEmail: u.Email, ActorRole: u.Role, TenantID: tenant, Action: action, Target: target,
-		Detail: maps.Clone(detail), TraceID: trace.From(r.Context()), Remote: h.ident.ClientIP(r)}
-	// 要求が取り消されても（利用者が画面を閉じても）、済んだ操作の記録は残す。
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), dbTimeout)
-	defer cancel()
-	id, at, err := h.db.InsertAudit(ctx, e)
-	if err != nil {
-		h.log.Error("audit log write failed", "event_id", "AUDIT_DB_ERR", "action", action, "target", target, "user", u.Email,
-			"trace_id", e.TraceID, "error", err)
-		at = time.Now()
-	}
-	if h.audit == nil {
-		return
-	}
-	if err := h.audit.Append(audit.Entry{ID: id, Time: at, ActorEmail: e.ActorEmail, ActorRole: string(e.ActorRole), TenantID: tenant,
-		Action: action, Target: target, Detail: e.Detail, TraceID: e.TraceID, Remote: e.Remote, JobID: e.JobID}); err != nil {
-		h.log.Error("audit log file write failed", "event_id", "AUDIT_FILE_ERR", "action", action, "target", target,
-			"trace_id", e.TraceID, "error", err)
-	}
+	e.ActorEmail, e.ActorRole, e.TraceID, e.Remote = u.Email, u.Role, trace.From(r.Context()), h.ident.ClientIP(r)
+	h.rec.Record(r.Context(), e)
 }
 
 // recordMove は、テナントが from から to に変わる操作（所属の付け替え、アカウントのテナントの変更）を監査ログに残す。

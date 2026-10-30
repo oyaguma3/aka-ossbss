@@ -11,6 +11,7 @@ import (
 
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/ledger"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
@@ -203,25 +204,33 @@ func (h *Handler) policyEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.Dirty = true
-	op, arg, _ := strings.Cut(r.PostForm.Get("op"), ":")
-	i, convErr := strconv.Atoi(arg)
-	inRange := convErr == nil && i >= 0 && i < len(d.Rules)
-	switch {
-	case op == "add":
-		if len(d.Rules) >= maxRules {
-			d.Error = fmt.Sprintf("ルールは %d 件までです。", maxRules)
-			break
-		}
-		// 新しいルールは、すべての AP・SSID に一致する形で末尾に足す（上から順に評価するので、必要なら上へ動かす）。
-		d.Rules = append(d.Rules, ruleForm{NASID: "*", SSIDs: "*", TenantID: e.TenantID, Errors: fieldErrors{}})
-	case op == "remove" && inRange:
-		d.Rules = slices.Delete(d.Rules, i, i+1)
-	case op == "up" && inRange && i > 0:
-		d.Rules[i-1], d.Rules[i] = d.Rules[i], d.Rules[i-1]
-	case op == "down" && inRange && i < len(d.Rules)-1:
-		d.Rules[i], d.Rules[i+1] = d.Rules[i+1], d.Rules[i]
+	before := len(d.Rules)
+	d.Rules = applyRuleOp(d.Rules, r.PostForm.Get("op"), e.TenantID)
+	if len(d.Rules) > maxRules {
+		d.Rules = d.Rules[:before]
+		d.Error = fmt.Sprintf("ルールは %d 件までです。", maxRules)
 	}
 	h.renderPolicy(w, r, http.StatusOK, d)
+}
+
+// applyRuleOp はルールの編集の操作を行う。op は add / remove:N / up:N / down:N（N は 0 からのルールの番号）。
+// 新しいルール（テナントは tenant）は、すべての AP・SSID に一致する形で末尾に足す（上から順に評価するので、必要なら上へ動かす）。
+// add の後の件数は呼び出し側で確かめる。
+func applyRuleOp(rules []ruleForm, op string, tenant int64) []ruleForm {
+	name, arg, _ := strings.Cut(op, ":")
+	i, convErr := strconv.Atoi(arg)
+	inRange := convErr == nil && i >= 0 && i < len(rules)
+	switch {
+	case name == "add":
+		rules = append(rules, ruleForm{NASID: "*", SSIDs: "*", TenantID: tenant, Errors: fieldErrors{}})
+	case name == "remove" && inRange:
+		rules = slices.Delete(rules, i, i+1)
+	case name == "up" && inRange && i > 0:
+		rules[i-1], rules[i] = rules[i], rules[i-1]
+	case name == "down" && inRange && i < len(rules)-1:
+		rules[i], rules[i+1] = rules[i+1], rules[i]
+	}
+	return rules
 }
 
 // applyInvalidParams は aka-radius の invalidParams を、該当するルールの項目の誤りとして書き込む。
@@ -270,7 +279,7 @@ func (h *Handler) policySave(w http.ResponseWriter, r *http.Request) {
 		h.renderPolicy(w, r, http.StatusBadRequest, d)
 		return
 	}
-	o, err := h.runLedger(r, e.IMSI, ledgerStep{
+	o, err := h.runLedger(r, e.IMSI, ledger.Step{
 		Check: func(cur db.Entry, exists bool) string {
 			switch {
 			case !exists || !cur.RadiusPresent:

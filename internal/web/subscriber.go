@@ -10,6 +10,7 @@ import (
 
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/ledger"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
@@ -410,7 +411,7 @@ func formSide(r *http.Request) (db.Side, bool) {
 }
 
 // sideResult は、1 つの側の操作の結果を文にする（成功なら ok の文）。
-func (h *Handler) sideResult(r *http.Request, side db.Side, o ledgerOutcome, err error, what, ok string) (msg string, failed bool) {
+func (h *Handler) sideResult(r *http.Request, side db.Side, o ledger.Outcome, err error, what, ok string) (msg string, failed bool) {
 	switch {
 	case err != nil:
 		return sideLabel(side) + "の" + what + "は済みましたが、台帳を書けませんでした（結果を確かめる印を付けました）。", true
@@ -453,7 +454,7 @@ func (h *Handler) subscriberState(w http.ResponseWriter, r *http.Request) {
 	var msgs []string
 	failed := false
 	for _, side := range sides {
-		o, err := h.runLedger(r, e.IMSI, ledgerStep{
+		o, err := h.runLedger(r, e.IMSI, ledger.Step{
 			Check: func(cur db.Entry, exists bool) string {
 				switch {
 				case !exists || !cur.Present(side):
@@ -482,7 +483,7 @@ func (h *Handler) subscriberState(w http.ResponseWriter, r *http.Request) {
 }
 
 // resultWord は監査ログに残す結果（ok / unknown）。
-func resultWord(o ledgerOutcome, err error) string {
+func resultWord(o ledger.Outcome, err error) string {
 	if o.Unknown || err != nil {
 		return "unknown"
 	}
@@ -524,7 +525,7 @@ func (h *Handler) subscriberReinstate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := formIdemKey(r, "idem")
-	o, err := h.runLedger(r, e.IMSI, ledgerStep{
+	o, err := h.runLedger(r, e.IMSI, ledger.Step{
 		Check: func(cur db.Entry, exists bool) string {
 			if !exists || cur.State(side) != db.StateTerminated {
 				return sideLabel(side) + "は解約ではありません。画面を開き直してください。"
@@ -559,7 +560,7 @@ func (h *Handler) subscriberDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	key := formIdemKey(r, "idem")
 	var state string
-	o, err := h.runLedger(r, e.IMSI, ledgerStep{
+	o, err := h.runLedger(r, e.IMSI, ledger.Step{
 		Check: func(cur db.Entry, exists bool) string {
 			switch {
 			case !exists || !cur.Present(side):
@@ -644,7 +645,7 @@ func (h *Handler) vecgenUpdate(w http.ResponseWriter, r *http.Request) {
 		h.renderSubscriber(w, r, e.IMSI, http.StatusOK, func(d *subscriberData) { d.Message = "変更はありません。" })
 		return
 	}
-	o, err := h.runLedger(r, e.IMSI, ledgerStep{
+	o, err := h.runLedger(r, e.IMSI, ledger.Step{
 		Check: func(cur db.Entry, exists bool) string {
 			if !exists || !cur.VecgenPresent {
 				return sideLabel(db.SideVecgen) + "には登録されていません。"
@@ -676,7 +677,7 @@ func (h *Handler) sourceUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	key := formIdemKey(r, "idem")
 	var from string
-	o, err := h.runLedger(r, e.IMSI, ledgerStep{
+	o, err := h.runLedger(r, e.IMSI, ledger.Step{
 		Check: func(cur db.Entry, exists bool) string {
 			switch {
 			case !exists || !cur.RadiusPresent:
@@ -726,7 +727,7 @@ func (h *Handler) tenantMove(w http.ResponseWriter, r *http.Request) {
 	}
 	key := formIdemKey(r, "idem")
 	from := e.TenantID
-	o, err := h.runLedger(r, e.IMSI, ledgerStep{
+	o, err := h.runLedger(r, e.IMSI, ledger.Step{
 		Check: func(cur db.Entry, exists bool) string {
 			switch {
 			case !exists || cur.Deleted() || cur.Pending():

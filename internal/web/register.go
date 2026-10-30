@@ -10,6 +10,7 @@ import (
 
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/ledger"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
 
@@ -177,8 +178,8 @@ func (h *Handler) registerTarget(w http.ResponseWriter, r *http.Request, f *regi
 }
 
 // registerStep は登録の操作（台帳の確かめ・下流の呼び出し・台帳の変更）を組み立てる。
-func registerStep(f registerForm, tenant int64, fresh bool, call func(ctx context.Context) error) ledgerStep {
-	return ledgerStep{
+func registerStep(f registerForm, tenant int64, fresh bool, call func(ctx context.Context) error) ledger.Step {
+	return ledger.Step{
 		Check: func(cur db.Entry, exists bool) string {
 			// 確かめた後に台帳が変わっていれば、登録しない（所属のテナントを決め直す）。
 			nowFresh := !exists || cur.Deleted()
@@ -203,7 +204,7 @@ func registerStep(f registerForm, tenant int64, fresh bool, call func(ctx contex
 }
 
 // finishRegister は登録の結果を返す（成功・結果が分からず台帳がある: 詳細へ。それ以外: フォームに誤り）。
-func (h *Handler) finishRegister(w http.ResponseWriter, r *http.Request, f registerForm, tenant int64, o ledgerOutcome, err error,
+func (h *Handler) finishRegister(w http.ResponseWriter, r *http.Request, f registerForm, tenant int64, o ledger.Outcome, err error,
 	audit map[string]any) {
 	action := auditVecgenCreate
 	if f.Side == db.SideRadius {

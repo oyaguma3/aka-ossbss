@@ -126,6 +126,11 @@ func (h *Handler) apiError(r *http.Request, err error, side db.Side) apiFailure 
 	return apiErrorFor(err, side, isStaff(r))
 }
 
+// DescribeProvisionerError は aka-provisioner の呼び出しの誤りを、運用者に見せる文にする（一括投入の結果の行に使う）。
+func DescribeProvisionerError(err error, side db.Side) string {
+	return apiErrorFor(err, side, true).Message
+}
+
 func apiErrorFor(err error, side db.Side, staff bool) apiFailure {
 	where := sideLabel(side)
 	if provisioner.IsUnavailable(err) {

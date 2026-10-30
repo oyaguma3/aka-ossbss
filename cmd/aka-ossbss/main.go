@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 	// distroless のイメージにはタイムゾーンのデータがないので、埋め込んで環境変数 TZ を効かせる。
@@ -19,9 +20,11 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/access"
 	"github.com/oyaguma3/aka-ossbss/internal/audit"
 	"github.com/oyaguma3/aka-ossbss/internal/auth"
+	"github.com/oyaguma3/aka-ossbss/internal/bulk"
 	"github.com/oyaguma3/aka-ossbss/internal/certs"
 	"github.com/oyaguma3/aka-ossbss/internal/config"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/kek"
 	"github.com/oyaguma3/aka-ossbss/internal/server"
 	"github.com/oyaguma3/aka-ossbss/internal/web"
 )
@@ -164,6 +167,24 @@ func serve(ctx context.Context) error {
 	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	checkAtStartup(checkCtx, log, pv)
 	cancel()
+
+	// 一括投入の待ちのファイルの KEK（設計概要 §10.1。X3）。なければ起動しない。
+	key, err := kek.Load(cfg.KEKFile)
+	if err != nil {
+		log.Error("cannot load the KEK", "event_id", "KEK_ERR", "file", cfg.KEKFile, "error", err)
+		return err
+	}
+	log.Info("kek", "kek_id", key.ID())
+	// 一括投入のジョブ（設計概要 §10.3。X9）。動いていたジョブは中断にし、待っていたジョブは続けて動かす。
+	jobs := bulk.New(bulk.Options{Log: log, DB: d, PV: pv, KEK: key, Audit: &audit.Recorder{DB: d, Files: auditFiles, Log: log},
+		Concurrency: cfg.BulkConcurrency, Describe: web.DescribeProvisionerError})
+	if err := jobs.Recover(ctx); err != nil {
+		return err
+	}
+	var jobsDone sync.WaitGroup
+	jobsDone.Go(func() { jobs.Run(bgCtx) })
+	defer jobsDone.Wait()
+	defer stopBG()
 
 	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv,
 		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail})
