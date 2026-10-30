@@ -142,6 +142,16 @@ func (f *flow) importedAll(start, end time.Time) {
 	}
 }
 
+func (f *flow) close(t time.Time) string {
+	f.t.Helper()
+	f.clk.set(t)
+	text, err := f.r.RunClose(f.t.Context())
+	if err != nil {
+		f.t.Fatalf("close: %v (%s)", err, text)
+	}
+	return text
+}
+
 func (f *flow) lines(month time.Time) map[string]db.ChargingLine {
 	f.t.Helper()
 	rows, err := f.d.ChargingLinesPage(f.t.Context(), month, "", 0, 1000)
@@ -153,6 +163,56 @@ func (f *flow) lines(month time.Time) map[string]db.ChargingLine {
 		out[r.IMSI+"/"+strconv.FormatInt(r.TenantID, 10)] = r
 	}
 	return out
+}
+
+// 定刻の締めは、動いている取り込みが終わるのを待って動く（飛ばさない）。
+func TestChargingScheduledRunsWait(t *testing.T) {
+	f := newFlow(t)
+	ctx := t.Context()
+	f.tenant(1, "テナント1", at(2031, 3, 2, 10, 0))
+	f.clk.set(at(2031, 4, 1, 6, 0))
+	block, entered := make(chan struct{}), make(chan struct{})
+	f.pv.block, f.pv.entered = block, entered
+	if err := f.r.StartImport(ctx, "admin@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	// 手動の実行は重ねない。
+	if err := f.r.StartClose(ctx, "admin@example.com"); !errors.Is(err, charging.ErrRunning) {
+		t.Errorf("start while running = %v", err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		text, err := f.r.RunClose(context.WithoutCancel(ctx))
+		if err != nil {
+			t.Errorf("close: %v", err)
+		}
+		done <- text
+	}()
+	select {
+	case text := <-done:
+		t.Fatalf("the scheduled close did not wait: %q", text)
+	case <-time.After(200 * time.Millisecond):
+	}
+	f.pv.mu.Lock()
+	f.pv.block = nil
+	f.pv.mu.Unlock()
+	close(block)
+	f.r.Wait()
+	if text := <-done; !strings.Contains(text, "2031-03 を締めました") {
+		t.Errorf("close = %q", text)
+	}
+	// 待っている間に止められたら、誤りで戻る（記録は中断になる）。
+	release, ok, err := f.d.TryNamedLock(ctx, "charging-run")
+	if err != nil || !ok {
+		t.Fatalf("lock = %v, %v", ok, err)
+	}
+	defer release()
+	cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if _, err := f.r.RunClose(cctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("close while waiting = %v", err)
+	}
 }
 
 func TestUsageImport(t *testing.T) {
@@ -195,5 +255,56 @@ func TestUsageImport(t *testing.T) {
 	rows, err := f.d.MonthUsage(ctx, at(2031, 2, 1, 0, 0), at(2031, 3, 1, 0, 0), "", 0, 10)
 	if err != nil || len(rows) != 2 || rows[0].AuthOK != 1 || rows[1].TenantID != 0 || rows[1].AuthOK != 2 {
 		t.Errorf("february = %+v, %v", rows, err)
+	}
+}
+
+func TestChargingPurge(t *testing.T) {
+	f := newFlow(t)
+	ctx := t.Context()
+	const a = "001010000000001"
+	f.tenant(1, "テナント1", at(2030, 1, 15, 0, 0))
+	f.event(at(2030, 1, 16, 0, 0), db.EventLineRegistered, db.SideRadius, 1, a, "", db.StateActive)
+	f.event(at(2030, 2, 16, 0, 0), db.EventLineStateChanged, db.SideRadius, 1, a, db.StateActive, db.StateInactive)
+	for _, d := range []time.Time{at(2030, 1, 20, 0, 0), at(2030, 2, 20, 0, 0)} {
+		if err := f.d.EnsureUsagePartition(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.d.UpsertUsage(ctx, d, []db.UsageRow{{IMSI: a, TenantID: 1, Usage: db.Usage{AuthOK: 1}}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.d.RecordUsageImport(ctx, d, "", d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.close(at(2030, 3, 1, 6, 0))
+
+	// 2031-03-15 の 13 か月前は 2030-02-15。その月（2 月）は月の途中で切らずに残し、1 月までを消す。
+	before := db.RetentionCutoff(at(2031, 3, 15, 4, 30))
+	c, err := f.d.PurgeOld(ctx, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Events != 2 || c.Charging != 1 || c.UsageDays != 1 || c.UsagePartitions != 1 {
+		t.Errorf("purge = %+v", c)
+	}
+	periods, _ := f.d.ChargingPeriods(ctx, 10)
+	if len(periods) != 1 || !periods[0].Period.Equal(at(2030, 2, 1, 0, 0)) {
+		t.Errorf("periods = %+v", periods)
+	}
+	var n int
+	if err := f.d.Pool.QueryRow(ctx, "SELECT count(*) FROM usage_daily").Scan(&n); err != nil || n != 1 {
+		t.Errorf("usage rows = %d, %v", n, err)
+	}
+	if err := f.d.Pool.QueryRow(ctx, "SELECT count(*) FROM charging_lines").Scan(&n); err != nil || n != 1 {
+		t.Errorf("lines = %d, %v", n, err)
+	}
+	// 2 回目は消すものがない。
+	if c, err = f.d.PurgeOld(ctx, before); err != nil || c.Total() != 0 {
+		t.Errorf("second purge = %+v, %v", c, err)
+	}
+	// 残った月の次の月の月初の状態は、残った行から取れる。
+	f.close(at(2030, 4, 1, 6, 0))
+	if r := f.lines(at(2030, 3, 1, 0, 0))[a+"/1"]; r.RegisteredDays != 31 || r.RadiusStart != db.StateInactive {
+		t.Errorf("next month = %+v", r)
 	}
 }

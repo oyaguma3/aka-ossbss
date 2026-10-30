@@ -1,8 +1,3 @@
-// Package charging は課金レコードの月次の計算、ファイルの生成、取り込みと締めの実行を受け持つ
-// （aka-mvpset の docs/charging-records.md。段階 3-4 の Z1〜Z16）。
-//
-// 料金は計算しない。状態の事実（charging_events）と利用の集計（usage_daily）から、回線とテナントの月次の値を作り、
-// CSV と manifest を ZIP にまとめて PGP で暗号化する。
 package charging
 
 import (
@@ -10,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +44,15 @@ type Store interface {
 	EnsureUsagePartition(ctx context.Context, date time.Time) error
 	UpsertUsage(ctx context.Context, date time.Time, rows []db.UsageRow) (int64, error)
 	RecordUsageImport(ctx context.Context, date time.Time, errText string, at time.Time) error
+	UsageImportedDays(ctx context.Context, start, end time.Time) ([]time.Time, error)
+	MonthUsage(ctx context.Context, start, end time.Time, afterIMSI string, afterTenant int64, limit int) ([]db.UsageRow, error)
+	MonthLineEvents(ctx context.Context, start, end time.Time, afterIMSI string, afterID int64, limit int) ([]db.ChargingEvent, error)
+	MonthTenantEvents(ctx context.Context, start, end time.Time) ([]db.ChargingEvent, error)
+	OldestChargingEvent(ctx context.Context) (time.Time, bool, error)
+	OpenLines(ctx context.Context, month time.Time, afterIMSI string, limit int) ([]db.OpenLine, error)
+	ChargingTenantsOf(ctx context.Context, month time.Time) ([]db.ChargingTenant, error)
+	LatestChargingPeriod(ctx context.Context) (db.ChargingPeriod, bool, error)
+	WriteChargingPeriod(ctx context.Context, c db.ChargingClose, fn func(w db.ChargingWriter) error) (db.ChargingPeriod, error)
 	InsertScheduledRun(ctx context.Context, name string, startedAt time.Time) (int64, error)
 	FinishScheduledRun(ctx context.Context, id int64, status, detail string, finishedAt time.Time) error
 	TryNamedLock(ctx context.Context, name string) (release func(), ok bool, err error)
@@ -147,6 +152,16 @@ func (r *Runner) RunImport(ctx context.Context) (string, error) {
 	return r.importUsage(ctx, Operator)
 }
 
+// RunClose は定刻の締め（終わるまで戻らない）。
+func (r *Runner) RunClose(ctx context.Context) (string, error) {
+	end, err := r.beginWait(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer end()
+	return r.closeDue(ctx, Operator)
+}
+
 // startJob は手動の実行を裏で動かす。結果は定期の処理と同じ記録に残す。
 func (r *Runner) startJob(ctx context.Context, name string, run func(ctx context.Context) (string, error)) error {
 	end, err := r.begin(ctx)
@@ -183,6 +198,11 @@ func (r *Runner) startJob(ctx context.Context, name string, run func(ctx context
 // StartImport は手動の取り込みを始めてすぐに戻る。動いていれば ErrRunning。
 func (r *Runner) StartImport(ctx context.Context, by string) error {
 	return r.startJob(ctx, JobUsageImport, func(ctx context.Context) (string, error) { return r.importUsage(ctx, by) })
+}
+
+// StartClose は手動の締めを始めてすぐに戻る。動いていれば ErrRunning。
+func (r *Runner) StartClose(ctx context.Context, by string) error {
+	return r.startJob(ctx, JobClose, func(ctx context.Context) (string, error) { return r.closeDue(ctx, by) })
 }
 
 // ---- 取り込み ----
@@ -250,4 +270,276 @@ func (r *Runner) importDay(ctx context.Context, day time.Time) (int64, error) {
 		}
 		cursor = l.NextCursor
 	}
+}
+
+// ---- 締め ----
+
+// closeDue は締めていない過去の月を古い順に締める（Z8）。取り込みに失敗しても締める
+// （欠けは usage_complete で示し、翌月の訂正で直す）。
+func (r *Runner) closeDue(ctx context.Context, by string) (string, error) {
+	var notes []string
+	if _, err := r.importUsage(ctx, by); err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		notes = append(notes, "取り込み: "+err.Error())
+	}
+	months, err := r.dueMonths(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, m := range months {
+		p, err := r.closeMonth(ctx, m, by)
+		if err != nil {
+			return strings.Join(notes, " "), err
+		}
+		notes = append(notes, fmt.Sprintf("%s を締めました（回線 %d、テナント %d、事実 %d、訂正 %d）。", m.Label(), p.LineCount, p.TenantCount, p.EventCount, p.AdjCount))
+	}
+	if len(months) == 0 {
+		notes = append(notes, "締める月はありません。")
+	}
+	return strings.Join(notes, " "), nil
+}
+
+// dueMonths は締める月を古い順に返す。対象は最も古い事実の月から、今の月の前の月まで（事実のない月も）。
+func (r *Runner) dueMonths(ctx context.Context) ([]Period, error) {
+	var next time.Time
+	latest, ok, err := r.opts.DB.LatestChargingPeriod(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		next = latest.Period.AddDate(0, 1, 0)
+	} else {
+		oldest, found, err := r.opts.DB.OldestChargingEvent(ctx)
+		if err != nil || !found {
+			return nil, err
+		}
+		next = db.MonthOf(oldest)
+	}
+	current := db.MonthOf(r.opts.Now())
+	var out []Period
+	for ; next.Before(current); next = next.AddDate(0, 1, 0) {
+		out = append(out, NewPeriod(next))
+	}
+	return out, nil
+}
+
+// missingOf はその月の取り込めなかった日のビットを返す。
+func (r *Runner) missingOf(ctx context.Context, p Period) (uint32, error) {
+	days, err := r.opts.DB.UsageImportedDays(ctx, p.Start, p.End)
+	if err != nil {
+		return 0, err
+	}
+	return p.MissingDays(days), nil
+}
+
+// closeMonth は 1 つの月を締める（1 つのトランザクションで、途中で止まれば何も残らない）。
+func (r *Runner) closeMonth(ctx context.Context, p Period, by string) (db.ChargingPeriod, error) {
+	missing, err := r.missingOf(ctx, p)
+	if err != nil {
+		return db.ChargingPeriod{}, err
+	}
+	prevMissing, err := r.missingOf(ctx, p.Prev())
+	if err != nil {
+		return db.ChargingPeriod{}, err
+	}
+	out, err := r.opts.DB.WriteChargingPeriod(ctx, db.ChargingClose{Month: p.Start, By: by, At: r.opts.Now(), MissingDays: countBits(missing), PrevMissing: prevMissing},
+		func(w db.ChargingWriter) error { return r.compute(ctx, p, missing, w) })
+	if err != nil {
+		r.opts.Log.Error("charging close failed", "event_id", "CHARGING_CLOSE_ERR", "period", p.Label(), "error", err)
+		return db.ChargingPeriod{}, err
+	}
+	r.record(ctx, by, audit.ActionChargingClose, p.Label(), map[string]any{"sequence": out.Sequence, "lines": out.LineCount, "tenants": out.TenantCount,
+		"events": out.EventCount, "adjustments": out.AdjCount, "missingDays": out.MissingDays})
+	r.opts.Log.Info("charging period closed", "period", p.Label(), "sequence", out.Sequence, "lines", out.LineCount, "tenants", out.TenantCount)
+	return out, nil
+}
+
+func countBits(v uint32) int {
+	n := 0
+	for ; v != 0; v &= v - 1 {
+		n++
+	}
+	return n
+}
+
+// pager はページごとに読む IMSI の順の列（20 万回線でも全件をメモリーに持たない）。
+type pager[T any] struct {
+	items []T
+	i     int
+	last  *T
+	done  bool
+	key   func(T) string
+	fetch func(last *T) ([]T, error)
+	size  int
+}
+
+// peek は先頭の行の IMSI を返す（なければ空）。
+func (p *pager[T]) peek() (string, error) {
+	for p.i >= len(p.items) {
+		if p.done {
+			return "", nil
+		}
+		items, err := p.fetch(p.last)
+		if err != nil {
+			return "", err
+		}
+		p.items, p.i = items, 0
+		p.done = len(items) < p.size
+		if len(items) > 0 {
+			p.last = &items[len(items)-1]
+		}
+	}
+	return p.key(p.items[p.i]), nil
+}
+
+// take は先頭から IMSI が imsi の行を全部取り出す（ページをまたいでも）。
+func (p *pager[T]) take(imsi string) ([]T, error) {
+	var out []T
+	for {
+		k, err := p.peek()
+		if err != nil {
+			return nil, err
+		}
+		if k == "" || k != imsi {
+			return out, nil
+		}
+		out = append(out, p.items[p.i])
+		p.i++
+	}
+}
+
+// compute は月初の状態・事実・利用の集計を IMSI の順に併合して、回線とテナントの行を書く（Z3）。
+func (r *Runner) compute(ctx context.Context, p Period, missing uint32, w db.ChargingWriter) error {
+	store := r.opts.DB
+	prev := p.Prev()
+	open := &pager[db.OpenLine]{key: func(o db.OpenLine) string { return o.IMSI }, size: computePage, fetch: func(last *db.OpenLine) ([]db.OpenLine, error) {
+		after := ""
+		if last != nil {
+			after = last.IMSI
+		}
+		return store.OpenLines(ctx, prev.Start, after, computePage)
+	}}
+	events := &pager[db.ChargingEvent]{key: func(e db.ChargingEvent) string { return e.IMSI }, size: computePage, fetch: func(last *db.ChargingEvent) ([]db.ChargingEvent, error) {
+		after, id := "", int64(0)
+		if last != nil {
+			after, id = last.IMSI, last.ID
+		}
+		return store.MonthLineEvents(ctx, p.Start, p.End, after, id, computePage)
+	}}
+	usage := &pager[db.UsageRow]{key: func(u db.UsageRow) string { return u.IMSI }, size: computePage, fetch: func(last *db.UsageRow) ([]db.UsageRow, error) {
+		after, tenant := "", int64(0)
+		if last != nil {
+			after, tenant = last.IMSI, last.TenantID
+		}
+		return store.MonthUsage(ctx, p.Start, p.End, after, tenant, computePage)
+	}}
+	counter := NewTenantCounter()
+	buf := make([]db.ChargingLine, 0, lineFlush)
+	for {
+		a, err := open.peek()
+		if err != nil {
+			return err
+		}
+		b, err := events.peek()
+		if err != nil {
+			return err
+		}
+		c, err := usage.peek()
+		if err != nil {
+			return err
+		}
+		imsi := minNonEmpty(a, b, c)
+		if imsi == "" {
+			break
+		}
+		starts, err := open.take(imsi)
+		if err != nil {
+			return err
+		}
+		evs, err := events.take(imsi)
+		if err != nil {
+			return err
+		}
+		us, err := usage.take(imsi)
+		if err != nil {
+			return err
+		}
+		var start *db.OpenLine
+		if len(starts) > 0 {
+			start = &starts[0]
+		}
+		res := ComputeLine(p, imsi, start, evs)
+		counter.Add(res)
+		buf = append(buf, AttachUsage(res.Rows, imsi, us, missing)...)
+		if len(buf) >= lineFlush {
+			if err := w.AddLines(buf); err != nil {
+				return err
+			}
+			buf = buf[:0]
+		}
+	}
+	if len(buf) > 0 {
+		if err := w.AddLines(buf); err != nil {
+			return err
+		}
+	}
+	tenants, err := r.computeTenants(ctx, p, counter)
+	if err != nil {
+		return err
+	}
+	if len(tenants) > 0 {
+		return w.AddTenants(tenants)
+	}
+	return nil
+}
+
+// minNonEmpty は空でない値のうち最も小さいものを返す（全部空なら空）。
+func minNonEmpty(vals ...string) string {
+	out := ""
+	for _, v := range vals {
+		if v != "" && (out == "" || v < out) {
+			out = v
+		}
+	}
+	return out
+}
+
+// computeTenants はテナントの月次の行を作る。対象は前の月の月末に存在していたテナントと、その月に事実のあるテナント。
+func (r *Runner) computeTenants(ctx context.Context, p Period, counter *TenantCounter) ([]db.ChargingTenant, error) {
+	prev, err := r.opts.DB.ChargingTenantsOf(ctx, p.Prev().Start)
+	if err != nil {
+		return nil, err
+	}
+	facts, err := r.opts.DB.MonthTenantEvents(ctx, p.Start, p.End)
+	if err != nil {
+		return nil, err
+	}
+	starts := map[int64]*db.ChargingTenant{}
+	ids := []int64{}
+	for i := range prev {
+		if prev[i].LiveEnd {
+			starts[prev[i].TenantID] = &prev[i]
+			ids = append(ids, prev[i].TenantID)
+		}
+	}
+	byTenant := map[int64][]db.ChargingEvent{}
+	for _, ev := range facts {
+		if _, ok := byTenant[ev.TenantID]; !ok && starts[ev.TenantID] == nil {
+			ids = append(ids, ev.TenantID)
+		}
+		byTenant[ev.TenantID] = append(byTenant[ev.TenantID], ev)
+	}
+	slices.Sort(ids)
+	var out []db.ChargingTenant
+	for _, id := range ids {
+		t, ok := ComputeTenant(p, id, starts[id], byTenant[id])
+		if !ok {
+			continue
+		}
+		counter.Fill(&t)
+		out = append(out, t)
+	}
+	return out, nil
 }
