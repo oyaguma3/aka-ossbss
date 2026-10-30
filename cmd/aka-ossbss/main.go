@@ -136,7 +136,7 @@ func serve(ctx context.Context) error {
 	}
 	defer d.Close()
 
-	// 最初のシステム管理者（もとの設計概要 §15 の 12）。役割を変えられていたり無効にされていたりしたら戻す。
+	// 最初のシステム管理者（運用ガイド 5.2）。役割を変えられていたり無効にされていたりしたら戻す。
 	res, err := d.EnsureInitialAdmin(ctx, cfg.InitialAdminEmail)
 	if err != nil {
 		return err

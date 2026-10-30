@@ -47,7 +47,7 @@ type Config struct {
 	ReconcileMaxFixes int
 	// UsageImportAt は毎日の利用の集計の取り込みの時刻（日本時間の HH:MM。課金レコード §5.2）。
 	UsageImportAt string
-	// DevUserEmail は開発用の設定（もとの設計概要 §15 の 10）。JWT の検証の代わりに、このメールアドレスの利用者として動かす。
+	// DevUserEmail は開発用の設定（運用ガイド 4 章）。JWT の検証の代わりに、このメールアドレスの利用者として動かす。
 	// Addr がループバックのときだけ使え、Access の設定とは同時に使えない。
 	DevUserEmail string
 }
@@ -203,7 +203,7 @@ func (c *Config) loadAuth() []error {
 		if !authz.ValidEmail(c.DevUserEmail) {
 			errs = append(errs, errors.New("OSSBSS_DEV_USER_EMAIL: must be an email address of up to 64 characters using only letters, digits and ._-"))
 		}
-		// 開発用の設定は、他のホストから届かない待ち受けでだけ使う（もとの設計概要 §15 の 10、§17.2）。
+		// 開発用の設定は、他のホストから届かない待ち受けでだけ使う（運用ガイド 4 章）。
 		if host, _, err := net.SplitHostPort(c.Addr); err == nil && !isLoopback(host) {
 			errs = append(errs, fmt.Errorf("OSSBSS_DEV_USER_EMAIL can be used only when OSSBSS_ADDR is a loopback address (got %q)", c.Addr))
 		}

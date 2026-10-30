@@ -167,7 +167,7 @@ func Allowed(a Actor, op Op, target int64) bool {
 }
 
 // CanManageAccount は、a が役割 role・テナント tenant のアカウントを作成・変更・無効化・削除してよいかを返す
-// （もとの設計概要 §15 の 11）。D はすべて、B は自分のテナントのテナントユーザーだけ。B は A を B に昇格できない
+// （画面仕様 §9）。D はすべて、B は自分のテナントのテナントユーザーだけ。B は A を B に昇格できない
 // （変更後の役割もこの関数で確かめる）。最初のシステム管理者の保護は呼び出し側で行う。
 func CanManageAccount(a Actor, role Role, tenant int64) bool {
 	if !role.Valid() {

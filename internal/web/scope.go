@@ -17,7 +17,7 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/trace"
 )
 
-// テナントの範囲の判定、テナントの名前と絞り込み、二重送信の防止、監査ログ（もとの画面仕様 §1）。
+// テナントの範囲の判定、テナントの名前と絞り込み、二重送信の防止、監査ログ（画面仕様 §1）。
 
 // dbTimeout は画面の DB の操作 1 回の上限時間。
 const dbTimeout = 5 * time.Second
@@ -47,7 +47,7 @@ func isStaff(r *http.Request) bool {
 
 // ---- テナントの範囲 ----
 
-// subscriberOutOfScope は、範囲の外の加入者を開いたときの文（存在しないときと同じ。もとの画面仕様 §1.2）。
+// subscriberOutOfScope は、範囲の外の加入者を開いたときの文（存在しないときと同じ。画面仕様 §1.2）。
 func subscriberOutOfScope(imsi string) string {
 	return "加入者 " + imsi + " は見つかりません（このテナントに属していないか、登録されていません）。"
 }
@@ -198,7 +198,7 @@ func baseKey(k string) string {
 	return b
 }
 
-// newIdemKey は、フォームを描くたびに作る Idempotency-Key を返す（もとの画面仕様 §1.5）。
+// newIdemKey は、フォームを描くたびに作る Idempotency-Key を返す（画面仕様 §1.5）。
 // 同じフォームを送り直しても（応答を待たずに押し直した、タイムアウトの後に送り直した）、aka-provisioner は最初の結果を返す。
 func newIdemKey() string { return rand.Text() }
 

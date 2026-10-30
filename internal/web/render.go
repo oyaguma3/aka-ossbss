@@ -269,7 +269,7 @@ func (h *Handler) renderErrorData(w http.ResponseWriter, r *http.Request, data e
 	h.render(w, r, data.Status, "error", title, data)
 }
 
-// forbidden は、範囲の中のものに対して役割にない操作をしたときの 403 を返す（もとの画面仕様 §1.2）。
+// forbidden は、範囲の中のものに対して役割にない操作をしたときの 403 を返す（画面仕様 §1.2）。
 func (h *Handler) forbidden(w http.ResponseWriter, r *http.Request) {
 	h.renderError(w, r, http.StatusForbidden, "この操作の権限がありません。")
 }
