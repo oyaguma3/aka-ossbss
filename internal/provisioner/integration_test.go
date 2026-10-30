@@ -94,6 +94,34 @@ func TestIntegrationLifecycle(t *testing.T) {
 		t.Errorf("create with unknown source = %v", err)
 	}
 
+	// 一覧のページ送り（突き合わせの読み取り。1 件ずつたどっても、登録した IMSI に届く）。
+	foundV, foundR := false, false
+	for cursor, pages := "", 0; pages < 1000; pages++ {
+		l, err := c.ListVecgenSubscribers(ctx, cursor, 1)
+		if err != nil {
+			t.Fatalf("list vecgen: %v", err)
+		}
+		foundV = foundV || slices.ContainsFunc(l.Items, func(s provisioner.VecgenSubscriber) bool { return s.IMSI == imsi && s.State == "active" })
+		if cursor = l.NextCursor; cursor == "" {
+			break
+		}
+	}
+	for cursor, pages := "", 0; pages < 1000; pages++ {
+		l, err := c.ListRadiusSubscribers(ctx, cursor, 1)
+		if err != nil {
+			t.Fatalf("list radius: %v", err)
+		}
+		foundR = foundR || slices.ContainsFunc(l.Items, func(s provisioner.RadiusSubscriber) bool {
+			return s.IMSI == imsi && s.State == "inactive" && s.SourceID == source && len(s.Rules) == 1
+		})
+		if cursor = l.NextCursor; cursor == "" {
+			break
+		}
+	}
+	if !foundV || !foundR {
+		t.Errorf("list: vecgen found = %v, radius found = %v", foundV, foundR)
+	}
+
 	// 読み出し（1 件、一括取得）。
 	if got, err := c.VecgenSubscriber(ctx, imsi); err != nil || got.SQNType != "inc32" || got.AMF != "8000" {
 		t.Errorf("get vecgen = %+v, %v", got, err)

@@ -205,6 +205,22 @@ func (c *Client) VecgenBatchGet(ctx context.Context, imsis []string) (VecgenBatc
 		body: batchGetRequest{IMSIs: imsis}})
 }
 
+// VecgenList は aka-vecgen の加入者の一覧（IMSI の辞書順）。
+type VecgenList struct {
+	Items []VecgenSubscriber `json:"items"`
+	Total int64              `json:"total"`
+	// NextCursor は次のページがあるときの位置。
+	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+// ListVecgenSubscribers は aka-vecgen の加入者を IMSI の辞書順に返す（limit は 1〜500。突き合わせに使う）。
+func (c *Client) ListVecgenSubscribers(ctx context.Context, cursor string, limit int) (VecgenList, error) {
+	q := url.Values{}
+	setString(q, "cursor", cursor)
+	setInt(q, "limit", int64(limit))
+	return c.call[VecgenList](ctx, request{method: http.MethodGet, path: []string{"vecgen", "subscribers"}, query: q})
+}
+
 // CreateVecgenSubscriber は aka-vecgen に加入者を登録する。
 func (c *Client) CreateVecgenSubscriber(ctx context.Context, s VecgenSubscriberCreate, idempotencyKey string) (VecgenSubscriber, error) {
 	return c.call[VecgenSubscriber](ctx, request{method: http.MethodPost, path: []string{"vecgen", "subscribers"},
@@ -338,6 +354,22 @@ func (c *Client) RadiusSubscriber(ctx context.Context, imsi string) (RadiusSubsc
 func (c *Client) RadiusBatchGet(ctx context.Context, imsis []string) (RadiusBatch, error) {
 	return c.call[RadiusBatch](ctx, request{method: http.MethodPost, path: []string{"radius", "subscribers", "batch-get"},
 		body: batchGetRequest{IMSIs: imsis}})
+}
+
+// RadiusList は aka-radius の加入者の一覧（IMSI の辞書順）。
+type RadiusList struct {
+	Items []RadiusSubscriber `json:"items"`
+	Total int64              `json:"total"`
+	// NextCursor は次のページがあるときの位置。
+	NextCursor string `json:"nextCursor,omitempty"`
+}
+
+// ListRadiusSubscribers は aka-radius の加入者を IMSI の辞書順に返す（limit は 1〜500。突き合わせに使う）。
+func (c *Client) ListRadiusSubscribers(ctx context.Context, cursor string, limit int) (RadiusList, error) {
+	q := url.Values{}
+	setString(q, "cursor", cursor)
+	setInt(q, "limit", int64(limit))
+	return c.call[RadiusList](ctx, request{method: http.MethodGet, path: []string{"radius", "subscribers"}, query: q})
 }
 
 // CreateRadiusSubscriber は aka-radius に加入者を登録する。

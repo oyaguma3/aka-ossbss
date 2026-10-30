@@ -25,6 +25,8 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/config"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 	"github.com/oyaguma3/aka-ossbss/internal/kek"
+	"github.com/oyaguma3/aka-ossbss/internal/reconcile"
+	"github.com/oyaguma3/aka-ossbss/internal/scheduler"
 	"github.com/oyaguma3/aka-ossbss/internal/server"
 	"github.com/oyaguma3/aka-ossbss/internal/web"
 )
@@ -161,7 +163,6 @@ func serve(ctx context.Context) error {
 	auditFiles := audit.NewFiles(cfg.AuditDir, auditRetentionDays)
 	bgCtx, stopBG := context.WithCancel(ctx)
 	defer stopBG()
-	go maintainAudit(bgCtx, log, auditFiles)
 	log.Info("provisioner client", "url", pv.BaseURL(), "client_cert_fingerprint", certs.Fingerprint(pv.ClientCertificate()),
 		"client_cert_not_after", pv.ClientCertificate().NotAfter, "timeout", cfg.Provisioner.Timeout.String())
 	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -181,10 +182,28 @@ func serve(ctx context.Context) error {
 	if err := jobs.Recover(ctx); err != nil {
 		return err
 	}
-	var jobsDone sync.WaitGroup
-	jobsDone.Go(func() { jobs.Run(bgCtx) })
-	defer jobsDone.Wait()
-	defer stopBG()
+	// 突き合わせと定期の処理（設計概要 §9・§16。Y2）。
+	rec := reconcile.New(reconcile.Options{Log: log, DB: d, PV: pv, Audit: &audit.Recorder{DB: d, Files: auditFiles, Log: log},
+		MaxFixes: cfg.ReconcileMaxFixes, Base: bgCtx})
+	if err := rec.Recover(ctx); err != nil {
+		return err
+	}
+	sched, err := newScheduler(cfg, log, d, jobs, rec, auditFiles)
+	if err != nil {
+		return err
+	}
+	if err := sched.Recover(ctx); err != nil {
+		return err
+	}
+	var background sync.WaitGroup
+	background.Go(func() { jobs.Run(bgCtx) })
+	background.Go(func() { sched.Run(bgCtx) })
+	defer func() {
+		// 処理中の行と実行を終えてから戻る。
+		stopBG()
+		background.Wait()
+		rec.Wait()
+	}()
 
 	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv,
 		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail, KEK: key, Jobs: jobs})
@@ -196,27 +215,30 @@ func serve(ctx context.Context) error {
 		WriteTimeout: max(90*time.Second, 4*cfg.Provisioner.Timeout+30*time.Second)})
 }
 
-const (
-	// auditRetentionDays は監査ログの日ごとのファイルを持つ日数（ほかのノードと同じ。PostgreSQL の監査ログは 13 か月）。
-	auditRetentionDays = 14
-	// auditMaintainInterval は監査ログのファイルを圧縮・削除する間隔。
-	auditMaintainInterval = time.Hour
-)
+// auditRetentionDays は監査ログの日ごとのファイルを持つ日数（ほかのノードと同じ。PostgreSQL の監査ログは 13 か月）。
+const auditRetentionDays = 14
 
-// maintainAudit は、起動のときと 1 時間ごとに、監査ログの前の日までのファイルを圧縮し、古いものを消す。
-func maintainAudit(ctx context.Context, log *slog.Logger, files *audit.Files) {
-	t := time.NewTicker(auditMaintainInterval)
-	defer t.Stop()
-	for {
-		if err := files.Maintain(time.Now()); err != nil {
-			log.Warn("audit file maintenance failed", "event_id", "AUDIT_FILE_ERR", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
+// retentionAt は 13 か月より古い記録を消す時刻（日本時間。Y11）。
+const retentionAt = "04:30"
+
+// newScheduler は定期の処理を組み立てる（設計概要 §16）。
+func newScheduler(cfg config.Config, log *slog.Logger, d *db.DB, jobs *bulk.Runner, rec *reconcile.Runner, files *audit.Files) (*scheduler.Scheduler, error) {
+	return scheduler.New(scheduler.Options{Log: log, DB: d, Jobs: []scheduler.Job{
+		{Name: "reconcile", Daily: cfg.ReconcileAt, Run: rec.RunScheduled},
+		{Name: "check-needed", Every: 5 * time.Minute, Run: rec.CheckMarked},
+		{Name: "retention", Daily: retentionAt, Run: func(ctx context.Context) (string, error) {
+			c, err := d.PurgeOld(ctx, db.RetentionCutoff(time.Now()))
+			return fmt.Sprintf("消した行: 監査ログ %d、ジョブ %d、突き合わせ %d、定期の処理の記録 %d。", c.Audit, c.Jobs, c.Reconcile, c.Scheduled), err
+		}},
+		{Name: "job-sweep", Every: time.Hour, Run: func(ctx context.Context) (string, error) {
+			n, err := jobs.Sweep(ctx)
+			if n == 0 {
+				return "", err
+			}
+			return fmt.Sprintf("確定しないジョブを %d 件取り消しました。", n), err
+		}},
+		{Name: "audit-files", Every: time.Hour, Run: func(context.Context) (string, error) { return "", files.Maintain(time.Now()) }},
+	}})
 }
 
 // newIdentifier は、要求から利用者を決める方法を作る（Cloudflare Access の JWT、または開発用の設定）。

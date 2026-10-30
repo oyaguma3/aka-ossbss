@@ -24,7 +24,11 @@ func (h *Handler) runLedger(r *http.Request, imsi string, st ledger.Step) (ledge
 
 // recheck は、印の立っている IMSI を読み直して台帳を直す（詳細を開いたとき）。直せたら true。
 func (h *Handler) recheck(r *http.Request, imsi string) bool {
-	return h.ops.Recheck(context.WithoutCancel(r.Context()), meta(r), imsi)
+	tenant, fixed := h.ops.Recheck(context.WithoutCancel(r.Context()), meta(r), imsi)
+	if fixed {
+		h.record(r, auditCheck, imsi, tenant, nil)
+	}
+	return fixed
 }
 
 // unknownMessage は、結果が分からなかったときの文（設計概要 §15 の「結果を確かめています」）。

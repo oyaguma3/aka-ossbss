@@ -239,7 +239,7 @@ const (
 	auditReinstate        = "subscriber.reinstate"
 	auditSubscriberDelete = audit.ActionSubscriberDelete
 	auditTenantMove       = "subscriber.tenant"
-	auditCheck            = "subscriber.check"
+	auditCheck            = audit.ActionSubscriberCheck
 	auditTenantCreate     = "tenant.create"
 	auditTenantUpdate     = "tenant.update"
 	auditTenantDelete     = "tenant.delete"

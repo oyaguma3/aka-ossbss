@@ -162,9 +162,8 @@ func (o *Ops) Observe(ctx context.Context, imsi string) (v, rad db.Observation, 
 	return v, rad, true
 }
 
-// Recheck は、印の立っている IMSI を読み直して台帳を直す。直せたら true。
-func (o *Ops) Recheck(ctx context.Context, meta db.Meta, imsi string) bool {
-	fixed := false
+// Recheck は、印の立っている IMSI を読み直して台帳を直す。直せたら true と、直す前の所属のテナントを返す。
+func (o *Ops) Recheck(ctx context.Context, meta db.Meta, imsi string) (tenant int64, fixed bool) {
 	err := o.DB.WithSubscriber(ctx, imsi, meta, func(l db.Ledger) error {
 		e, ok := l.Entry()
 		if !ok || !e.CheckNeeded {
@@ -174,12 +173,15 @@ func (o *Ops) Recheck(ctx context.Context, meta db.Meta, imsi string) bool {
 		if !ok {
 			return nil
 		}
-		fixed = true
-		return l.Apply(db.Change{Kind: db.ChangeObserve, Vecgen: v, Radius: rad, Reason: ReasonUnknown})
+		if err := l.Apply(db.Change{Kind: db.ChangeObserve, Vecgen: v, Radius: rad, Reason: ReasonUnknown}); err != nil {
+			return err
+		}
+		tenant, fixed = e.TenantID, true
+		return nil
 	})
 	if err != nil {
 		o.Log.Error("recheck failed", "event_id", "LEDGER_WRITE_ERR", "imsi", imsi, "error", err)
-		return false
+		return 0, false
 	}
-	return fixed
+	return tenant, fixed
 }

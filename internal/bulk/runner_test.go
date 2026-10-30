@@ -909,15 +909,15 @@ func TestRecoverAndSweep(t *testing.T) {
 
 	// 確定しない検証済みのジョブは 24 時間で取り消す（時計を差し替える。Q9）。
 	fresh := e.queue(t, RadiusDelete, Settings{}, lines(8, 8), func(j *db.Job) { j.State, j.CreatedAt = db.JobValidated, time1 })
-	if err := e.r.Sweep(t.Context()); err != nil {
-		t.Fatal(err)
+	if n, err := e.r.Sweep(t.Context()); err != nil || n != 0 {
+		t.Fatalf("sweep = %d, %v", n, err)
 	}
 	if j := e.s.job(fresh); j.State != db.JobValidated {
 		t.Errorf("job after 0h = %+v", j)
 	}
 	e.s.now = time1.Add(expireAfter + time.Second)
-	if err := e.r.Sweep(t.Context()); err != nil {
-		t.Fatal(err)
+	if n, err := e.r.Sweep(t.Context()); err != nil || n != 1 {
+		t.Fatalf("sweep = %d, %v", n, err)
 	}
 	if j := e.s.job(fresh); j.State != db.JobCanceled || j.Reason != reasonExpired {
 		t.Errorf("job after 24h = %+v", j)

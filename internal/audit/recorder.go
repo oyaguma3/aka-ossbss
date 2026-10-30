@@ -20,6 +20,16 @@ const (
 	ActionJobCancel        = "job.cancel"
 	ActionJobInterrupt     = "job.interrupt"
 	ActionJobReregister    = "job.reregister"
+
+	// 突き合わせと結果の確かめ（段階 3-3 の Y8）。
+	ActionSubscriberReconcile = "subscriber.reconcile"
+	ActionSubscriberCheck     = "subscriber.check"
+	ActionReconcileStart      = "reconcile.start"
+	ActionReconcileFinish     = "reconcile.finish"
+	ActionReconcileHold       = "reconcile.hold"
+	ActionReconcileApprove    = "reconcile.approve"
+	ActionReconcileImport     = "reconcile.import"
+	ActionReconcileDelete     = "reconcile.delete"
 )
 
 // insertTimeout は監査ログの書き込み 1 回の上限時間。

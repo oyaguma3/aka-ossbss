@@ -144,16 +144,16 @@ func (r *Runner) Recover(ctx context.Context) error {
 	return nil
 }
 
-// Sweep は、確定しないまま 24 時間たった検証済みのジョブを取り消す（ファイルを消す）。
-func (r *Runner) Sweep(ctx context.Context) error {
+// Sweep は、確定しないまま 24 時間たった検証済みのジョブを取り消し（ファイルを消す）、取り消した数を返す（定期の処理。段階 3-3 の Y2）。
+func (r *Runner) Sweep(ctx context.Context) (int, error) {
 	jobs, err := r.opts.DB.ExpireValidatedJobs(ctx, r.opts.Now().Add(-expireAfter), reasonExpired)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, j := range jobs {
 		r.recordJob(ctx, j, j.CreatedBy, audit.ActionJobCancel, map[string]any{"kind": j.Kind, "file": j.FileName, "reason": j.Reason})
 	}
-	return nil
+	return len(jobs), nil
 }
 
 // Run は待ち行列を動かす。ctx が終わると、処理中の行を終えてジョブを中断にしてから戻る。
@@ -162,23 +162,7 @@ func (r *Runner) Run(ctx context.Context) {
 	for _, target := range db.Sides {
 		wg.Go(func() { r.loop(ctx, target) })
 	}
-	wg.Go(func() { r.sweepLoop(ctx) })
 	wg.Wait()
-}
-
-func (r *Runner) sweepLoop(ctx context.Context) {
-	t := time.NewTicker(time.Hour)
-	defer t.Stop()
-	for {
-		if err := r.Sweep(ctx); err != nil && ctx.Err() == nil {
-			r.opts.Log.Warn("sweep jobs", "event_id", "JOB_DB_ERR", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-	}
 }
 
 func (r *Runner) loop(ctx context.Context, target db.Side) {
