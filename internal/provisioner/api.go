@@ -404,6 +404,35 @@ func (c *Client) Sessions(ctx context.Context, p SessionParams) (SessionList, er
 	return c.call[SessionList](ctx, request{method: http.MethodGet, path: []string{"radius", "sessions"}, query: q})
 }
 
+// UsageRecord は 1 日の利用の集計の 1 行（課金レコード §5.2）。TenantID は刻印のテナント（なければ 0）。
+type UsageRecord struct {
+	Date      string `json:"date"`
+	TenantID  int64  `json:"tenantId"`
+	IMSI      string `json:"imsi"`
+	AuthOK    int64  `json:"authOk"`
+	Sessions  int64  `json:"sessions"`
+	Seconds   int64  `json:"seconds"`
+	InOctets  int64  `json:"inOctets"`
+	OutOctets int64  `json:"outOctets"`
+}
+
+// UsageList は利用の集計の一覧。
+type UsageList struct {
+	Items      []UsageRecord `json:"items"`
+	NextCursor string        `json:"nextCursor,omitempty"`
+}
+
+// MaxUsagePage は利用の集計の 1 回の読み取りの上限（aka-radius の上限）。
+const MaxUsagePage = 1000
+
+// RadiusUsage は日本時間の 1 日（YYYY-MM-DD）の利用の集計を返す。7 日前の日まで読める。
+func (c *Client) RadiusUsage(ctx context.Context, date, cursor string, limit int) (UsageList, error) {
+	q := url.Values{"date": {date}}
+	setString(q, "cursor", cursor)
+	setInt(q, "limit", int64(limit))
+	return c.call[UsageList](ctx, request{method: http.MethodGet, path: []string{"radius", "usage"}, query: q})
+}
+
 // ---- 監査ログ ----
 
 // AuditSource は監査ログの元（provisioner 自身と、中継する下流 2 つ）。

@@ -133,38 +133,46 @@ const retentionMonths = 13
 
 // RetentionCutoff は now から暦で 13 か月前の時刻（日本時間の暦で数える）を返す。
 func RetentionCutoff(now time.Time) time.Time {
-	return now.In(time.FixedZone("JST", 9*60*60)).AddDate(0, -retentionMonths, 0)
+	return now.In(JST).AddDate(0, -retentionMonths, 0)
 }
 
 // purgeBatch は 1 回の DELETE で消す行の数（長いトランザクションで画面を止めない）。
 const purgeBatch = 1000
 
-// PurgeCounts は消した行の数。
+// PurgeCounts は消した行の数。Charging は課金レコードの月（行とファイルも一緒に）、UsagePartitions は利用の集計の月。
 type PurgeCounts struct {
-	Audit, Jobs, Reconcile, Scheduled int64
+	Audit, Jobs, Reconcile, Scheduled, Events, Charging, UsageDays, UsagePartitions int64
 }
 
 // Total は消した行の総数。
-func (c PurgeCounts) Total() int64 { return c.Audit + c.Jobs + c.Reconcile + c.Scheduled }
+func (c PurgeCounts) Total() int64 {
+	return c.Audit + c.Jobs + c.Reconcile + c.Scheduled + c.Events + c.Charging + c.UsageDays + c.UsagePartitions
+}
 
 // PurgeOld は before より古い監査ログ、終わったジョブ（行も一緒に）、終わった突き合わせ（ずれも一緒に）、定期の処理の記録を消す。
-// 途中で失敗したら、それまでに消した数とともに誤りを返す。課金レコードの表は消さない（段階 3-4）。
+// 課金レコード（状態の事実、締めた月と月次の行とファイル、利用の集計）は、before を含む月より前の月だけを消す（残っている月のファイルを
+// 同じ内容で作り直せるように、月の途中で切らない）。途中で失敗したら、それまでに消した数とともに誤りを返す。
 func (d *DB) PurgeOld(ctx context.Context, before time.Time) (PurgeCounts, error) {
 	var c PurgeCounts
+	month := MonthOf(before)
 	for _, t := range []struct {
 		count *int64
 		sql   string
+		at    time.Time
 	}{
-		{&c.Audit, `DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE time < $1 ORDER BY id LIMIT $2)`},
-		{&c.Jobs, `DELETE FROM bulk_jobs WHERE id IN (SELECT id FROM bulk_jobs
+		{count: &c.Events, at: month, sql: `DELETE FROM charging_events WHERE id IN (SELECT id FROM charging_events WHERE time < $1 ORDER BY id LIMIT $2)`},
+		{count: &c.Charging, at: month, sql: `DELETE FROM charging_periods WHERE period IN (SELECT period FROM charging_periods WHERE period < $1 ORDER BY period LIMIT $2)`},
+		{count: &c.UsageDays, at: month, sql: `DELETE FROM usage_import_days WHERE date IN (SELECT date FROM usage_import_days WHERE date < $1 ORDER BY date LIMIT $2)`},
+		{count: &c.Audit, at: before, sql: `DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE time < $1 ORDER BY id LIMIT $2)`},
+		{count: &c.Jobs, at: before, sql: `DELETE FROM bulk_jobs WHERE id IN (SELECT id FROM bulk_jobs
 			WHERE state IN ('completed', 'interrupted', 'canceled') AND coalesce(finished_at, created_at) < $1 ORDER BY id LIMIT $2)`},
-		{&c.Reconcile, `DELETE FROM reconcile_runs WHERE id IN (SELECT id FROM reconcile_runs
+		{count: &c.Reconcile, at: before, sql: `DELETE FROM reconcile_runs WHERE id IN (SELECT id FROM reconcile_runs
 			WHERE state <> 'running' AND started_at < $1 ORDER BY id LIMIT $2)`},
-		{&c.Scheduled, `DELETE FROM scheduled_runs WHERE id IN (SELECT id FROM scheduled_runs
+		{count: &c.Scheduled, at: before, sql: `DELETE FROM scheduled_runs WHERE id IN (SELECT id FROM scheduled_runs
 			WHERE status <> 'running' AND started_at < $1 ORDER BY id LIMIT $2)`},
 	} {
 		for {
-			tag, err := d.Pool.Exec(ctx, t.sql, before, purgeBatch)
+			tag, err := d.Pool.Exec(ctx, t.sql, t.at, purgeBatch)
 			if err != nil {
 				return c, fmt.Errorf("purge: %w", err)
 			}
@@ -177,5 +185,7 @@ func (d *DB) PurgeOld(ctx context.Context, before time.Time) (PurgeCounts, error
 			}
 		}
 	}
-	return c, nil
+	n, err := d.dropOldUsagePartitions(ctx, month)
+	c.UsagePartitions = n
+	return c, err
 }

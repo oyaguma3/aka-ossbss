@@ -155,6 +155,34 @@ func (d *DB) RenameTenant(ctx context.Context, id int64, name string, meta Meta)
 	return before, nil
 }
 
+// SetTenantExternalID はテナントの外部の顧客番号を変え、変える前の値を返す（状態の事実は tenant_updated。理由で名前の変更と見分ける。Z15）。
+// ない・削除済みなら ErrNotFound。値が変わらなければ何も書かない。
+func (d *DB) SetTenantExternalID(ctx context.Context, id int64, value string, meta Meta) (string, error) {
+	var before string
+	err := pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, "SELECT external_customer_id FROM tenants WHERE id = $1 AND deleted_at IS NULL FOR UPDATE", id).Scan(&before)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil || before == value {
+			return err
+		}
+		var now time.Time
+		if err := tx.QueryRow(ctx, "UPDATE tenants SET external_customer_id = $2, updated_at = now() WHERE id = $1 RETURNING now()", id, value).Scan(&now); err != nil {
+			return err
+		}
+		return insertChargingEvents(ctx, tx, []ChargingEvent{{Time: now, Event: EventTenantUpdated, TenantID: id, From: before, To: value,
+			Operator: meta.Operator, JobID: meta.JobID, TraceID: meta.TraceID, Reason: TenantExternalReason}})
+	})
+	if errors.Is(err, ErrNotFound) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("set tenant external id: %w", err)
+	}
+	return before, nil
+}
+
 // DeleteTenant はテナントを削除済みにする（行は残す）。ない・削除済みなら ErrNotFound、加入者（削除済みを除く）や
 // アカウントが残っていれば ErrInUse。
 func (d *DB) DeleteTenant(ctx context.Context, id int64, meta Meta) error {

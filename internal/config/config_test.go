@@ -25,6 +25,9 @@ func TestLoadDefaults(t *testing.T) {
 	if c.Addr != ":8446" || c.LogLevel != slog.LevelInfo || c.DB != (DB{Addr: "postgres:5432", Name: "ossbss", User: "ossbss", Password: "pw", MaxConns: 30}) {
 		t.Errorf("config = %+v", c)
 	}
+	if c.UsageImportAt != "03:00" {
+		t.Errorf("usage import at = %q", c.UsageImportAt)
+	}
 	if c.ReconcileAt != "04:00" || c.ReconcileMaxFixes != 1000 {
 		t.Errorf("reconcile at = %q, max fixes = %d", c.ReconcileAt, c.ReconcileMaxFixes)
 	}
@@ -166,6 +169,15 @@ func TestReconcileSettings(t *testing.T) {
 		t.Error("OSSBSS_RECONCILE_AT=25:00 was accepted")
 	}
 	t.Setenv("OSSBSS_RECONCILE_AT", "04:00")
+	t.Setenv("OSSBSS_USAGE_IMPORT_AT", "25:00")
+	if _, err := Load(); err == nil {
+		t.Error("OSSBSS_USAGE_IMPORT_AT=25:00 was accepted")
+	}
+	t.Setenv("OSSBSS_USAGE_IMPORT_AT", "02:30")
+	if c, err := Load(); err != nil || c.UsageImportAt != "02:30" {
+		t.Errorf("usage import at = %q, %v", c.UsageImportAt, err)
+	}
+	t.Setenv("OSSBSS_USAGE_IMPORT_AT", "")
 	t.Setenv("OSSBSS_RECONCILE_MAX_FIXES", "0")
 	if _, err := Load(); err == nil {
 		t.Error("OSSBSS_RECONCILE_MAX_FIXES=0 was accepted")

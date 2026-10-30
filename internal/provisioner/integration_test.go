@@ -164,6 +164,14 @@ func TestIntegrationLifecycle(t *testing.T) {
 		}
 	}
 
+	// 利用の集計（日本時間の 1 日ごと。誰も認証していないので空。口と形を確かめる）。
+	today := time.Now().In(time.FixedZone("JST", 9*60*60)).Format(time.DateOnly)
+	if l, err := c.RadiusUsage(ctx, today, "", provisioner.MaxUsagePage); err != nil || l.NextCursor != "" {
+		t.Errorf("usage = %+v, %v", l, err)
+	}
+	_, err = c.RadiusUsage(ctx, "2026-13-40", "", 0)
+	wantCause(t, "usage bad date", err, 400, provisioner.CauseInvalidQueryParam)
+
 	// セッション（テナントか IMSI で絞る）。
 	if _, err := c.Sessions(ctx, provisioner.SessionParams{TenantID: 42, Limit: 10}); err != nil {
 		t.Errorf("sessions by tenant = %v", err)

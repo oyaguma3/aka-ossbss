@@ -30,6 +30,15 @@ const (
 	ActionReconcileApprove    = "reconcile.approve"
 	ActionReconcileImport     = "reconcile.import"
 	ActionReconcileDelete     = "reconcile.delete"
+
+	// 課金レコード（段階 3-4 の Z15）。
+	ActionChargingImport   = "charging.import"
+	ActionChargingClose    = "charging.close"
+	ActionChargingFile     = "charging.file"
+	ActionChargingDownload = "charging.download"
+	ActionChargingKey      = "charging.key"
+	ActionTenantExternal   = "tenant.external"
+	ActionLineExternal     = "subscriber.external"
 )
 
 // insertTimeout は監査ログの書き込み 1 回の上限時間。

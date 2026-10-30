@@ -45,6 +45,8 @@ type Config struct {
 	// （超えたら保留にする。Y4）。
 	ReconcileAt       string
 	ReconcileMaxFixes int
+	// UsageImportAt は毎日の利用の集計の取り込みの時刻（日本時間の HH:MM。課金レコード §5.2）。
+	UsageImportAt string
 	// DevUserEmail は開発用の設定（もとの設計概要 §15 の 10）。JWT の検証の代わりに、このメールアドレスの利用者として動かす。
 	// Addr がループバックのときだけ使え、Access の設定とは同時に使えない。
 	DevUserEmail string
@@ -97,6 +99,7 @@ func Load() (Config, error) {
 		BulkConcurrency:   5,
 		ReconcileAt:       cmp.Or(os.Getenv("OSSBSS_RECONCILE_AT"), "04:00"),
 		ReconcileMaxFixes: 1000,
+		UsageImportAt:     cmp.Or(os.Getenv("OSSBSS_USAGE_IMPORT_AT"), "03:00"),
 		DB: DB{
 			Addr:     cmp.Or(os.Getenv("OSSBSS_DB_ADDR"), "postgres:5432"),
 			Name:     cmp.Or(os.Getenv("OSSBSS_DB_NAME"), "ossbss"),
@@ -135,6 +138,9 @@ func Load() (Config, error) {
 	}
 	if _, err := time.Parse("15:04", c.ReconcileAt); err != nil {
 		errs = append(errs, errors.New("OSSBSS_RECONCILE_AT: must be a time such as 04:00"))
+	}
+	if _, err := time.Parse("15:04", c.UsageImportAt); err != nil {
+		errs = append(errs, errors.New("OSSBSS_USAGE_IMPORT_AT: must be a time such as 03:00"))
 	}
 	if v := os.Getenv("OSSBSS_RECONCILE_MAX_FIXES"); v != "" {
 		n, err := strconv.Atoi(v)
