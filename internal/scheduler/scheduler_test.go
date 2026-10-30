@@ -308,8 +308,15 @@ func TestJobsDoNotBlockEachOther(t *testing.T) {
 	<-entered
 	<-entered
 	c.set(jstTime(10, 12, 1))
-	s.StartDue(ctx)
-	<-entered
+	// 短い処理は、知らせた後に実行の印を下ろすので、下りるまでの間の StartDue は飛ばされる。動くまで繰り返す。
+	for ran := false; !ran; {
+		s.StartDue(ctx)
+		select {
+		case <-entered:
+			ran = true
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 	close(gate)
 	s.Wait()
 	if longRuns != 1 || shortRuns != 2 {
