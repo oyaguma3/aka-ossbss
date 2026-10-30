@@ -38,6 +38,7 @@ commands:
   check-provisioner  aka-provisioner に接続できるか確かめる
   gen-client-cert    aka-provisioner に提示するクライアント証明書と秘密鍵を作る
                      （aka-ossbss gen-client-cert -h で使い方を表示）
+  gen-kek [-out ファイル]  一括投入の待ちのファイルを暗号化する KEK を作る（-out を省くと標準出力）
 
 設定は環境変数（接頭辞 OSSBSS_）で与える。
 `
@@ -63,6 +64,8 @@ func main() {
 		err = checkProvisioner(ctx)
 	case "gen-client-cert":
 		err = genClientCert(args[1:], os.Stdout, os.Stderr)
+	case "gen-kek":
+		err = genKEK(args[1:], os.Stdout, os.Stderr)
 	case "-h", "-help", "--help", "help":
 		fmt.Print(usage)
 	default:

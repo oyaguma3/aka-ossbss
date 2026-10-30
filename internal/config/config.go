@@ -37,6 +37,10 @@ type Config struct {
 	InitialAdminEmail string
 	// AuditDir は監査ログの日ごとのファイル（JSONL）の書き出し先（設計概要 §14・§18）。
 	AuditDir string
+	// KEKFile は一括投入の待ちのファイルを暗号化する鍵（KEK）のファイル（設計概要 §10.1・§18）。
+	KEKFile string
+	// BulkConcurrency は一括投入の同時の呼び出しの数（設計概要 §10.3）。
+	BulkConcurrency int
 	// DevUserEmail は開発用の設定（もとの設計概要 §15 の 10）。JWT の検証の代わりに、このメールアドレスの利用者として動かす。
 	// Addr がループバックのときだけ使え、Access の設定とは同時に使えない。
 	DevUserEmail string
@@ -70,6 +74,9 @@ type DB struct {
 	MaxConns int32
 }
 
+// maxBulkConcurrency は OSSBSS_BULK_CONCURRENCY の上限（DB の接続を使い切らないように）。
+const maxBulkConcurrency = 8
+
 // Load は環境変数から設定を読む。誤りはまとめて返す。
 func Load() (Config, error) {
 	c := Config{
@@ -81,7 +88,9 @@ func Load() (Config, error) {
 			ServerCertFile: cmp.Or(os.Getenv("OSSBSS_PROVISIONER_SERVER_CERT"), "/certs/provisioner-server.pem"),
 			Timeout:        15 * time.Second,
 		},
-		AuditDir: cmp.Or(os.Getenv("OSSBSS_AUDIT_DIR"), "/data/audit"),
+		AuditDir:        cmp.Or(os.Getenv("OSSBSS_AUDIT_DIR"), "/data/audit"),
+		KEKFile:         cmp.Or(os.Getenv("OSSBSS_KEK_FILE"), "/run/secrets/kek"),
+		BulkConcurrency: 5,
 		DB: DB{
 			Addr:     cmp.Or(os.Getenv("OSSBSS_DB_ADDR"), "postgres:5432"),
 			Name:     cmp.Or(os.Getenv("OSSBSS_DB_NAME"), "ossbss"),
@@ -101,13 +110,21 @@ func Load() (Config, error) {
 	if _, _, err := net.SplitHostPort(c.DB.Addr); err != nil {
 		errs = append(errs, fmt.Errorf("OSSBSS_DB_ADDR: %w", err))
 	}
-	c.DB.MaxConns = 10
+	// 画面に加えて、一括投入の 2 本の待ち行列（対象ごとに同時 5 件。行の処理の間 1 つ使う。ロックに 1 つ）が使う。
+	c.DB.MaxConns = 20
 	if v := os.Getenv("OSSBSS_DB_MAX_CONNS"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil || n < 1 || n > 100 {
 			errs = append(errs, errors.New("OSSBSS_DB_MAX_CONNS: must be an integer between 1 and 100"))
 		}
 		c.DB.MaxConns = int32(n)
+	}
+	if v := os.Getenv("OSSBSS_BULK_CONCURRENCY"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > maxBulkConcurrency {
+			errs = append(errs, fmt.Errorf("OSSBSS_BULK_CONCURRENCY: must be an integer between 1 and %d", maxBulkConcurrency))
+		}
+		c.BulkConcurrency = n
 	}
 	if u, err := url.Parse(c.Provisioner.URL); err != nil || u.Scheme != "https" || u.Host == "" {
 		errs = append(errs, errors.New("OSSBSS_PROVISIONER_URL: must be an https URL such as https://aka-provisioner:9446/admin/v2"))

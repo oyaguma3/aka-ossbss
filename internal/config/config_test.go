@@ -22,8 +22,11 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Addr != ":8446" || c.LogLevel != slog.LevelInfo || c.DB != (DB{Addr: "postgres:5432", Name: "ossbss", User: "ossbss", Password: "pw", MaxConns: 10}) {
+	if c.Addr != ":8446" || c.LogLevel != slog.LevelInfo || c.DB != (DB{Addr: "postgres:5432", Name: "ossbss", User: "ossbss", Password: "pw", MaxConns: 20}) {
 		t.Errorf("config = %+v", c)
+	}
+	if c.KEKFile != "/run/secrets/kek" || c.BulkConcurrency != 5 {
+		t.Errorf("kek file = %q, bulk concurrency = %d", c.KEKFile, c.BulkConcurrency)
 	}
 	if c.Provisioner != (Provisioner{URL: "https://aka-provisioner:9446/admin/v2", ClientCertFile: "/certs/provisioner-client.pem",
 		ServerCertFile: "/certs/provisioner-server.pem", Timeout: 15 * time.Second}) {
@@ -128,5 +131,21 @@ func TestLoadAuthErrors(t *testing.T) {
 				t.Errorf("err = %v", err)
 			}
 		})
+	}
+}
+
+func TestBulkConcurrency(t *testing.T) {
+	setAccess(t)
+	t.Setenv("OSSBSS_BULK_CONCURRENCY", "3")
+	t.Setenv("OSSBSS_KEK_FILE", "/tmp/kek")
+	c, err := Load()
+	if err != nil || c.BulkConcurrency != 3 || c.KEKFile != "/tmp/kek" {
+		t.Errorf("config = %+v, %v", c, err)
+	}
+	for _, v := range []string{"0", "9", "x"} {
+		t.Setenv("OSSBSS_BULK_CONCURRENCY", v)
+		if _, err := Load(); err == nil {
+			t.Errorf("OSSBSS_BULK_CONCURRENCY=%s was accepted", v)
+		}
 	}
 }
