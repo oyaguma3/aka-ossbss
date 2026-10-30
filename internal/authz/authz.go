@@ -90,6 +90,9 @@ const (
 	JobManage                           // 一括投入・一括の物理削除の登録・投入・中断
 	ReconcileView                       // 突き合わせの結果の閲覧
 	ReconcileManage                     // 突き合わせの手動の実行と対応
+	ChargingView                        // 課金レコードの一覧とダウンロード
+	ChargingManage                      // PGP の公開鍵の登録、作り直し、今すぐ取り込む・締める
+	ExternalIDUpdate                    // テナントの外部の顧客番号と回線の外部の番号の設定
 )
 
 // rule は 1 つの操作の権限。
@@ -126,12 +129,15 @@ var rules = map[Op]rule{
 	JobManage:             {"一括投入・一括の物理削除", []Role{SystemAdmin}, false},
 	ReconcileView:         {"突き合わせの結果の閲覧", []Role{Operator, SystemAdmin}, false},
 	ReconcileManage:       {"突き合わせの実行と対応", []Role{SystemAdmin}, false},
+	ChargingView:          {"課金レコードの一覧とダウンロード", []Role{Operator, SystemAdmin}, false},
+	ChargingManage:        {"PGP の公開鍵の登録と課金レコードの作り直し", []Role{SystemAdmin}, false},
+	ExternalIDUpdate:      {"外部の顧客番号と回線の番号の設定", []Role{Operator, SystemAdmin}, false},
 }
 
 // Ops は操作の一覧（画面の要約の順）。
 func Ops() []Op {
 	out := make([]Op, 0, len(rules))
-	for op := SubscriberView; op <= ReconcileManage; op++ {
+	for op := SubscriberView; op <= ExternalIDUpdate; op++ {
 		out = append(out, op)
 	}
 	return out

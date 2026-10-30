@@ -67,6 +67,15 @@ type DB interface {
 	ReconcileFinding(ctx context.Context, id int64) (db.Finding, error)
 	CountFindings(ctx context.Context, runID int64) ([]db.FindingCount, error)
 	LatestScheduledRuns(ctx context.Context) ([]db.ScheduledRun, error)
+	SetTenantExternalID(ctx context.Context, id int64, value string, meta db.Meta) (string, error)
+	SetLineExternalID(ctx context.Context, imsi, value string) (string, error)
+	ChargingPeriods(ctx context.Context, limit int) ([]db.ChargingPeriod, error)
+	PendingChargingPeriods(ctx context.Context) ([]db.ChargingPeriod, error)
+	ChargingFiles(ctx context.Context) ([]db.ChargingFile, error)
+	ChargingFileData(ctx context.Context, id int64) (db.ChargingFile, error)
+	CurrentPGPKey(ctx context.Context) (db.PGPKey, bool, error)
+	PGPKeys(ctx context.Context, limit int) ([]db.PGPKey, error)
+	UsageImportFailures(ctx context.Context, limit int) ([]db.UsageImportFailure, error)
 }
 
 // JobRunner は一括投入のジョブの実行（internal/bulk の Runner が満たす）。
@@ -84,6 +93,18 @@ type Reconciler interface {
 	// Import は IMSI を台帳に取り込み、対応の結果を返す。Delete は下流のその側から削除し、対応の結果を返す。
 	Import(ctx context.Context, f db.Finding, tenant int64, by string) (string, error)
 	Delete(ctx context.Context, f db.Finding, by string) (string, error)
+}
+
+// ChargingRunner は課金レコードの実行（internal/charging の Runner が満たす）。
+type ChargingRunner interface {
+	// Busy は取り込み・締め・作り直しのどれかが動いているか。
+	Busy() bool
+	// StartImport・StartClose・StartRebuild は裏で始めてすぐに戻る（動いていれば charging.ErrRunning）。
+	StartImport(ctx context.Context, by string) error
+	StartClose(ctx context.Context, by string) error
+	StartRebuild(ctx context.Context, month time.Time, by string) error
+	// RegisterKey は公開鍵を今の鍵にする（登録できない鍵は *charging.KeyError）。
+	RegisterKey(ctx context.Context, armored, by string) (db.PGPKey, error)
 }
 
 // Provisioner は画面が使う aka-provisioner の口。*provisioner.Client が満たす。
@@ -121,6 +142,8 @@ type Handler struct {
 	jobs JobRunner
 	// reconciler は突き合わせ。
 	reconciler Reconciler
+	// charging は課金レコードの実行。
+	charging ChargingRunner
 	// initialAdmin は最初のシステム管理者のメールアドレス（画面からの削除・降格・無効化を断る）。
 	initialAdmin string
 	pages        pages
@@ -147,6 +170,8 @@ type Options struct {
 	Jobs JobRunner
 	// Reconciler は突き合わせ。
 	Reconciler Reconciler
+	// Charging は課金レコードの実行。
+	Charging ChargingRunner
 }
 
 // New は Handler を作る。テンプレートと静的ファイルはここで読み込む。
@@ -156,7 +181,7 @@ func New(opts Options) (*Handler, error) {
 	}
 	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner,
 		ops: &ledger.Ops{DB: opts.DB, PV: opts.Provisioner, Log: opts.Log}, rec: &audit.Recorder{DB: opts.DB, Files: opts.AuditFiles, Log: opts.Log},
-		kek: opts.KEK, jobs: opts.Jobs, reconciler: opts.Reconciler, initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
+		kek: opts.KEK, jobs: opts.Jobs, reconciler: opts.Reconciler, charging: opts.Charging, initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
 	var err error
 	if h.pages, err = parsePages(); err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -186,6 +211,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /subscribers/{imsi}/vecgen", h.vecgenUpdate)
 	mux.HandleFunc("POST /subscribers/{imsi}/source", h.sourceUpdate)
 	mux.HandleFunc("POST /subscribers/{imsi}/tenant", h.tenantMove)
+	mux.HandleFunc("POST /subscribers/{imsi}/external", h.subscriberExternal)
 	mux.HandleFunc("GET /subscribers/{imsi}/policy", h.policy)
 	mux.HandleFunc("POST /subscribers/{imsi}/policy/edit", h.policyEdit)
 	mux.HandleFunc("POST /subscribers/{imsi}/policy", h.policySave)
@@ -212,11 +238,20 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /reconcile/{id}/approve", h.reconcileApprove)
 	mux.HandleFunc("POST /reconcile/{id}/findings", h.reconcileFindings)
 
+	// 課金レコード（課金レコード §8.3・§8.4。Z15）。
+	mux.HandleFunc("GET /charging", h.chargingList)
+	mux.HandleFunc("POST /charging/import", h.chargingImport)
+	mux.HandleFunc("POST /charging/close", h.chargingClose)
+	mux.HandleFunc("POST /charging/key", h.chargingKey)
+	mux.HandleFunc("POST /charging/{period}/rebuild", h.chargingRebuild)
+	mux.HandleFunc("GET /charging/files/{id}", h.chargingDownload)
+
 	// テナント。
 	mux.HandleFunc("GET /tenants", h.tenantList)
 	mux.HandleFunc("POST /tenants", h.tenantCreate)
 	mux.HandleFunc("GET /tenants/{id}", h.tenant)
 	mux.HandleFunc("POST /tenants/{id}/rename", h.tenantRename)
+	mux.HandleFunc("POST /tenants/{id}/external", h.tenantExternal)
 	mux.HandleFunc("POST /tenants/{id}/delete", h.tenantDelete)
 
 	// アカウント。
@@ -274,6 +309,8 @@ type homeData struct {
 	JobsVisible bool
 	// Reconcile は突き合わせと定期の処理の欄（C・D）。
 	Reconcile *reconcileSummary
+	// Charging は課金レコードの欄（C・D）。
+	Charging *chargingSummary
 }
 
 // provisionerData は aka-provisioner の状態のカードに出す値。
@@ -361,6 +398,9 @@ func (h *Handler) home(w http.ResponseWriter, r *http.Request) {
 		}
 		if authz.Allowed(a, authz.ReconcileView, authz.NoTenant) {
 			d.Reconcile = h.loadReconcileSummary(ctx)
+		}
+		if authz.Allowed(a, authz.ChargingView, authz.NoTenant) {
+			d.Charging = h.loadChargingSummary(ctx)
 		}
 	}
 	cancel()

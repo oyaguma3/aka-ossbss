@@ -11,6 +11,7 @@ import (
 
 	"github.com/oyaguma3/aka-ossbss/internal/audit"
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
+	"github.com/oyaguma3/aka-ossbss/internal/charging"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 	"github.com/oyaguma3/aka-ossbss/internal/reconcile"
 )
@@ -101,6 +102,12 @@ func scheduleNameLabel(s string) string {
 		return "確定しないジョブの取り消し"
 	case "audit-files":
 		return "監査ログのファイルの整理"
+	case charging.JobUsageImport:
+		return "利用の集計の取り込み"
+	case charging.JobClose:
+		return "課金レコードの締め"
+	case charging.JobRebuild:
+		return "課金レコードの作り直し"
 	}
 	return s
 }

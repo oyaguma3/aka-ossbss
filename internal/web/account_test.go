@@ -19,9 +19,9 @@ func TestAdminRoutesByRole(t *testing.T) {
 		form         url.Values
 		allowed      []string // 許可する役割（メールアドレス）
 	}{
-		{"GET", "/tenants", nil, []string{"d"}},
+		{"GET", "/tenants", nil, []string{"c", "d"}},
 		{"POST", "/tenants", url.Values{"name": {"新テナント"}}, []string{"d"}},
-		{"GET", "/tenants/10", nil, []string{"d"}},
+		{"GET", "/tenants/10", nil, []string{"c", "d"}},
 		{"POST", "/tenants/10/rename", url.Values{"name": {"改名"}}, []string{"d"}},
 		{"POST", "/tenants/20/delete", url.Values{}, []string{"d"}},
 		{"GET", "/audit", nil, []string{"b", "c", "d"}},
@@ -69,7 +69,7 @@ func TestNavByRole(t *testing.T) {
 	}{
 		{"a@example.com", []string{`href="/subscribers"`, `href="/sessions"`}, []string{`href="/tenants"`, `href="/accounts"`, `href="/audit"`, `href="/clients"`}},
 		{"b@example.com", []string{`href="/accounts"`, `href="/audit"`}, []string{`href="/tenants"`, `href="/operations"`}},
-		{"c@example.com", []string{`href="/audit"`}, []string{`href="/tenants"`, `href="/accounts"`, `href="/operations"`}},
+		{"c@example.com", []string{`href="/audit"`, `href="/tenants"`, `href="/charging"`}, []string{`href="/accounts"`, `href="/operations"`}},
 		{"d@example.com", []string{`href="/tenants"`, `href="/accounts"`, `href="/audit"`}, []string{`href="/operations"`}},
 	} {
 		body := get(e.handler(t, c.email), "/sessions").Body.String()

@@ -53,6 +53,12 @@ type fakeDB struct {
 	runs      []db.ReconcileRun
 	findings  []db.Finding
 	schedules []db.ScheduledRun
+	// 課金レコード（charging_test.go）。
+	tenantExternal map[int64]string
+	periods        []db.ChargingPeriod
+	files          []db.ChargingFile
+	pgpKeys        []db.PGPKey
+	usageFailures  []db.UsageImportFailure
 }
 
 func newFakeDB() *fakeDB {

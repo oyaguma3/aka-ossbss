@@ -27,6 +27,15 @@
           {{- if $e.Deleted}}<tr><th>削除済みにした日時</th><td>{{datetime $e.DeletedAt}}</td></tr>{{end}}
           <tr><th>台帳の更新</th><td>{{datetime $e.UpdatedAt}}</td></tr>
           <tr><th>セッション</th><td><a class="link" href="/sessions?imsi={{$e.IMSI}}">この加入者のセッションを表示</a></td></tr>
+          {{- if .Perm.External}}
+          <tr><th>回線の外部の番号</th><td>
+            <form hx-post="/subscribers/{{$e.IMSI}}/external" hx-target="#subscriber" hx-swap="outerHTML" autocomplete="off" class="flex flex-wrap items-center gap-2">
+              <input name="external" value="{{$e.ExternalLineID}}" maxlength="100" class="input input-sm" aria-label="回線の外部の番号">
+              <button type="submit" class="btn btn-sm">保存する</button>
+              <span class="text-sm text-base-content/60">任意。課金レコードに入ります。</span>
+            </form>
+          </td></tr>
+          {{- end}}
         </tbody>
       </table>
     </div>

@@ -210,6 +210,8 @@ func (h *Handler) fillRows(r *http.Request, rows []subscriberRow, staff bool) st
 
 // subscriberPerm は詳細の画面で出す操作。
 type subscriberPerm struct {
+	// External は回線の外部の番号を設定できるか。
+	External                                                                                         bool
 	State, Reinstate, Delete, VecgenEdit, SourceEdit, PolicyEdit, Move, VecgenNew, RadiusNew, Detail bool
 }
 
@@ -270,7 +272,7 @@ func (h *Handler) loadSubscriber(r *http.Request, e db.Entry) subscriberData {
 		Perm: subscriberPerm{State: allowed(authz.SubscriberStateChange), Reinstate: allowed(authz.SubscriberReinstate),
 			Delete: allowed(authz.SubscriberDelete), VecgenEdit: allowed(authz.VecgenUpdate), SourceEdit: allowed(authz.SourceUpdate),
 			PolicyEdit: allowed(authz.PolicyUpdate), Move: allowed(authz.TenantMove), VecgenNew: allowed(authz.VecgenRegister),
-			RadiusNew: allowed(authz.RadiusRegister), Detail: allowed(authz.SubscriberDetailView)}}
+			RadiusNew: allowed(authz.RadiusRegister), Detail: allowed(authz.SubscriberDetailView), External: allowed(authz.ExternalIDUpdate)}}
 	t, err := h.tenants(r)
 	if err != nil {
 		h.log.Error("tenants", "error", err)

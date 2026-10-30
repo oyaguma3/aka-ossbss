@@ -22,6 +22,7 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/auth"
 	"github.com/oyaguma3/aka-ossbss/internal/bulk"
 	"github.com/oyaguma3/aka-ossbss/internal/certs"
+	"github.com/oyaguma3/aka-ossbss/internal/charging"
 	"github.com/oyaguma3/aka-ossbss/internal/config"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 	"github.com/oyaguma3/aka-ossbss/internal/kek"
@@ -188,7 +189,9 @@ func serve(ctx context.Context) error {
 	if err := rec.Recover(ctx); err != nil {
 		return err
 	}
-	sched, err := newScheduler(cfg, log, d, jobs, rec, auditFiles)
+	// 課金レコード（aka-mvpset の charging-records.md。Z1）。
+	bill := charging.New(charging.Options{Log: log, DB: d, PV: pv, Audit: &audit.Recorder{DB: d, Files: auditFiles, Log: log}, Base: bgCtx})
+	sched, err := newScheduler(cfg, log, d, jobs, rec, bill, auditFiles)
 	if err != nil {
 		return err
 	}
@@ -203,10 +206,11 @@ func serve(ctx context.Context) error {
 		stopBG()
 		background.Wait()
 		rec.Wait()
+		bill.Wait()
 	}()
 
 	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv,
-		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail, KEK: key, Jobs: jobs, Reconciler: rec})
+		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail, KEK: key, Jobs: jobs, Reconciler: rec, Charging: bill})
 	if err != nil {
 		return err
 	}
@@ -221,14 +225,20 @@ const auditRetentionDays = 14
 // retentionAt は 13 か月より古い記録を消す時刻（日本時間。Y11）。
 const retentionAt = "04:30"
 
+// chargingCloseAt は課金レコードの締めの時刻（日本時間。締めていない過去の月があれば締める。課金レコードの決定事項 5・Z8）。
+const chargingCloseAt = "06:00"
+
 // newScheduler は定期の処理を組み立てる（設計概要 §16）。
-func newScheduler(cfg config.Config, log *slog.Logger, d *db.DB, jobs *bulk.Runner, rec *reconcile.Runner, files *audit.Files) (*scheduler.Scheduler, error) {
+func newScheduler(cfg config.Config, log *slog.Logger, d *db.DB, jobs *bulk.Runner, rec *reconcile.Runner, bill *charging.Runner, files *audit.Files) (*scheduler.Scheduler, error) {
 	return scheduler.New(scheduler.Options{Log: log, DB: d, Jobs: []scheduler.Job{
 		{Name: "reconcile", Daily: cfg.ReconcileAt, Run: rec.RunScheduled},
 		{Name: "check-needed", Every: 5 * time.Minute, Run: rec.CheckMarked},
+		{Name: charging.JobUsageImport, Daily: cfg.UsageImportAt, Run: bill.RunImport},
+		{Name: charging.JobClose, Daily: chargingCloseAt, Run: bill.RunClose},
 		{Name: "retention", Daily: retentionAt, Run: func(ctx context.Context) (string, error) {
 			c, err := d.PurgeOld(ctx, db.RetentionCutoff(time.Now()))
-			return fmt.Sprintf("消した行: 監査ログ %d、ジョブ %d、突き合わせ %d、定期の処理の記録 %d。", c.Audit, c.Jobs, c.Reconcile, c.Scheduled), err
+			return fmt.Sprintf("消した行: 監査ログ %d、ジョブ %d、突き合わせ %d、定期の処理の記録 %d、状態の事実 %d。課金レコードの月 %d、利用の集計の月 %d。",
+				c.Audit, c.Jobs, c.Reconcile, c.Scheduled, c.Events, c.Charging, c.UsagePartitions), err
 		}},
 		{Name: "job-sweep", Every: time.Hour, Run: func(ctx context.Context) (string, error) {
 			n, err := jobs.Sweep(ctx)

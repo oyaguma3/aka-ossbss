@@ -99,6 +99,13 @@ var auditActions = []struct{ Action, Label string }{
 	{audit.ActionReconcileApprove, "突き合わせの修正の承認"},
 	{audit.ActionReconcileImport, "突き合わせでの取り込み"},
 	{audit.ActionReconcileDelete, "突き合わせでの下流からの削除"},
+	{audit.ActionChargingImport, "利用の集計の取り込み"},
+	{audit.ActionChargingClose, "課金レコードの締め"},
+	{audit.ActionChargingFile, "課金レコードのファイルの生成"},
+	{audit.ActionChargingDownload, "課金レコードのダウンロード"},
+	{audit.ActionChargingKey, "PGP の公開鍵の登録"},
+	{audit.ActionTenantExternal, "テナントの外部の顧客番号の変更"},
+	{audit.ActionLineExternal, "回線の外部の番号の変更"},
 }
 
 // otherActionLabels は、aka-provisioner と下流の監査ログにだけ出る操作の名前。

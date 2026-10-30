@@ -8,12 +8,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/oyaguma3/aka-ossbss/internal/audit"
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 )
 
-// テナントの画面（もとの画面仕様 §8。システム管理者だけ）。テナントの作成・変更・削除は、課金レコードの状態の事実を
-// 同じトランザクションで書く（db の CreateTenant など）。削除したテナントの ID は使い回さない。
+// テナントの画面（もとの画面仕様 §8）。作成・名前の変更・削除はシステム管理者だけ、外部の顧客番号は運用担当も設定できる（Z15）ので、
+// 運用担当も一覧と詳細を見る。テナントの作成・変更・削除は、課金レコードの状態の事実を同じトランザクションで書く
+// （db の CreateTenant など）。削除したテナントの ID は使い回さない。
 
 // maxTenantNameLen はテナントの名前の文字数の上限（DB の CHECK 制約と同じ）。
 const maxTenantNameLen = 100
@@ -36,10 +38,20 @@ type tenantsData struct {
 	NameError string
 	Message   string
 	Error     string
+	// CanManage は作成のフォームとアカウントの件数を出すか。
+	CanManage bool
+}
+
+// requireTenantView はテナントの一覧と詳細を見る権限を確かめる。
+func (h *Handler) requireTenantView(w http.ResponseWriter, r *http.Request) bool {
+	if can(r, authz.TenantManage) {
+		return true
+	}
+	return h.requireOp(w, r, authz.ExternalIDUpdate)
 }
 
 func (h *Handler) tenantList(w http.ResponseWriter, r *http.Request) {
-	if !h.requireOp(w, r, authz.TenantManage) {
+	if !h.requireTenantView(w, r) {
 		return
 	}
 	d := tenantsData{}
@@ -59,7 +71,7 @@ func (h *Handler) renderTenants(w http.ResponseWriter, r *http.Request, status i
 		h.dbUnavailable(w, r, err)
 		return
 	}
-	d.Tenants = list
+	d.Tenants, d.CanManage = list, can(r, authz.TenantManage)
 	h.renderPart(w, r, status, "tenants", "tenants-section", "テナント", d)
 }
 
@@ -95,8 +107,12 @@ type tenantData struct {
 	Tenant db.TenantSummary
 	// Name と NameError は名前の変更の入力と誤り。
 	Name, NameError string
-	Message         string
-	Error           string
+	// External と ExternalError は外部の顧客番号の入力と誤り。
+	External, ExternalError string
+	Message                 string
+	Error                   string
+	// CanManage は名前の変更と削除を出すか。CanExternal は外部の顧客番号の変更を出すか。
+	CanManage, CanExternal bool
 }
 
 // InUse は、属するもの（所属の記録・アカウント）が残っているか。
@@ -129,7 +145,7 @@ func (h *Handler) renderTenant(w http.ResponseWriter, r *http.Request, id int64,
 		h.dbUnavailable(w, r, err)
 		return
 	}
-	d := tenantData{Tenant: t, Name: t.Name}
+	d := tenantData{Tenant: t, Name: t.Name, External: t.ExternalCustomerID, CanManage: can(r, authz.TenantManage), CanExternal: can(r, authz.ExternalIDUpdate)}
 	if mutate != nil {
 		mutate(&d)
 	}
@@ -138,7 +154,7 @@ func (h *Handler) renderTenant(w http.ResponseWriter, r *http.Request, id int64,
 
 func (h *Handler) tenant(w http.ResponseWriter, r *http.Request) {
 	id, ok := h.pathTenantID(w, r)
-	if !ok || !h.requireOp(w, r, authz.TenantManage) {
+	if !ok || !h.requireTenantView(w, r) {
 		return
 	}
 	h.renderTenant(w, r, id, http.StatusOK, nil)
@@ -176,6 +192,38 @@ func (h *Handler) tenantRename(w http.ResponseWriter, r *http.Request) {
 		h.record(r, auditTenantUpdate, name, id, map[string]any{"name": map[string]any{"from": before, "to": name}})
 	}
 	h.renderTenant(w, r, id, http.StatusOK, func(d *tenantData) { d.Message = "名前を変更しました。" })
+}
+
+// tenantExternal はテナントの外部の顧客番号を変える（運用担当・システム管理者）。状態の事実と監査ログに残す。
+func (h *Handler) tenantExternal(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.pathTenantID(w, r)
+	if !ok || !h.requireOp(w, r, authz.ExternalIDUpdate) {
+		return
+	}
+	if err := parseForm(w, r); err != nil {
+		h.renderError(w, r, http.StatusBadRequest, "入力を読み取れませんでした。")
+		return
+	}
+	value, msg := readExternalID(r)
+	if msg != "" {
+		h.renderTenant(w, r, id, http.StatusBadRequest, func(d *tenantData) { d.External, d.ExternalError = value, msg })
+		return
+	}
+	ctx, cancel := dbContext(r)
+	before, err := h.db.SetTenantExternalID(ctx, id, value, meta(r))
+	cancel()
+	switch {
+	case errors.Is(err, db.ErrNotFound):
+		h.renderErrorLink(w, r, http.StatusNotFound, msgTenantNotFound, "/tenants", "テナントの一覧へ")
+		return
+	case err != nil:
+		h.dbUnavailable(w, r, err)
+		return
+	}
+	if before != value {
+		h.record(r, audit.ActionTenantExternal, formatID(id), id, map[string]any{"externalCustomerId": map[string]any{"from": before, "to": value}})
+	}
+	h.renderTenant(w, r, id, http.StatusOK, func(d *tenantData) { d.Message = "外部の顧客番号を変更しました。" })
 }
 
 func (h *Handler) tenantDelete(w http.ResponseWriter, r *http.Request) {

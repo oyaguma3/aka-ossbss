@@ -9,24 +9,27 @@
   {{template "alerts" (dict "Message" .Message "Error" .Error)}}
   <div class="overflow-x-auto bg-base-100 rounded-box shadow mb-6">
     <table class="table table-sm">
-      <thead><tr><th>ID</th><th>名前</th><th>加入者</th><th>アカウント</th><th>作成日時</th></tr></thead>
+      <thead><tr><th>ID</th><th>名前</th><th>外部の顧客番号</th><th>加入者</th>{{if .CanManage}}<th>アカウント</th>{{end}}<th>作成日時</th></tr></thead>
       <tbody>
+        {{- $manage := .CanManage}}
         {{- range .Tenants}}
         <tr>
           <td class="font-mono">{{.ID}}</td>
           <td><a class="link" href="/tenants/{{.ID}}">{{.Name}}</a></td>
+          <td>{{.ExternalCustomerID}}</td>
           <td><a class="link" href="/subscribers?tenant={{.ID}}">{{.Subscribers}}</a></td>
-          <td><a class="link" href="/accounts?tenant={{.ID}}">{{.Accounts}}</a></td>
+          {{- if $manage}}<td><a class="link" href="/accounts?tenant={{.ID}}">{{.Accounts}}</a></td>{{end}}
           <td class="whitespace-nowrap">{{datetime .CreatedAt}}</td>
         </tr>
         {{- else}}
-        <tr><td colspan="5" class="text-base-content/60">テナントはありません。</td></tr>
+        <tr><td colspan="6" class="text-base-content/60">テナントはありません。</td></tr>
         {{- end}}
       </tbody>
     </table>
   </div>
   <p class="text-sm text-base-content/60 mb-6">加入者の件数は台帳の数です（削除済みを除く）。ID はテナントの刻印の値で、削除したテナントの ID は使い回しません。</p>
 
+  {{- if .CanManage}}
   <div class="card bg-base-100 shadow">
     <div class="card-body">
       <h2 class="card-title">作成</h2>
@@ -40,5 +43,6 @@
       </form>
     </div>
   </div>
+  {{- end}}
 </div>
 {{- end}}

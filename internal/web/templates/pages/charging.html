@@ -1,0 +1,113 @@
+{{define "content" -}}
+<div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+  <h1 class="text-2xl font-bold">課金レコード</h1>
+  {{- if .Data.CanManage}}
+  <div class="flex flex-wrap gap-2">
+    <form method="post" action="/charging/import"><button type="submit" class="btn btn-sm">今すぐ取り込む</button></form>
+    <form method="post" action="/charging/close"><button type="submit" class="btn btn-primary btn-sm">今すぐ締める</button></form>
+  </div>
+  {{- end}}
+</div>
+<p class="text-sm text-base-content/60 mb-4">月次のまとめ（CSV と manifest の ZIP を PGP で暗号化したファイル）です。締めは翌月 1 日の 6 時で、利用の集計は毎日取り込みます。</p>
+{{template "alerts" (dict "Message" .Data.Message "Error" .Data.Error)}}
+{{template "charging-table" .Data}}
+
+<h2 class="text-lg font-semibold mt-6 mb-2">PGP の公開鍵</h2>
+<div class="card bg-base-100 shadow mb-6">
+  <div class="card-body">
+    {{- with .Data.Key.Key}}
+    <table class="table table-sm">
+      <tbody>
+        <tr><th class="w-48">今の鍵のフィンガープリント</th><td class="font-mono break-all">{{.Fingerprint}}</td></tr>
+        <tr><th>種類</th><td>{{.Algorithm}}</td></tr>
+        <tr><th>期限</th><td>{{if .ExpiresAt.IsZero}}なし{{else}}{{datetime .ExpiresAt}}{{end}}{{if $.Data.Key.Expired}} <span class="badge badge-error badge-sm">期限切れ</span>{{end}}</td></tr>
+        <tr><th>登録</th><td>{{datetime .CreatedAt}}（{{.CreatedBy}}）</td></tr>
+      </tbody>
+    </table>
+    {{- else}}
+    <p class="text-base-content/60">登録されていません。登録するまでファイルは作らず、計算の結果だけを残します。</p>
+    {{- end}}
+    {{- if .Data.CanManage}}
+    <form method="post" action="/charging/key" autocomplete="off" class="mt-2">
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">公開鍵を登録する（ASCII 形式。RSA 3072 ビット以上か Curve25519）</legend>
+        <textarea name="armored" rows="6" required class="textarea w-full font-mono text-xs" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----">{{.Data.Armored}}</textarea>
+      </fieldset>
+      <button type="submit" class="btn btn-primary btn-sm mt-2">登録する</button>
+      <p class="text-sm text-base-content/60 mt-2">次に作るファイルから新しい鍵を使います。前に作ったファイルは古い鍵のまま残ります（作り直せば今の鍵で版が上がります）。</p>
+    </form>
+    {{- end}}
+    {{- if gt (len .Data.Keys) 1}}
+    <h3 class="font-semibold mt-4">これまでの鍵</h3>
+    <ul class="text-sm">
+      {{- range .Data.Keys}}<li class="font-mono break-all">{{.Fingerprint}}<span class="font-sans text-base-content/60">（{{datetime .CreatedAt}}）</span></li>{{end}}
+    </ul>
+    {{- end}}
+  </div>
+</div>
+{{- end}}
+
+{{/* 実行が動いている間は 3 秒ごとに読み込み直す。 */}}
+{{define "charging-table" -}}
+<div id="charging-table"{{if .Busy}} hx-get="/charging" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+  {{- with .Key.Warning}}<div role="alert" class="alert alert-warning mb-4"><span>{{.}}</span></div>{{end}}
+  {{- if .Busy}}<div role="status" class="alert alert-info mb-4"><span>取り込み・締め・作り直しのどれかが動いています。</span></div>{{end}}
+  <div class="overflow-x-auto bg-base-100 rounded-box shadow mb-6">
+    <table class="table table-sm">
+      <thead><tr><th>対象月</th><th>通し番号</th><th>状態</th><th>回線</th><th>テナント</th><th>事実</th><th>訂正</th><th>取り込めなかった日</th><th>締めた時刻</th><th>ファイル</th>{{if .CanManage}}<th></th>{{end}}</tr></thead>
+      <tbody>
+        {{- $manage := .CanManage}}
+        {{- range .Periods}}
+        <tr>
+          <td class="whitespace-nowrap font-mono">{{chargingMonth .Period}}</td>
+          <td class="font-mono">{{.Sequence}}</td>
+          <td class="whitespace-nowrap">{{chargingState .State}}</td>
+          <td>{{.LineCount}}</td>
+          <td>{{.TenantCount}}</td>
+          <td>{{.EventCount}}</td>
+          <td>{{.AdjCount}}</td>
+          <td>{{.MissingDays}}</td>
+          <td class="whitespace-nowrap">{{datetime .ClosedAt}}</td>
+          <td>
+            {{- range .Files}}
+            <div class="mb-1"><a class="link font-mono text-sm" href="/charging/files/{{.ID}}">{{.FileName}}</a>
+              <div class="text-xs text-base-content/60">{{octets .Size}}、{{datetime .CreatedAt}}、鍵 {{slice .KeyFingerprint 0 8}}…</div></div>
+            {{- else}}<span class="text-base-content/60">なし</span>{{end}}
+          </td>
+          {{- if $manage}}
+          <td>
+            <form method="post" action="/charging/{{chargingMonth .Period}}/rebuild"><button type="submit" class="btn btn-xs whitespace-nowrap" title="今の鍵で版を上げて作ります">{{if .Files}}作り直す{{else}}作る{{end}}</button></form>
+          </td>
+          {{- end}}
+        </tr>
+        {{- else}}
+        <tr><td colspan="11" class="text-base-content/60">まだ締めていません。</td></tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+  {{- if .Failures}}
+  <div role="alert" class="alert alert-warning mb-4">
+    <span>利用の集計を読み切れていない日があります（その日に登録されていた回線は usage_complete が false になります）:
+      {{- range .Failures}} {{.Date.Format "2006-01-02"}}{{end}}</span>
+  </div>
+  {{- end}}
+  {{- if .Schedules}}
+  <div class="overflow-x-auto bg-base-100 rounded-box shadow">
+    <table class="table table-sm">
+      <thead><tr><th>処理</th><th>最後の記録</th><th>結果</th><th>内容</th></tr></thead>
+      <tbody>
+        {{- range .Schedules}}
+        <tr>
+          <td class="whitespace-nowrap">{{scheduleName .Name}}</td>
+          <td class="whitespace-nowrap">{{datetime .StartedAt}}</td>
+          <td class="whitespace-nowrap">{{if eq .Status "failed"}}<span class="text-error">{{scheduleStatus .Status}}</span>{{else}}{{scheduleStatus .Status}}{{end}}</td>
+          <td>{{.Detail}}</td>
+        </tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+  {{- end}}
+</div>
+{{- end}}

@@ -182,3 +182,21 @@
   </div>
 </div>
 {{- end}}
+
+{{/* charging-summary はダッシュボードの課金レコードの欄（引数は chargingSummary）。 */}}
+{{define "charging-summary" -}}
+<div class="card bg-base-100 shadow mb-6">
+  <div class="card-body">
+    <h2 class="card-title">課金レコード <a class="link text-sm font-normal" href="/charging">一覧へ</a></h2>
+    {{- with .Warning}}
+    <div role="alert" class="alert alert-warning"><span>{{.}}</span></div>
+    {{- end}}
+    {{- with .Latest}}
+    <p>最新の締め: {{chargingMonth .Period}}（{{datetime .ClosedAt}}）{{chargingState .State}}</p>
+    {{- else}}
+    <p class="text-base-content/60">まだ締めていません。</p>
+    {{- end}}
+    {{- if .Pending}}<p>ファイルのない月: {{.Pending}} か月</p>{{end}}
+  </div>
+</div>
+{{- end}}

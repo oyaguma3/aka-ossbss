@@ -15,13 +15,30 @@
         <tbody>
           <tr><th class="w-48">ID（刻印の値）</th><td class="font-mono">{{.Tenant.ID}}</td></tr>
           <tr><th>加入者</th><td><a class="link" href="/subscribers?tenant={{.Tenant.ID}}">{{.Tenant.Subscribers}} 件</a></td></tr>
-          <tr><th>アカウント</th><td><a class="link" href="/accounts?tenant={{.Tenant.ID}}">{{.Tenant.Accounts}} 件</a></td></tr>
+          {{- if .CanManage}}<tr><th>アカウント</th><td><a class="link" href="/accounts?tenant={{.Tenant.ID}}">{{.Tenant.Accounts}} 件</a></td></tr>{{end}}
           <tr><th>作成日時</th><td>{{datetime .Tenant.CreatedAt}}</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 
+  {{- if .CanExternal}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">外部の顧客番号</h2>
+      <form hx-post="/tenants/{{.Tenant.ID}}/external" hx-target="#tenant" hx-swap="outerHTML" autocomplete="off" class="flex flex-wrap items-end gap-2">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">外部の顧客番号（契約の ID）</legend>
+          <input name="external" value="{{.External}}" maxlength="100" class="input{{if .ExternalError}} input-error{{end}}">
+          {{- if .ExternalError}}{{template "field-error" .ExternalError}}{{else}}<p class="label">任意。課金レコードに入ります。</p>{{end}}
+        </fieldset>
+        <button type="submit" class="btn btn-primary mb-6">保存する</button>
+      </form>
+    </div>
+  </div>
+  {{- end}}
+
+  {{- if .CanManage}}
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body">
       <h2 class="card-title">名前の変更</h2>
@@ -41,5 +58,6 @@
   {{- if .InUse}}<p class="text-sm text-base-content/60 mt-2">加入者（削除済みを除く）・アカウントが属している間は削除できません。先に加入者を物理削除するか付け替え、アカウントを移すか削除してください。削除したテナントの ID は使い回しません。</p>{{end}}
   {{template "confirm" (dict "ID" "dialog-delete" "Title" "テナントの削除" "Form" "tenant-delete" "Label" "削除する" "Class" "btn-error"
     "Message" (printf "テナント「%s」を削除します。監査ログは残ります。よろしいですか？" .Tenant.Name))}}
+  {{- end}}
 </div>
 {{- end}}

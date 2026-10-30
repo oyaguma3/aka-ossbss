@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
@@ -68,6 +69,9 @@ var funcs = template.FuncMap{
 	"runTrigger":     runTriggerLabel,
 	"scheduleName":   scheduleNameLabel,
 	"scheduleStatus": scheduleStatusLabel,
+	// 課金レコードの名前。
+	"chargingMonth": func(t time.Time) string { return t.Format("2006-01") },
+	"chargingState": chargingStateLabel,
 	// node は下流の /status の主な項目（読めなければ nil）。
 	"node": func(d provisioner.DownstreamStatus) *provisioner.NodeStatus {
 		if n, ok := d.Node(); ok {
@@ -138,7 +142,10 @@ func navItems(a authz.Actor) []navItem {
 	if authz.Allowed(a, authz.ReconcileView, target) {
 		items = append(items, navItem{"突き合わせ", "/reconcile", []string{"reconcile"}})
 	}
-	if authz.Allowed(a, authz.TenantManage, target) {
+	if authz.Allowed(a, authz.ChargingView, target) {
+		items = append(items, navItem{"課金レコード", "/charging", []string{"charging"}})
+	}
+	if authz.Allowed(a, authz.TenantManage, target) || authz.Allowed(a, authz.ExternalIDUpdate, target) {
 		items = append(items, navItem{"テナント", "/tenants", []string{"tenants"}})
 	}
 	if authz.Allowed(a, authz.AccountManage, target) {
