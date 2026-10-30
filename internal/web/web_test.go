@@ -44,6 +44,11 @@ type fakeDB struct {
 	// ledgerErr を設定すると、台帳の書き込み（Apply）だけがそのエラーを返す。auditErr は監査ログの書き込みだけ。
 	ledgerErr, auditErr error
 	audit               []db.AuditEntry
+	// ジョブ（jobs_test.go）。
+	jobs       map[int64]*db.Job
+	jobDeleted map[int64][]string
+	jobSealed  map[int64][]byte
+	jobRows    map[int64][]db.JobRow
 }
 
 func newFakeDB() *fakeDB {

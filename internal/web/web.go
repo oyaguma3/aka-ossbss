@@ -18,6 +18,7 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/auth"
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
+	"github.com/oyaguma3/aka-ossbss/internal/kek"
 	"github.com/oyaguma3/aka-ossbss/internal/ledger"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 )
@@ -50,6 +51,23 @@ type DB interface {
 	UpdateAccount(ctx context.Context, id int64, from, to db.AccountState) error
 	SetAccountDisabled(ctx context.Context, id int64, from db.AccountState, disabled bool) error
 	DeleteAccount(ctx context.Context, id int64, from db.AccountState) error
+	CreateJob(ctx context.Context, c db.JobCreate, seal func(id int64) ([]byte, error)) (db.Job, error)
+	Job(ctx context.Context, id int64) (db.Job, error)
+	ListJobs(ctx context.Context, limit int) ([]db.Job, error)
+	ActiveJobs(ctx context.Context) ([]db.Job, error)
+	JobDeletedIMSIs(ctx context.Context, id int64) ([]string, error)
+	ConfirmJob(ctx context.Context, id int64, deletedChoice, deletedReason string) (db.Job, error)
+	CancelJob(ctx context.Context, id int64, reason string) (db.Job, error)
+	JobRows(ctx context.Context, id int64, afterLine, limit int) ([]db.JobRow, error)
+	SubscribersByIMSI(ctx context.Context, imsis []string) (map[string]db.Entry, error)
+}
+
+// JobRunner は一括投入のジョブの実行（internal/bulk の Runner が満たす）。
+type JobRunner interface {
+	// Wake はジョブを確定したことを待ち行列に知らせる。
+	Wake(target db.Side)
+	// Interrupt はジョブを中断する（待ちならその場で、実行中なら処理中の行を終えてから）。
+	Interrupt(ctx context.Context, id int64, by string) (db.Job, error)
 }
 
 // Provisioner は画面が使う aka-provisioner の口。*provisioner.Client が満たす。
@@ -82,6 +100,9 @@ type Handler struct {
 	// ops は加入者の操作の手順、rec は監査ログ。
 	ops *ledger.Ops
 	rec *audit.Recorder
+	// kek は一括投入の待ちのファイルの暗号化の鍵、jobs はジョブの実行。
+	kek  *kek.KEK
+	jobs JobRunner
 	// initialAdmin は最初のシステム管理者のメールアドレス（画面からの削除・降格・無効化を断る）。
 	initialAdmin string
 	pages        pages
@@ -102,6 +123,10 @@ type Options struct {
 	AuditFiles *audit.Files
 	// InitialAdminEmail は最初のシステム管理者のメールアドレス（OSSBSS_INITIAL_ADMIN_EMAIL）。
 	InitialAdminEmail string
+	// KEK は一括投入の待ちのファイルの暗号化の鍵（OSSBSS_KEK_FILE）。
+	KEK *kek.KEK
+	// Jobs は一括投入のジョブの実行。
+	Jobs JobRunner
 }
 
 // New は Handler を作る。テンプレートと静的ファイルはここで読み込む。
@@ -111,7 +136,7 @@ func New(opts Options) (*Handler, error) {
 	}
 	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner,
 		ops: &ledger.Ops{DB: opts.DB, PV: opts.Provisioner, Log: opts.Log}, rec: &audit.Recorder{DB: opts.DB, Files: opts.AuditFiles, Log: opts.Log},
-		initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
+		kek: opts.KEK, jobs: opts.Jobs, initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
 	var err error
 	if h.pages, err = parsePages(); err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -147,6 +172,18 @@ func (h *Handler) Routes() http.Handler {
 
 	// セッション（設計概要 §11。W9）。
 	mux.HandleFunc("GET /sessions", h.sessions)
+
+	// 一括投入と一括の物理削除（設計概要 §10。X10）。
+	mux.HandleFunc("GET /jobs", h.jobList)
+	mux.HandleFunc("POST /jobs", h.jobCreate)
+	mux.HandleFunc("GET /jobs/new", h.jobNew)
+	mux.HandleFunc("POST /jobs/rules", h.jobRules)
+	mux.HandleFunc("GET /jobs/summary", h.jobSummary)
+	mux.HandleFunc("GET /jobs/{id}", h.job)
+	mux.HandleFunc("GET /jobs/{id}/rows.csv", h.jobRowsCSV)
+	mux.HandleFunc("POST /jobs/{id}/confirm", h.jobConfirm)
+	mux.HandleFunc("POST /jobs/{id}/cancel", h.jobCancel)
+	mux.HandleFunc("POST /jobs/{id}/interrupt", h.jobInterrupt)
 
 	// テナント。
 	mux.HandleFunc("GET /tenants", h.tenantList)
@@ -205,6 +242,9 @@ type homeData struct {
 	Counts *db.LedgerCounts
 	// Provisioner は aka-provisioner と下流の状態（C・D）。
 	Provisioner *provisionerData
+	// Jobs は一括投入の待ちと実行中のジョブ（C・D）。JobsVisible は欄を出すか。
+	Jobs        []db.Job
+	JobsVisible bool
 }
 
 // provisionerData は aka-provisioner の状態のカードに出す値。
@@ -281,6 +321,13 @@ func (h *Handler) home(w http.ResponseWriter, r *http.Request) {
 		if d.Staff {
 			if t, err := h.db.Tenants(ctx); err == nil {
 				d.Tenants = len(t)
+			}
+		}
+		if authz.Allowed(a, authz.JobView, authz.NoTenant) {
+			if jobs, err := h.db.ActiveJobs(ctx); err != nil {
+				h.log.Warn("home: active jobs", "error", err)
+			} else {
+				d.Jobs, d.JobsVisible = jobs, true
 			}
 		}
 	}

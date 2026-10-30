@@ -56,6 +56,11 @@ var funcs = template.FuncMap{
 		return strings.Join(out, ", ")
 	},
 	"joinStrings": func(v []string) string { return strings.Join(v, ", ") },
+	// jobKind・jobState・jobRow はジョブの種類・状態・行の結果の名前、percent は進み具合の率。
+	"jobKind":  jobKindLabel,
+	"jobState": jobStateLabel,
+	"jobRow":   jobRowLabel,
+	"percent":  jobPercent,
 	// node は下流の /status の主な項目（読めなければ nil）。
 	"node": func(d provisioner.DownstreamStatus) *provisioner.NodeStatus {
 		if n, ok := d.Node(); ok {
@@ -120,6 +125,9 @@ func navItems(a authz.Actor) []navItem {
 		{"セッション", "/sessions", []string{"sessions"}},
 	}
 	target := a.TenantID // A・B は自分のテナントのものとして判定する
+	if authz.Allowed(a, authz.JobView, target) {
+		items = append(items, navItem{"一括投入", "/jobs", []string{"jobs"}})
+	}
 	if authz.Allowed(a, authz.TenantManage, target) {
 		items = append(items, navItem{"テナント", "/tenants", []string{"tenants"}})
 	}

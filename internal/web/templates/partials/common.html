@@ -117,3 +117,35 @@
   {{- end}}
 </select>
 {{- end}}
+
+{{/* jobs-summary はダッシュボードのジョブの欄（引数は待ちと実行中のジョブ。5 秒ごとに読み込み直す）。 */}}
+{{define "jobs-summary" -}}
+<div id="jobs-summary" class="card bg-base-100 shadow mb-6" hx-get="/jobs/summary" hx-trigger="every 5s" hx-swap="outerHTML">
+  <div class="card-body">
+    <h2 class="card-title">一括投入 <a class="link text-sm font-normal" href="/jobs">一覧へ</a></h2>
+    {{- range .}}
+    <div class="flex flex-wrap items-center gap-3">
+      <a class="link font-mono" href="/jobs/{{.ID}}">#{{.ID}}</a>
+      <span>{{jobKind .Kind}}</span>
+      <span class="badge badge-sm{{if eq .State "running"}} badge-info{{end}}">{{jobState .State}}</span>
+      {{- if eq .State "running"}}
+      <progress class="progress progress-primary w-40" value="{{percent .}}" max="100"></progress>
+      <span class="text-sm">{{.Done}} / {{.Total}}（失敗 {{.Failed}}）</span>
+      {{- else}}
+      <span class="text-sm">{{.Total}} 行</span>
+      {{- end}}
+    </div>
+    {{- else}}
+    <p class="text-base-content/60">待ちと実行中のジョブはありません。</p>
+    {{- end}}
+  </div>
+</div>
+{{- end}}
+
+{{/* job-state はジョブの状態（引数は状態）。 */}}
+{{define "job-state" -}}
+{{- if eq . "running"}}<span class="badge badge-info badge-sm">{{jobState .}}</span>
+{{- else if eq . "completed"}}<span class="badge badge-success badge-sm badge-outline">{{jobState .}}</span>
+{{- else if eq . "interrupted"}}<span class="badge badge-warning badge-sm">{{jobState .}}</span>
+{{- else}}<span class="badge badge-neutral badge-sm">{{jobState .}}</span>{{end -}}
+{{- end}}

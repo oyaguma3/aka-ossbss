@@ -43,6 +43,10 @@
 <div role="alert" class="alert alert-warning mb-6"><span>台帳の件数を数えられませんでした（データベースに接続できません）。</span></div>
 {{- end}}
 
+{{- if .JobsVisible}}
+{{template "jobs-summary" .Jobs}}
+{{- end}}
+
 <div class="grid gap-6 md:grid-cols-2">
   <div class="card bg-base-100 shadow">
     <div class="card-body">

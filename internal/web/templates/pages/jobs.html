@@ -1,0 +1,35 @@
+{{define "content" -}}
+<div class="flex flex-wrap items-center justify-between gap-2 mb-4">
+  <h1 class="text-2xl font-bold">一括投入</h1>
+  {{- if .Data.CanManage}}<a class="btn btn-primary btn-sm" href="/jobs/new">ジョブを登録</a>{{end}}
+</div>
+<p class="text-sm text-base-content/60 mb-4">ジョブは対象（vecgen 側・radius 側）ごとに 1 つずつ、確定した順に動きます。</p>
+{{template "job-table" .Data}}
+{{- end}}
+
+{{/* 待ちと実行中のジョブがあれば 2 秒ごとに読み込み直す。 */}}
+{{define "job-table" -}}
+<div id="job-table" class="overflow-x-auto bg-base-100 rounded-box shadow"{{if .Active}} hx-get="/jobs" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+  <table class="table table-sm">
+    <thead><tr><th>ID</th><th>種類</th><th>状態</th><th>進み具合</th><th>成功</th><th>既にある</th><th>ない</th><th>失敗</th><th>未処理</th><th>ファイル</th><th>登録した人</th><th>登録の日時</th></tr></thead>
+    <tbody>
+      {{- range .Jobs}}
+      <tr>
+        <td class="font-mono"><a class="link" href="/jobs/{{.ID}}">{{.ID}}</a></td>
+        <td class="whitespace-nowrap">{{jobKind .Kind}}</td>
+        <td class="whitespace-nowrap">{{template "job-state" .State}}</td>
+        <td class="whitespace-nowrap">{{.Done}} / {{.Total}}</td>
+        <td>{{.OK}}</td><td>{{.Exists}}</td><td>{{.Absent}}</td>
+        <td>{{if .Failed}}<span class="text-error">{{.Failed}}</span>{{else}}0{{end}}</td>
+        <td>{{.Unprocessed}}</td>
+        <td class="max-w-48 truncate">{{.FileName}}</td>
+        <td>{{.CreatedBy}}</td>
+        <td class="whitespace-nowrap">{{datetime .CreatedAt}}</td>
+      </tr>
+      {{- else}}
+      <tr><td colspan="12" class="text-base-content/60">ジョブはありません。</td></tr>
+      {{- end}}
+    </tbody>
+  </table>
+</div>
+{{- end}}

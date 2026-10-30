@@ -187,7 +187,7 @@ func serve(ctx context.Context) error {
 	defer stopBG()
 
 	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv,
-		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail})
+		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail, KEK: key, Jobs: jobs})
 	if err != nil {
 		return err
 	}

@@ -1,0 +1,109 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/jobs">一括投入</a></li><li>登録</li></ul></div>
+<h1 class="text-2xl font-bold mb-4">一括投入の登録</h1>
+<div role="tablist" class="tabs tabs-border mb-4 flex-wrap">
+  {{- range .Data.Kinds}}
+  <a role="tab" href="/jobs/new?kind={{.}}" class="tab{{if eq . $.Data.Kind}} tab-active{{end}}">{{$.Data.KindLabel .}}</a>
+  {{- end}}
+</div>
+{{template "job-form" .Data}}
+{{- end}}
+
+{{/* 送るたびに htmx でこの部分を差し替える（受け付けたら確認の画面へ移る）。ファイルは誤りのときに選び直してもらう。 */}}
+{{define "job-form" -}}
+<div id="job-form">
+  {{template "alerts" (dict "Error" .Error)}}
+  {{- with .LoadError}}<div role="alert" class="alert alert-warning mb-4"><span>{{.}}</span></div>{{end}}
+  {{- if .FileErrors}}
+  <div class="overflow-x-auto bg-base-100 rounded-box shadow mb-4">
+    <table class="table table-sm">
+      <thead><tr><th>行</th><th>IMSI</th><th>誤り</th></tr></thead>
+      <tbody>
+        {{- range .FileErrors}}
+        <tr><td>{{if .Line}}{{.Line}}{{else}}-{{end}}</td><td class="font-mono">{{.IMSI}}</td><td>{{.Message}}</td></tr>
+        {{- end}}
+      </tbody>
+    </table>
+    {{- if .MoreFileErrors}}<p class="p-3 text-sm text-base-content/60">ほかに {{.MoreFileErrors}} 件の誤りがあります（全部で {{.FileErrorTotal}} 件）。</p>{{end}}
+  </div>
+  {{- end}}
+  <form class="card bg-base-100 shadow" hx-post="/jobs" hx-encoding="multipart/form-data" hx-target="#job-form" hx-swap="outerHTML" autocomplete="off">
+    <div class="card-body">
+      <h2 class="card-title">{{.KindLabel .Kind}}</h2>
+      <input type="hidden" name="kind" value="{{.Kind}}">
+      {{- if .Create}}
+      <div class="grid gap-x-6 md:grid-cols-2">
+        {{template "tenant-choice" (dict "Value" .Tenant "Tenants" .Tenants "Error" .Errors.tenant)}}
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">登録のときの状態</legend>
+          <select name="state" class="select w-full">
+            <option value="active"{{if eq .State "active"}} selected{{end}}>利用中（Active）</option>
+            <option value="inactive"{{if eq .State "inactive"}} selected{{end}}>停止中（Inactive）</option>
+          </select>
+          {{template "field-error" .Errors.state}}
+        </fieldset>
+      </div>
+      {{- end}}
+      {{- if eq .Kind "vecgen.create"}}
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">SQN の方式</legend>
+        <select name="sqn_type" class="select w-full max-w-xs">
+          {{- range (list "inc1" "inc32" "inc33")}}<option value="{{.}}"{{if eq . $.SQNType}} selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        {{template "field-error" .Errors.sqnType}}
+      </fieldset>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">許可クライアント（空でもよい）</legend>
+        <div class="flex flex-wrap gap-4">
+          {{- range .AllClients}}
+          <label class="label cursor-pointer gap-2"><input type="checkbox" name="clients" value="{{.ID}}" class="checkbox checkbox-sm"{{if hasID $.Clients .ID}} checked{{end}}>{{.Name}}（#{{.ID}}{{if not .Enabled}}、無効{{end}}）</label>
+          {{- else}}<span class="text-base-content/60">AVクライアントがありません（aka-vecgen のコマンドで登録します）。</span>{{end}}
+        </div>
+        {{template "field-error" .Errors.clients}}
+      </fieldset>
+      {{- end}}
+      {{- if eq .Kind "radius.create"}}
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">取得先（認証ベクターを取る先）</legend>
+        <select name="source" class="select w-full max-w-md{{if .Errors.source}} select-error{{end}}">
+          <option value=""{{if not .Source}} selected{{end}} disabled>選んでください</option>
+          {{- range .Sources}}<option value="{{.ID}}"{{if eq .ID $.Source}} selected{{end}}>{{.ID}}（{{.Name}}）</option>{{end}}
+        </select>
+        {{template "field-error" .Errors.source}}
+      </fieldset>
+      {{template "job-rules" .}}
+      {{- end}}
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">CSV のファイル</legend>
+        <input type="file" name="file" accept=".csv,text/csv" class="file-input w-full max-w-md{{if .Errors.file}} file-input-error{{end}}">
+        {{- if .Errors.file}}{{template "field-error" .Errors.file}}{{else}}<p class="label">UTF-8、ヘッダー行「{{.Header}}」。10,000 行・8 MiB まで</p>{{end}}
+      </fieldset>
+      <p class="text-sm text-base-content/60">全行を確かめてから、件数を確認の画面に出します。この時点では何も投入しません。</p>
+      <div class="card-actions mt-2"><button type="submit" class="btn btn-primary">確かめる</button></div>
+    </div>
+  </form>
+</div>
+{{- end}}
+
+{{/* ルールの組。編集の操作はルールの項目だけを送り、この部分だけを差し替える（選んだファイルを残すため）。 */}}
+{{define "job-rules" -}}
+<div id="job-rules" class="flex flex-col gap-3">
+  <h3 class="font-semibold mt-2">ルールの組</h3>
+  <p class="text-sm text-base-content/60">ルールのテナントは選んだテナントです。上から順に評価し、どのルールにも一致しない接続は拒否します。</p>
+  {{template "field-error" .Errors.rules}}
+  {{- range .Rules}}
+  <div class="border border-base-300 rounded-box p-4">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <strong>ルール {{.No}}</strong>
+      <div class="join">
+        <button type="button" class="btn btn-sm join-item" name="op" value="up:{{.Index}}" hx-post="/jobs/rules" hx-target="#job-rules" hx-swap="outerHTML" hx-encoding="application/x-www-form-urlencoded" hx-params="op,nas_id,ssids,vlan_id,session_timeout"{{if .First}} disabled{{end}} aria-label="ルール {{.No}} を上へ">上へ</button>
+        <button type="button" class="btn btn-sm join-item" name="op" value="down:{{.Index}}" hx-post="/jobs/rules" hx-target="#job-rules" hx-swap="outerHTML" hx-encoding="application/x-www-form-urlencoded" hx-params="op,nas_id,ssids,vlan_id,session_timeout"{{if .Last}} disabled{{end}} aria-label="ルール {{.No}} を下へ">下へ</button>
+        <button type="button" class="btn btn-sm btn-error btn-outline join-item" name="op" value="remove:{{.Index}}" hx-post="/jobs/rules" hx-target="#job-rules" hx-swap="outerHTML" hx-encoding="application/x-www-form-urlencoded" hx-params="op,nas_id,ssids,vlan_id,session_timeout" aria-label="ルール {{.No}} を削除">削除</button>
+      </div>
+    </div>
+    {{template "rule-fields" .}}
+  </div>
+  {{- end}}
+  <div><button type="button" class="btn btn-sm" name="op" value="add" hx-post="/jobs/rules" hx-target="#job-rules" hx-swap="outerHTML" hx-encoding="application/x-www-form-urlencoded" hx-params="op,nas_id,ssids,vlan_id,session_timeout">ルールを追加</button></div>
+</div>
+{{- end}}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oyaguma3/aka-ossbss/internal/audit"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 )
 
@@ -85,6 +86,12 @@ var auditActions = []struct{ Action, Label string }{
 	{auditAccountDisable, "アカウントの無効化"},
 	{auditAccountEnable, "アカウントの有効化"},
 	{auditAccountDelete, "アカウントの削除"},
+	{audit.ActionJobCreate, "ジョブの登録（検証）"},
+	{audit.ActionJobStart, "ジョブの開始"},
+	{audit.ActionJobFinish, "ジョブの完了"},
+	{audit.ActionJobCancel, "ジョブの取り消し"},
+	{audit.ActionJobInterrupt, "ジョブの中断"},
+	{audit.ActionJobReregister, "ジョブの削除済みの IMSI の承認"},
 }
 
 // otherActionLabels は、aka-provisioner と下流の監査ログにだけ出る操作の名前。

@@ -1,0 +1,148 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/jobs">一括投入</a></li><li>ジョブ {{.Data.Job.ID}}</li></ul></div>
+{{- with .Data}}
+<h1 class="text-2xl font-bold mb-4">ジョブ {{.Job.ID}} {{template "job-state" .Job.State}}</h1>
+{{template "alerts" (dict "Message" .Message "Error" .Error)}}
+<div class="card bg-base-100 shadow mb-4">
+  <div class="card-body">
+    <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+      <dt class="text-base-content/60">種類</dt><dd>{{jobKind .Job.Kind}}</dd>
+      <dt class="text-base-content/60">ファイル</dt><dd>{{.Job.FileName}}（{{.Job.Total}} 行）</dd>
+      <dt class="text-base-content/60">登録した人</dt><dd>{{.Job.CreatedBy}}（{{datetime .Job.CreatedAt}}）</dd>
+      {{- with .Settings.TenantID}}
+      <dt class="text-base-content/60">所属のテナント</dt><dd>{{$.Data.Tenants.Name .}}（#{{.}}）</dd>
+      {{- end}}
+      {{- with .Settings.State}}
+      <dt class="text-base-content/60">登録のときの状態</dt><dd>{{stateLabel .}}</dd>
+      {{- end}}
+      {{- with .Settings.SQNType}}
+      <dt class="text-base-content/60">SQN の方式</dt><dd>{{.}}</dd>
+      {{- end}}
+      {{- if eq .Job.Kind "vecgen.create"}}
+      <dt class="text-base-content/60">許可クライアント</dt><dd>{{if .Settings.AllowedClientIDs}}{{joinIDs .Settings.AllowedClientIDs}}{{else}}なし{{end}}</dd>
+      {{- end}}
+      {{- with .Settings.SourceID}}
+      <dt class="text-base-content/60">取得先</dt><dd>{{.}}</dd>
+      {{- end}}
+      {{- if .Settings.Rules}}
+      <dt class="text-base-content/60">ルール</dt>
+      <dd>{{range .Settings.Rules}}<div class="font-mono text-sm">NAS {{.NASID}} / SSID {{joinStrings .SSIDs}}{{with .VLANID}} / VLAN {{.}}{{end}}{{with .SessionTimeout}} / {{.}} 秒{{end}}</div>{{end}}</dd>
+      {{- end}}
+      {{- with .Job.DeletedChoice}}
+      <dt class="text-base-content/60">削除済みの IMSI</dt><dd>{{$.Data.Job.Deleted}} 件を{{if eq . "include"}}承認して含めました（理由: {{$.Data.Job.DeletedReason}}）{{else}}除きました{{end}}</dd>
+      {{- end}}
+      {{- if not .Job.StartedAt.IsZero}}
+      <dt class="text-base-content/60">開始</dt><dd>{{datetime .Job.StartedAt}}</dd>
+      {{- end}}
+      {{- if not .Job.FinishedAt.IsZero}}
+      <dt class="text-base-content/60">終了</dt><dd>{{datetime .Job.FinishedAt}}</dd>
+      {{- end}}
+      {{- with .Job.Reason}}
+      <dt class="text-base-content/60">理由</dt><dd>{{.}}</dd>
+      {{- end}}
+    </dl>
+  </div>
+</div>
+
+{{- if eq .Job.State "validated"}}
+<div class="card bg-base-100 shadow mb-4">
+  <div class="card-body">
+    <h2 class="card-title">確かめた結果</h2>
+    <p>全 {{.Job.Total}} 行を確かめました。誤りはありません。<strong>まだ何も投入していません。</strong></p>
+    <ul class="list-disc pl-6">
+      {{- if eq .Job.Kind "vecgen.create" "radius.create"}}
+      <li>登録する: {{.ToProcess}} 件{{if .Job.Deleted}}（削除済みの {{.Job.Deleted}} 件を含む）{{end}}</li>
+      <li>既にあるので飛ばす: {{.Job.PlanExists}} 件</li>
+      {{- else}}
+      <li>物理削除する: {{.ToProcess}} 件</li>
+      <li>台帳にないので飛ばす: {{.Job.PlanAbsent}} 件</li>
+      {{- end}}
+    </ul>
+    {{- if .CanManage}}
+    <form id="job-confirm" method="post" action="/jobs/{{.Job.ID}}/confirm">
+      {{- if .Job.Deleted}}
+      <div role="alert" class="alert alert-warning my-3">
+        <div>
+          <p class="font-bold">削除済みの IMSI が {{.Job.Deleted}} 件あります。</p>
+          <p class="text-sm">含めると、新しい回線として登録し直します（選んだテナントに属します）。承認は監査ログに残ります。</p>
+          <p class="text-sm font-mono break-all">{{joinStrings .Deleted}}{{if gt .Job.Deleted (len .Deleted)}} ほか{{end}}</p>
+        </div>
+      </div>
+      <fieldset class="fieldset">
+        <legend class="fieldset-legend">承認の理由（含めるときに必須）</legend>
+        <input name="reason" value="{{.Reason}}" maxlength="500" class="input w-full{{if .Errors.reason}} input-error{{end}}">
+        {{template "field-error" .Errors.reason}}
+      </fieldset>
+      <div class="flex flex-wrap gap-2 mt-2">
+        <button type="submit" name="choice" value="include" class="btn btn-primary">承認して含める</button>
+        <button type="submit" name="choice" value="exclude" class="btn">除いて進める</button>
+      </div>
+      {{- else}}
+      <button type="submit" class="btn btn-primary mt-2">投入する</button>
+      {{- end}}
+    </form>
+    <form method="post" action="/jobs/{{.Job.ID}}/cancel" class="mt-2">
+      <button type="submit" class="btn btn-ghost btn-sm">取り消す</button>
+    </form>
+    <p class="text-sm text-base-content/60">確定しないまま 24 時間たつと、取り消します（ファイルを消します）。</p>
+    {{- end}}
+  </div>
+</div>
+{{- else}}
+{{- if and .Job.Active .CanManage (not .Job.InterruptBy)}}
+<div class="mb-4">
+  <button type="button" class="btn btn-warning btn-sm" command="show-modal" commandfor="job-interrupt-dialog">中断する</button>
+  <form id="job-interrupt" method="post" action="/jobs/{{.Job.ID}}/interrupt"></form>
+  {{template "confirm" (dict "ID" "job-interrupt-dialog" "Title" "ジョブを中断します" "Message" "処理中の行を終えてから止めます。処理した行は元に戻さず、再開もしません。同じファイルを投入し直せば、残りだけが処理されます。" "Form" "job-interrupt" "Label" "中断する" "Class" "btn-warning")}}
+</div>
+{{- end}}
+{{- if .Job.InterruptBy}}
+<div role="status" class="alert alert-info mb-4"><span>{{.Job.InterruptBy}} が中断しました。</span></div>
+{{- end}}
+{{template "job-progress" .}}
+{{- end}}
+{{- end}}
+{{- end}}
+
+{{/* 進み具合と成功以外の行。待ちと実行中は 2 秒ごとに読み込み直す（状態が変わったら画面全体を読み直す）。 */}}
+{{define "job-progress" -}}
+<div id="job-progress"{{if .Job.Active}} hx-get="/jobs/{{.Job.ID}}?state={{.Job.State}}" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+  <div class="card bg-base-100 shadow mb-4">
+    <div class="card-body">
+      <div class="flex flex-wrap items-center gap-3">
+        <progress class="progress progress-primary w-64" value="{{percent .Job}}" max="100"></progress>
+        <span>{{.Job.Done}} / {{.Job.Total}}</span>
+      </div>
+      <div class="stats stats-vertical sm:stats-horizontal w-full">
+        <div class="stat"><div class="stat-title">成功</div><div class="stat-value text-2xl">{{.Job.OK}}</div></div>
+        <div class="stat"><div class="stat-title">既にある</div><div class="stat-value text-2xl">{{.Job.Exists}}</div></div>
+        <div class="stat"><div class="stat-title">ない</div><div class="stat-value text-2xl">{{.Job.Absent}}</div></div>
+        <div class="stat"><div class="stat-title">失敗</div><div class="stat-value text-2xl{{if .Job.Failed}} text-error{{end}}">{{.Job.Failed}}</div></div>
+        <div class="stat"><div class="stat-title">未処理</div><div class="stat-value text-2xl">{{.Job.Unprocessed}}</div></div>
+        {{- if .Job.Excluded}}<div class="stat"><div class="stat-title">除いた</div><div class="stat-value text-2xl">{{.Job.Excluded}}</div></div>{{end}}
+      </div>
+    </div>
+  </div>
+  {{- if .Rows}}
+  <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+    <h2 class="font-semibold">成功以外の行{{if .MoreRows}}（最初の {{len .Rows}} 行）{{end}}</h2>
+    <a class="btn btn-sm" href="/jobs/{{.Job.ID}}/rows.csv">CSV で取り出す</a>
+  </div>
+  <div class="overflow-x-auto bg-base-100 rounded-box shadow">
+    <table class="table table-sm">
+      <thead><tr><th>行</th><th>IMSI</th><th>結果</th><th>内容</th></tr></thead>
+      <tbody>
+        {{- range .Rows}}
+        <tr>
+          <td>{{.Line}}</td>
+          <td class="font-mono"><a class="link" href="/subscribers/{{.IMSI}}">{{.IMSI}}</a></td>
+          <td class="whitespace-nowrap">{{jobRow .Result}}{{if .Unknown}} <span class="badge badge-warning badge-sm">結果不明</span>{{end}}</td>
+          <td>{{.Reason}}</td>
+        </tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+  {{- end}}
+</div>
+{{- end}}

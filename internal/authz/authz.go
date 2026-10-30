@@ -86,6 +86,8 @@ const (
 	ProvisionerView                     // aka-provisioner と下流の状態の閲覧
 	TenantManage                        // テナントの作成・変更・削除
 	AccountManage                       // アカウントの管理（B は自分のテナントの A だけ。CanManageAccount で対象を判定する）
+	JobView                             // 一括投入のジョブの閲覧
+	JobManage                           // 一括投入・一括の物理削除の登録・投入・中断
 )
 
 // rule は 1 つの操作の権限。
@@ -118,12 +120,14 @@ var rules = map[Op]rule{
 	ProvisionerView:       {"aka-provisioner と下流の状態の閲覧", []Role{Operator, SystemAdmin}, false},
 	TenantManage:          {"テナントの管理", []Role{SystemAdmin}, false},
 	AccountManage:         {"アカウントの管理", []Role{TenantAdmin, SystemAdmin}, true},
+	JobView:               {"一括投入のジョブの閲覧", []Role{Operator, SystemAdmin}, false},
+	JobManage:             {"一括投入・一括の物理削除", []Role{SystemAdmin}, false},
 }
 
 // Ops は操作の一覧（画面の要約の順）。
 func Ops() []Op {
 	out := make([]Op, 0, len(rules))
-	for op := SubscriberView; op <= AccountManage; op++ {
+	for op := SubscriberView; op <= JobManage; op++ {
 		out = append(out, op)
 	}
 	return out
