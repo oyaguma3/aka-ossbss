@@ -103,6 +103,10 @@ jobs:
           # （省く値が true の版と false の版がある）、compose.yaml そのものを確かめる。
           grep -q 'create_host_path: false' compose.yaml
           ! grep -qi 'TUNNEL_TOKEN' config.json
+          # 一括投入の KEK は secrets で渡す（環境変数に値を書かない）。
+          jq -e '.services["aka-ossbss"].secrets[] | select(.source == "kek") | .target | endswith("kek")' config.json
+          jq -e '.secrets.kek.file | endswith("/secrets/kek")' config.json
+          jq -e '.services["aka-ossbss"].environment.OSSBSS_KEK_FILE == "/run/secrets/kek"' config.json
           # 監査ログのファイルのディレクトリをマウントする。
           jq -e '.services["aka-ossbss"].volumes[] | select(.target == "/data/audit") | .source | endswith("/audit")' config.json
           jq -e '.services["aka-ossbss"].environment.OSSBSS_PROVISIONER_URL | endswith("/admin/v2")' config.json

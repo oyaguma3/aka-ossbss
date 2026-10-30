@@ -1,7 +1,7 @@
 # aka-ossbss 設計概要（下書き）
 
 - 作成日: 2026-10-26
-- 状態: 下書き。§20 の確認事項は 2026-10-26 にすべて推奨案で合意した（§3.2 の決定事項 1〜11）。段階 3-1 を終えた（2026-10-30。§19.2 の「段階 3-1 で決めたこと」）。
+- 状態: 下書き。§20 の確認事項は 2026-10-26 にすべて推奨案で合意した（§3.2 の決定事項 1〜11）。段階 3-1・3-2 を終えた（2026-10-30。§19.2 の「段階 3-1 で決めたこと」「段階 3-2 で決めたこと」）。
 - 置き場所: 2026-10-27（MVP セットの段階 1）に、aka-mvpset の `docs/nodes/aka-ossbss.md` から本リポジトリの `docs/design-overview.md` に移した。
 - 対象: 運用者とテナントの利用者が使う画面と、管理面の業務の処理を受け持つノード aka-ossbss（もとは eapaka-ossbss-sample。以下「もとの実装」）。
 - 関連:
@@ -195,7 +195,7 @@
 | radius からの物理削除 | — | `imsi` |
 
 - CSV は UTF-8、ヘッダー行あり、1 回 10,000 行まで、ファイルは 8 MiB まで（もとの設計概要 §18.5）。
-- アップロードのときに、ファイルを KEK（`OSSBSS_KEK_FILE`。AES-256-GCM。AAD はジョブの ID）で暗号化して `bulk_jobs` に置く。完了・中断・取り消しのときに消す（概要 §10.2・§12.1）。平文のファイルはディスクに書かない。
+- アップロードのときに、ファイルを KEK（`OSSBSS_KEK_FILE`。AES-256-GCM。AAD は `aka-ossbss/bulk-job/<ID>`）で暗号化して `bulk_jobs` に置く。完了・中断・取り消しのときに消す（概要 §10.2・§12.1）。平文のファイルはディスクに書かない。
 - 待ち行列は対象（vecgen / radius）ごとに 1 本で、それぞれ同時に 1 つのジョブを動かす。
 
 ### 10.2 検証の段
@@ -326,11 +326,12 @@
 | 名前 | 内容 | 既定 |
 |---|---|---|
 | `OSSBSS_KEK_FILE` | 一括投入の待ちのファイルの KEK | `/run/secrets/kek` |
-| `OSSBSS_BULK_CONCURRENCY` | 一括投入の同時の呼び出しの数 | `5` |
+| `OSSBSS_BULK_CONCURRENCY` | 一括投入の同時の呼び出しの数（1〜8） | `5` |
 | `OSSBSS_RECONCILE_AT` / `OSSBSS_USAGE_IMPORT_AT` | 突き合わせと利用の集計の取り込みの時刻 | `04:00` / `03:00` |
 | `OSSBSS_EDGE_CAPACITY_DEFAULT` | エッジの容量の既定 | `150` |
 | `OSSBSS_TENANT_PORT_RANGE` | テナントのポートの範囲（§20 の F9） | `20000-21999` |
 | `OSSBSS_AUDIT_DIR` | 監査ログの JSONL の書き出し先（段階 3-1 で入れた） | `/data/audit` |
+| `OSSBSS_DB_MAX_CONNS` | DB の接続の上限（もとの設定。段階 3-2 で既定を 10 から 20 に） | `20` |
 
 ## 19. 試験・進め方
 
@@ -350,7 +351,7 @@
 |---|---|
 | 1 | リポジトリ `aka-ossbss` を作り、eapaka-ossbss-sample の履歴ごと移す。改名だけ |
 | 3-1 | 台帳（スキーマ、テナントなしをなくす）、aka-provisioner v2 のクライアント、加入者の画面（両側を並べる、状態、戻し、個別の登録）、認可ポリシーの編集、セッション。**済み（2026-10-30）**: 下の「段階 3-1 で決めたこと」 |
-| 3-2 | 一括投入と一括の物理削除（KEK、待ち行列、検証、実行、中断、報告） |
+| 3-2 | 一括投入と一括の物理削除（KEK、待ち行列、検証、実行、中断、報告）。**済み（2026-10-30）**: 下の「段階 3-2 で決めたこと」 |
 | 3-3 | 突き合わせ、`check_needed`、ダッシュボード |
 | 3-4 | 課金レコード（`charging-records.md` の §8） |
 | 4-3・4-4 | RadSec の受け口の管理と中央の整合のループ（radsec-edge §23.1） |
@@ -371,6 +372,22 @@
 - W11: 監査ログは PostgreSQL に書いた後、同じ内容（番号つき）を日ごとの JSONL（`OSSBSS_AUDIT_DIR`、既定 `/data/audit`。`internal/audit` は aka-provisioner の `files.go` を写した）にも書く。ファイルは起動のときと 1 時間ごとに前の日までを圧縮し、14 日で消す（ほかのノードと同じ。PostgreSQL の 13 か月での削除は 3-3）。書けないディレクトリでは起動しない（`AUDIT_DIR_ERR`）。aka-ossbss の操作の名前は `subscriber.vecgen.create`・`subscriber.radius.create`・`subscriber.reregister`・`subscriber.vecgen.update`・`subscriber.radius.source`・`subscriber.radius.rules`・`subscriber.state`・`subscriber.reinstate`・`subscriber.delete`・`subscriber.tenant` とテナント・アカウントの操作。結果が分からなかった操作も `detail.result` を `unknown` にして残す。
 - W12: `internal/provisioner` を aka-provisioner 2.0.0 の型つきのクライアントに書き直した（両側の加入者・一括取得・状態・戻し・削除、AV クライアント、取得先、セッション、3 つの監査ログ、`/status`）。書き込みは操作者と `Idempotency-Key` がなければ送らない。キーはフォームに持たせ（画面ごとのキーにフォームの名前を付け、両側に続けて書くときは側の名前を付ける）、結果が分からなかったときは同じキーで送り直せるよう残す。本文は構造体から決まった並びで組み立てる（PATCH は `application/merge-patch+json`）。CI の契約の試験は aka-provisioner `ff21ac4` の `scripts/contract.sh up` で下流 2 つ（`2d48379`・`ac2f05a`）と aka-provisioner を起動し、管理クライアントの証明書（`ossbss-ci`）で登録から削除まで（再送と内容の違うキー、409・404 の cause、監査ログの操作者とトレースID を含む）を流す。compose に管理面の Fluent Bit へ送る重ね合わせ `compose.fluent-bit.yaml`（タグ `app.ossbss`・`app.ossbss-postgres`・`app.ossbss-cloudflared`）を足した。
 - 確認事項にない小さな変更: `OSSBSS_PROVISIONER_URL` の既定を `https://aka-provisioner:9446/admin/v2`、`OSSBSS_PROVISIONER_TIMEOUT` の既定を 15 秒にした（aka-provisioner は下流を 1 回だけ呼び、下流の上限は既定 5 秒。台帳のロックを持って待つので短くする）。テナントの一覧と詳細に ID（刻印の値）を出す。画面の名前を「aka-ossbss」にした。
+
+段階 3-2 で決めたこと（2026-10-30。確認事項 X1〜X13 はすべて推奨案で合意）:
+
+- X1・作り: 加入者の 1 回の操作の手順を `internal/ledger`（`Ops.Run`・`Observe`・`Recheck`）に分け、画面（`internal/web/ledger.go` は薄い呼び出し）とジョブが同じ手順を使う。監査ログの書き込みは `audit.Recorder`。CSV の読み取りと検証、実行は `internal/bulk`（`ParseCSV`・`Classify`・`Runner`）、ジョブの読み書きは `internal/db/bulk.go`、画面は `internal/web/jobs.go`。手元で本物の aka-provisioner・aka-vecgen・aka-radius につないで確かめ、1 万件は vecgen 側と radius 側に同時に投入して、どちらも約 52 秒で完了した（毎秒約 190 件。手元の目安で、検証機での計測は Q8）。
+- X2: 移行 `0002_bulk.sql`。`bulk_jobs`（`target` は `kind` から作る生成列）と `bulk_job_rows`（成功以外の行）。行の結果に `excluded`（除いた）を足し、下流の結果が分からなかった行の印として `unknown` を足した。検証のときの削除済みの IMSI は `deleted_imsis`（配列）に持つ（承認の対象を、検証のときに見せたものに限るため）。
+- X3: `internal/kek` は aka-vecgen から写した。`OSSBSS_KEK_FILE`（なければ起動しない。`KEK_ERR`）、`gen-kek`。KEK が変わって復号できない待ちのジョブは、動かすときに中断にする（`JOB_DECRYPT_ERR`）。
+- X4: ヘッダーは大文字と小文字を区別して比べる。BOM・CRLF を受け、空行は無視する（`encoding/csv` は途中の空行も飛ばす。行番号はファイルの行のまま）。値の前後の空白は除く。誤りの文に入力の値を入れない（列を取り違えた鍵が画面に出ないように）。引用符の誤りは、その先の行の区切りが分からないので読むのをやめる。アップロードは要求全体の上限（8 MiB と 1 MiB）より大きいメモリーを `ParseMultipartForm` に許し、ファイルをディスクに書かせない。
+- X5: 一律の設定は `bulk.Settings` を JSON にして `settings` に置く。許可クライアントと取得先は、登録のときに aka-provisioner から読んだ選択肢にあることを確かめる（読めなければ受け付けない）。ルールの編集の操作（追加・削除・並べ替え）はルールの部分だけを送り、選んだファイルを残す。
+- X6: 誤りの表示は 100 件まで（総数も出す）。**確認事項にない小さな変更**: `check_needed` の IMSI は、誤りにする前にその場で読み直す（50 件まで）。下流が戻った後に同じファイルを投入し直せるようにするため（読み直せなければ誤りのまま）。確定しない検証済みのジョブは、行を消さずに取り消しにしてファイルを消す（監査ログ `job.cancel`。1 時間ごと）。
+- X7: 確認の画面に件数と IMSI（100 件まで）を出し、「承認して含める（理由が必須）」「除いて進める」「取り消す」。承認は `job.reregister`（件数・理由）、行ごとの登録の監査ログに `reregister: true`。除いた行は `excluded` として記録する。検証の後に削除された IMSI は承認の対象でないので失敗にする。
+- X8: 実行のときの台帳の判定（ロックの中）: 登録は、印あり・承認のない削除済み・別のテナントは失敗、同じ側にあれば「既にある」（下流を呼ばない）。削除は、なければ「ない」（呼ばない）、印あり・Active は失敗。結果が分からない行は、読み直して操作が済んでいれば成功（補いの事実 `reconciled`）、済んでいなければ失敗（`unknown`）、読み直せなければ失敗（`unknown`。台帳の印が残る）。接続の誤り（届かない・503・504）が 10 件続いたら自動で中断する。下流が応答すれば数え直し、下流を呼ばなかった行では数え直さない（既にある行が混じっても止まるように）。**確認事項にない小さな変更**: DB に書けない行も接続の誤りと同じに数える（DB が落ちたときに全行を失敗にしないように）。
+- X9: 待ち行列は対象ごとの goroutine（確定で起こし、10 秒ごとにも見る）と advisory lock（`TryJobLock`。接続を 1 つ持つ）。実行中の中断は `interrupt_by` に書き、実行の側が進み具合を書くとき（1 秒ごと）に気づく。待ちの中断はその場で行い、全行を未処理として記録する。SIGTERM では処理中の行を終えて、残りを未処理として記録する。強制終了（SIGKILL）では、起動のときに中断にし、未処理は件数だけ（行の一覧は残らない）。全行を処理した後に止める理由ができたら、完了として扱う。
+- X10: 画面は `/jobs`（一覧。動いているジョブがあれば 2 秒ごと）、`/jobs/new`、`/jobs/{id}`（確認と詳細。進み具合の部分だけを 2 秒ごとに読み、状態が変わったら画面全体を読み直す）、`/jobs/{id}/rows.csv`（BOM つき。鍵なし）、ダッシュボードの欄（`/jobs/summary`。5 秒ごと）。権限は `JobView`（C・D）・`JobManage`（D）。
+- X11: 監査ログの操作は `job.create`・`job.start`・`job.finish`・`job.cancel`・`job.interrupt`・`job.reregister`。行ごとは 3-1 と同じ名前に `job_id`。ジョブの操作の対象のテナントは登録のジョブの選んだテナント（削除のジョブはテナントなし）。下流の呼び出しは `X-Trace-ID` `job-<ID>`、`Idempotency-Key` `job-<ID>-<IMSI>`、`X-Operator-Id` は登録した人。
+- X13: compose の `secrets` に `./secrets/kek`（`chown 65532`）。**確認事項にない小さな変更**: `OSSBSS_DB_MAX_CONNS` の既定を 10 から 20 に（行の処理の間は接続を 1 つ持ち、2 本の待ち行列で最大 12 使うので、画面が待たされないように）。`stop_grace_period` を 20 秒から 40 秒に（処理中の行を終えて中断にするため。1 行の上限は呼び出し 15 秒と読み直し 10 秒）。
+- 未処理の行の一覧が残らない場合（強制終了）も、同じファイルを投入し直せば、台帳に既にある行を飛ばして残りだけが処理される。
 
 ## 20. 確認事項（2026-10-26 にすべて推奨案で合意。§3.2 の決定事項 1〜11）
 

@@ -6,8 +6,9 @@ services:
         VERSION: ${OSSBSS_VERSION:-dev}
     restart: unless-stopped
     # 停止の合図から、処理中の要求を終えてサーバーを閉じ終えるまで最大 10 秒かかる（internal/server の shutdownTimeout）。
+    # 一括投入のジョブは処理中の行を終えてから中断にする（1 行の上限は呼び出し 15 秒と読み直し 10 秒）。
     # Docker の既定の猶予（10 秒）では強制終了と重なるので、長くする。
-    stop_grace_period: 20s
+    stop_grace_period: 40s
     depends_on:
       postgres:
         condition: service_healthy
@@ -32,6 +33,11 @@ services:
       OSSBSS_PROVISIONER_TIMEOUT: ${OSSBSS_PROVISIONER_TIMEOUT:-15s}
       # 監査ログの日ごとのファイル（JSONL。設計概要 §14）。監視用の PC が取りに行く。
       OSSBSS_AUDIT_DIR: /data/audit
+      # 一括投入の待ちのファイルを暗号化する KEK（設計概要 §10.1）。ファイルがなければ起動しない。
+      OSSBSS_KEK_FILE: /run/secrets/kek
+      OSSBSS_BULK_CONCURRENCY: ${OSSBSS_BULK_CONCURRENCY:-5}
+    secrets:
+      - kek
     volumes:
       # aka-provisioner 用の証明書（provisioner-client.pem: gen-client-cert で作った aka-ossbss のクライアント証明書と秘密鍵、
       # provisioner-server.pem: aka-provisioner の server-cert で取り出したサーバー証明書）。
@@ -92,6 +98,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+secrets:
+  # aka-ossbss gen-kek で作る（UID 65532 で読めるようにする。chown 65532 secrets/kek、chmod 400）。
+  kek:
+    file: ./secrets/kek
 
 volumes:
   postgres-data:
