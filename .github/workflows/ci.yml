@@ -191,9 +191,9 @@ jobs:
       # 契約テストの相手にする aka-provisioner と、その下流（aka-vecgen・aka-radius）のコミット。
       # 下流は aka-provisioner の ci.yml の VECGEN_REF・RADIUS_REF（aka-mvpset の versions.env）に合わせる。
       # aka-provisioner や下流の API を変えたら、その main のコミットに更新する。
-      PROVISIONER_REF: ff21ac4f711112b175bceeb8c190bf0f2ebb4389
+      PROVISIONER_REF: 9a5f4b05d402032fa031b9e15872665dfc6f3b0c
       VECGEN_REF: 2d4837939660fbadcec67b27b4ac333f96a77374
-      RADIUS_REF: ac2f05aeda99472284f48b09943c1553476a6a7b
+      RADIUS_REF: 00506874286cca3d454e3ba64365c6e7f0b10fe6
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
