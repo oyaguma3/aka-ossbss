@@ -328,8 +328,9 @@ func TestUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
-	ln.Close()
+	// 先に閉じると、下のサーバーが同じポートを取って応答してしまうことがあるので、起動してから閉じる。
 	_, srv := provisionertest.NewServer(t, func(http.ResponseWriter, *http.Request) {}, provisioner.Options{})
+	ln.Close()
 	c2, err := provisioner.New(provisioner.Options{BaseURL: "https://" + addr + "/admin/v2",
 		ClientCertFile: srv.ClientCertFile, ServerCertFile: srv.ServerCertFile, Log: provisionertest.Discard})
 	if err != nil {
