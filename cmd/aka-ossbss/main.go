@@ -237,8 +237,8 @@ func newScheduler(cfg config.Config, log *slog.Logger, d *db.DB, jobs *bulk.Runn
 		{Name: charging.JobClose, Daily: chargingCloseAt, Run: bill.RunClose},
 		{Name: "retention", Daily: retentionAt, Run: func(ctx context.Context) (string, error) {
 			c, err := d.PurgeOld(ctx, db.RetentionCutoff(time.Now()))
-			return fmt.Sprintf("消した行: 監査ログ %d、ジョブ %d、突き合わせ %d、定期の処理の記録 %d、状態の事実 %d。課金レコードの月 %d、利用の集計の月 %d。",
-				c.Audit, c.Jobs, c.Reconcile, c.Scheduled, c.Events, c.Charging, c.UsagePartitions), err
+			return fmt.Sprintf("消した行: 監査ログ %d、ジョブ %d、突き合わせ %d、定期の処理の記録 %d、状態の事実 %d、RadSec %d。課金レコードの月 %d、利用の集計の月 %d。",
+				c.Audit, c.Jobs, c.Reconcile, c.Scheduled, c.Events, c.Radsec, c.Charging, c.UsagePartitions), err
 		}},
 		{Name: "job-sweep", Every: time.Hour, Run: func(ctx context.Context) (string, error) {
 			n, err := jobs.Sweep(ctx)

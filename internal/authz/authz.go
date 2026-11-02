@@ -93,6 +93,14 @@ const (
 	ChargingView                        // 課金レコードの一覧とダウンロード
 	ChargingManage                      // PGP の公開鍵の登録、作り直し、今すぐ取り込む・締める
 	ExternalIDUpdate                    // テナントの外部の顧客番号と回線の外部の番号の設定
+	RadsecView                          // テナントの RadSec の設定・配置・AP・グループ・反映の状態の閲覧
+	RadsecAPManage                      // AP・グループの登録・証明書の取り出し・更新・失効・削除
+	RadsecApply                         // 自分のテナントの反映
+	RadsecConfig                        // テナントの RadSec の設定（slug、ポート、送信元の範囲）と配置
+	BroughtCAManage                     // 持ち込みの CA の登録・外す
+	EdgeView                            // エッジの台帳の閲覧
+	EdgeOperate                         // エッジの運用の操作（再起動、ログ）
+	EdgeManage                          // エッジの台帳と容量の変更
 )
 
 // rule は 1 つの操作の権限。
@@ -132,12 +140,20 @@ var rules = map[Op]rule{
 	ChargingView:          {"課金レコードの一覧とダウンロード", []Role{Operator, SystemAdmin}, false},
 	ChargingManage:        {"PGP の公開鍵の登録と課金レコードの作り直し", []Role{SystemAdmin}, false},
 	ExternalIDUpdate:      {"外部の顧客番号と回線の番号の設定", []Role{Operator, SystemAdmin}, false},
+	RadsecView:            {"RadSec の設定・配置・AP・グループの閲覧", all, true},
+	RadsecAPManage:        {"AP・グループの登録・更新・削除", []Role{TenantAdmin, Operator, SystemAdmin}, true},
+	RadsecApply:           {"RadSec の設定の反映", []Role{TenantAdmin, Operator, SystemAdmin}, true},
+	RadsecConfig:          {"RadSec の設定と配置", []Role{Operator, SystemAdmin}, false},
+	BroughtCAManage:       {"持ち込みの CA の登録・外す", []Role{SystemAdmin}, false},
+	EdgeView:              {"エッジの台帳の閲覧", []Role{Operator, SystemAdmin}, false},
+	EdgeOperate:           {"エッジの運用の操作（再起動、ログ）", []Role{Operator, SystemAdmin}, false},
+	EdgeManage:            {"エッジの台帳と容量の変更", []Role{SystemAdmin}, false},
 }
 
 // Ops は操作の一覧（画面の要約の順）。
 func Ops() []Op {
 	out := make([]Op, 0, len(rules))
-	for op := SubscriberView; op <= ExternalIDUpdate; op++ {
+	for op := SubscriberView; op <= EdgeManage; op++ {
 		out = append(out, op)
 	}
 	return out

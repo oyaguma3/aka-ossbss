@@ -141,12 +141,12 @@ const purgeBatch = 1000
 
 // PurgeCounts は消した行の数。Charging は課金レコードの月（行とファイルも一緒に）、UsagePartitions は利用の集計の月。
 type PurgeCounts struct {
-	Audit, Jobs, Reconcile, Scheduled, Events, Charging, UsageDays, UsagePartitions int64
+	Audit, Jobs, Reconcile, Scheduled, Events, Charging, UsageDays, UsagePartitions, Radsec int64
 }
 
 // Total は消した行の総数。
 func (c PurgeCounts) Total() int64 {
-	return c.Audit + c.Jobs + c.Reconcile + c.Scheduled + c.Events + c.Charging + c.UsageDays + c.UsagePartitions
+	return c.Audit + c.Jobs + c.Reconcile + c.Scheduled + c.Events + c.Charging + c.UsageDays + c.UsagePartitions + c.Radsec
 }
 
 // PurgeOld は before より古い監査ログ、終わったジョブ（行も一緒に）、終わった突き合わせ（ずれも一緒に）、定期の処理の記録を消す。
@@ -170,6 +170,10 @@ func (d *DB) PurgeOld(ctx context.Context, before time.Time) (PurgeCounts, error
 			WHERE state <> 'running' AND started_at < $1 ORDER BY id LIMIT $2)`},
 		{count: &c.Scheduled, at: before, sql: `DELETE FROM scheduled_runs WHERE id IN (SELECT id FROM scheduled_runs
 			WHERE status <> 'running' AND started_at < $1 ORDER BY id LIMIT $2)`},
+		// RadSec の消した行（課金の数量を数えるために残した分。OB20）。
+		{count: &c.Radsec, at: before, sql: `DELETE FROM aps WHERE id IN (SELECT id FROM aps WHERE deleted_at < $1 ORDER BY id LIMIT $2)`},
+		{count: &c.Radsec, at: before, sql: `DELETE FROM placements WHERE id IN (SELECT id FROM placements WHERE removed_at < $1 ORDER BY id LIMIT $2)`},
+		{count: &c.Radsec, at: before, sql: `DELETE FROM brought_cas WHERE ca_id IN (SELECT ca_id FROM brought_cas WHERE deleted_at < $1 ORDER BY ca_id LIMIT $2)`},
 	} {
 		for {
 			tag, err := d.Pool.Exec(ctx, t.sql, t.at, purgeBatch)

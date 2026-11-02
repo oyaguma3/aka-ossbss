@@ -34,6 +34,14 @@ var table = map[Op]string{
 	ChargingView:          "xxoo",
 	ChargingManage:        "xxxo",
 	ExternalIDUpdate:      "xxoo",
+	RadsecView:            "ttoo",
+	RadsecAPManage:        "xtoo",
+	RadsecApply:           "xtoo",
+	RadsecConfig:          "xxoo",
+	BroughtCAManage:       "xxxo",
+	EdgeView:              "xxoo",
+	EdgeOperate:           "xxoo",
+	EdgeManage:            "xxxo",
 }
 
 func TestAllowedMatrix(t *testing.T) {

@@ -184,7 +184,7 @@ func (d *DB) SetTenantExternalID(ctx context.Context, id int64, value string, me
 }
 
 // DeleteTenant はテナントを削除済みにする（行は残す）。ない・削除済みなら ErrNotFound、加入者（削除済みを除く）や
-// アカウントが残っていれば ErrInUse。
+// アカウント、RadSec の AP・配置・持ち込みの CA が残っていれば ErrInUse。RadSec のポートは空ける（slug は使い回さない。OB12）。
 func (d *DB) DeleteTenant(ctx context.Context, id int64, meta Meta) error {
 	err := pgx.BeginFunc(ctx, d.Pool, func(tx pgx.Tx) error {
 		var name string
@@ -199,13 +199,19 @@ func (d *DB) DeleteTenant(ctx context.Context, id int64, meta Meta) error {
 		// （FOR UPDATE）と順になる。ここで数えれば、数えた後に足されることはない。
 		var inUse bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM subscribers WHERE tenant_id = $1 AND deleted_at IS NULL)
-			OR EXISTS (SELECT 1 FROM accounts WHERE tenant_id = $1)`, id).Scan(&inUse); err != nil {
+			OR EXISTS (SELECT 1 FROM accounts WHERE tenant_id = $1)
+			OR EXISTS (SELECT 1 FROM aps WHERE tenant_id = $1 AND deleted_at IS NULL)
+			OR EXISTS (SELECT 1 FROM placements WHERE tenant_id = $1 AND removed_at IS NULL)
+			OR EXISTS (SELECT 1 FROM brought_cas WHERE tenant_id = $1 AND deleted_at IS NULL)`, id).Scan(&inUse); err != nil {
 			return err
 		}
 		if inUse {
 			return ErrInUse
 		}
 		if _, err := tx.Exec(ctx, "UPDATE tenants SET deleted_at = now(), updated_at = now() WHERE id = $1", id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, "UPDATE tenant_radsec SET released_at = now(), updated_at = now() WHERE tenant_id = $1 AND released_at IS NULL", id); err != nil {
 			return err
 		}
 		return tenantEvent(ctx, tx, meta, EventTenantDeleted, id, name, "")
