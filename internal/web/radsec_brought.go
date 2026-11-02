@@ -378,7 +378,7 @@ func (h *Handler) broughtUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	h.record(r, audit.ActionBroughtUploadCRL, b.CAID, id, nil)
 	h.renderBrought(w, r, id, http.StatusOK, func(d *broughtData) {
-		d.Message = "CRL を置きました。エッジは次の取得で読みます。"
+		d.Message = "CRL を置きました。エッジは次の取得で読みます（5 分以内）。"
 	})
 }
 
@@ -397,7 +397,9 @@ func (h *Handler) broughtRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.record(r, audit.ActionBroughtRefreshCRL, b.CAID, id, nil)
-	h.renderBrought(w, r, id, http.StatusOK, func(d *broughtData) { d.Message = "CRL を取り直しました。" })
+	h.renderBrought(w, r, id, http.StatusOK, func(d *broughtData) {
+		d.Message = "CRL を取り直しました。エッジは次の取得で読みます（5 分以内）。"
+	})
 }
 
 // broughtRemove は持ち込みの CA を外す（OB6）。全配置が反映したら、ループが radsec-ca で止める。
