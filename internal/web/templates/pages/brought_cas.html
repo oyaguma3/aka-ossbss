@@ -1,0 +1,139 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/tenants/{{.Data.Tenant.ID}}/radsec">RadSec</a></li><li>持ち込みの CA</li></ul></div>
+{{template "brought-section" .Data}}
+{{- end}}
+
+{{define "brought-section" -}}
+<div id="brought">
+  <h1 class="text-2xl font-bold mb-4">持ち込みの CA {{.Tenant.Name}}</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <table class="table table-sm">
+        <thead><tr><th>ID</th><th>Subject</th><th>CRL の取得先</th><th>CRL</th><th>状態</th></tr></thead>
+        <tbody>
+          {{- range .Rows}}
+          <tr>
+            <td class="font-mono text-sm">{{.CAID}}</td>
+            <td class="text-sm">{{.Subject}}</td>
+            <td>{{if .Known}}{{.CA.CRLSource}}{{with .CA.CRLURL}}<br><span class="font-mono text-sm">{{.}}</span>{{end}}{{with .CA.MerakiOrgID}}<br><span class="text-sm">組織 {{.}}</span>{{end}}{{else}}{{if .HasCRL}}あり{{else}}none{{end}}{{end}}</td>
+            <td class="text-sm">{{if .Known}}{{with .CA.CRL}}次の更新 {{datetime .NextUpdate}}{{else}}-{{end}}{{with .CA.CRLWarning}}<br><span class="badge badge-warning badge-sm">{{.}}</span>{{end}}{{with .CA.CRLState}}{{with .LastError}}<br><span class="text-error">{{.}}</span>{{end}}{{end}}{{else}}読めません{{end}}</td>
+            <td>{{if .Removing}}<span class="badge badge-info badge-sm">外している途中</span>{{else}}<span class="badge badge-success badge-sm badge-outline">登録中</span>{{end}}</td>
+          </tr>
+          {{- if and $.CanManage (not .Removing)}}
+          <tr>
+            <td colspan="5">
+              <details>
+                <summary class="cursor-pointer text-sm">操作</summary>
+                <div class="flex flex-wrap gap-2 my-2">
+                  {{- if and .Known (or (eq .CA.CRLSource "url") (eq .CA.CRLSource "meraki"))}}
+                  <form hx-post="/tenants/{{$.Tenant.ID}}/brought-cas/{{.CAID}}/refresh" hx-target="#brought" hx-swap="outerHTML"><button class="btn btn-xs">CRL を取り直す</button></form>
+                  {{- end}}
+                  <form hx-post="/tenants/{{$.Tenant.ID}}/brought-cas/{{.CAID}}/remove" hx-target="#brought" hx-swap="outerHTML" hx-confirm="この CA をテナントから外します。業者の AP はつながらなくなります。各エッジに順に反映し、外し終えたら radsec-ca で止めます。"><button class="btn btn-xs btn-error btn-outline">外す</button></form>
+                </div>
+                {{- if and .Known (eq .CA.CRLSource "upload")}}
+                <form hx-post="/tenants/{{$.Tenant.ID}}/brought-cas/{{.CAID}}/crl" hx-target="#brought" hx-swap="outerHTML" autocomplete="off" class="mb-2">
+                  <fieldset class="fieldset"><legend class="fieldset-legend">CRL を置く（PEM）</legend>
+                    <textarea name="crlPem" rows="3" class="textarea font-mono w-full"></textarea></fieldset>
+                  <button class="btn btn-xs mt-1">置く</button>
+                </form>
+                {{- end}}
+                <form hx-post="/tenants/{{$.Tenant.ID}}/brought-cas/{{.CAID}}/source" hx-target="#brought" hx-swap="outerHTML" autocomplete="off">
+                  {{template "crl-source-fields" (dict "Source" "" "URL" "" "OrgID" "" "CRLPEM" "" "MatchAttr" "" "MatchPattern" "" "Errors" nil "NoCRL" false "NoCRLMark" true "Attrs" $.MatchAttrs)}}
+                  <button class="btn btn-xs mt-1">取得先を変える</button>
+                </form>
+              </details>
+            </td>
+          </tr>
+          {{- end}}
+          {{- else}}
+          <tr><td colspan="5">持ち込みの CA はありません。</td></tr>
+          {{- end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {{- if .CanManage}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">共通のブロックの照合の形</h2>
+      <p class="text-sm text-base-content/60">持ち込みの CA の AP を受けるブロックを、業者の証明書の形で絞ります。CRL のない CA があるときは必須です。例: CN と <code>^[0-9a-f]{12}$</code>。</p>
+      <form hx-post="/tenants/{{.Tenant.ID}}/brought-cas/match" hx-target="#brought" hx-swap="outerHTML" autocomplete="off" class="flex flex-wrap items-end gap-2">
+        <fieldset class="fieldset"><legend class="fieldset-legend">属性</legend>
+          <select name="matchAttr" class="select">{{range .MatchAttrs}}<option value="{{.}}"{{if eq . $.Attr}} selected{{end}}>{{.}}</option>{{end}}</select></fieldset>
+        <fieldset class="fieldset"><legend class="fieldset-legend">正規表現</legend>
+          <input name="matchPattern" value="{{.Pattern}}" maxlength="128" class="input font-mono{{if .MatchError}} input-error{{end}}">{{template "field-error" .MatchError}}</fieldset>
+        <button class="btn btn-primary mb-1">変更する</button>
+      </form>
+    </div>
+  </div>
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">登録する</h2>
+      <p class="text-sm text-base-content/60">業者の組織ごとの CA に限ります（全顧客で共通の CA は受けません）。登録しただけでは受けません。RadSec の画面で反映してください。</p>
+      <form hx-post="/tenants/{{.Tenant.ID}}/brought-cas" hx-target="#brought" hx-swap="outerHTML" autocomplete="off">
+        <input type="hidden" name="idem" value="{{.IdemKey}}">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">名前</legend>
+          <input name="name" value="{{.Form.Name}}" required maxlength="32" class="input font-mono{{if index .Form.Errors "name"}} input-error{{end}}">
+          {{template "field-error" (index .Form.Errors "name")}}
+        </fieldset>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">CA の証明書（PEM）</legend>
+          <textarea name="certPem" rows="5" class="textarea font-mono w-full{{if index .Form.Errors "certPem"}} textarea-error{{end}}">{{.Form.CertPEM}}</textarea>
+          {{template "field-error" (index .Form.Errors "certPem")}}
+        </fieldset>
+        {{template "crl-source-fields" (dict "Source" .Form.Source "URL" .Form.URL "OrgID" .Form.MerakiOrgID "CRLPEM" .Form.CRLPEM "MatchAttr" .Form.MatchAttr "MatchPattern" .Form.MatchPattern "Errors" .Form.Errors "NoCRL" .Form.NoCRL "NoCRLMark" true "Attrs" .MatchAttrs)}}
+        <label class="label mt-2"><input type="checkbox" name="tenantOnly" value="1" class="checkbox checkbox-sm"{{if .Form.TenantOnly}} checked{{end}}> このテナント専用の CA であることを確かめました（操作者と時刻を記録します）</label>
+        {{template "field-error" (index .Form.Errors "tenantOnly")}}
+        <div><button type="submit" class="btn btn-primary mt-2">登録する</button></div>
+      </form>
+    </div>
+  </div>
+  {{- end}}
+</div>
+{{- end}}
+
+{{/* crl-source-fields は CRL の取得先の項目。API キーは描き直さない（秘密の値を画面に出さない。OB15）。 */}}
+{{define "crl-source-fields" -}}
+<div class="grid md:grid-cols-2 gap-x-4">
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">CRL の取得先</legend>
+    <select name="source" class="select w-full">
+      <option value="url"{{if eq .Source "url"}} selected{{end}}>URL</option>
+      <option value="meraki"{{if eq .Source "meraki"}} selected{{end}}>Meraki の Dashboard API</option>
+      <option value="upload"{{if eq .Source "upload"}} selected{{end}}>アップロード</option>
+      <option value="none"{{if eq .Source "none"}} selected{{end}}>なし（テナント全体の CRL の確認が止まります）</option>
+    </select>
+    {{template "field-error" (fieldError .Errors "source")}}
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">URL（取得先が URL のとき）</legend>
+    <input name="url" value="{{.URL}}" class="input w-full font-mono">{{template "field-error" (fieldError .Errors "url")}}
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">組織の ID（Meraki のとき）</legend>
+    <input name="merakiOrgId" value="{{.OrgID}}" class="input w-full font-mono">{{template "field-error" (fieldError .Errors "merakiOrgId")}}
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">API キー（Meraki のとき）</legend>
+    <input name="merakiApiKey" type="password" autocomplete="off" class="input w-full font-mono">
+    {{- with fieldError .Errors "merakiApiKey"}}{{template "field-error" .}}{{else}}<p class="label">読み取り専用の管理者のキー。radsec-ca が暗号化して持ちます。</p>{{end}}
+  </fieldset>
+  <fieldset class="fieldset md:col-span-2">
+    <legend class="fieldset-legend">CRL（アップロードのとき。PEM）</legend>
+    <textarea name="crlPem" rows="3" class="textarea font-mono w-full">{{.CRLPEM}}</textarea>{{template "field-error" (fieldError .Errors "crlPem")}}
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">照合の属性（取得先がなしのとき）</legend>
+    <select name="matchAttr" class="select w-full">{{$a := .MatchAttr}}{{range .Attrs}}<option value="{{.}}"{{if eq . $a}} selected{{end}}>{{.}}</option>{{end}}</select>
+  </fieldset>
+  <fieldset class="fieldset">
+    <legend class="fieldset-legend">照合の正規表現（取得先がなしのとき）</legend>
+    <input name="matchPattern" value="{{.MatchPattern}}" maxlength="128" class="input w-full font-mono">{{template "field-error" (fieldError .Errors "matchPattern")}}
+  </fieldset>
+</div>
+<label class="label mt-2"><input type="checkbox" name="noCrl" value="1" class="checkbox checkbox-sm"{{if .NoCRL}} checked{{end}}> 取得先がなしのとき: CRL がなく業者の AP の失効が効かないことを了承します</label>
+{{template "field-error" (fieldError .Errors "noCrl")}}
+{{- end}}

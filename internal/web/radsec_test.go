@@ -2,8 +2,15 @@ package web
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json/jsontext"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/url"
 	"slices"
@@ -394,11 +401,21 @@ func TestRadsecPermissions(t *testing.T) {
 		{"GET", "/radsec", no, no, ok, ok},
 		{"GET", "/tenants/10/radsec", ok, ok, ok, ok},
 		{"GET", "/tenants/20/radsec", nf, nf, ok, ok},
+		{"GET", "/tenants/10/aps", ok, ok, ok, ok},
+		{"GET", "/tenants/20/aps", nf, nf, ok, ok},
+		{"GET", "/tenants/10/aps/seen", ok, ok, ok, ok},
+		{"GET", "/tenants/10/brought-cas", no, no, ok, ok},
+		{"GET", "/tenants/20/brought-cas", nf, nf, ok, ok},
 		{"POST", "/tenants/10/radsec/apply", no, ok, ok, ok},
 		{"POST", "/tenants/20/radsec/apply", nf, nf, ok, ok},
 		{"POST", "/edges/none/delete", no, no, no, nf},
 		{"POST", "/tenants/10/radsec/sources", no, no, ok, ok},
 		{"POST", "/tenants/10/radsec/enable", no, no, 400, 400},
+		{"POST", "/tenants/10/brought-cas/match", no, no, no, ok},
+		{"POST", "/tenants/10/brought-cas/none/remove", no, no, no, nf},
+		{"POST", "/tenants/10/aps", no, 400, 400, 400},
+		{"POST", "/tenants/20/aps", nf, nf, 400, 400},
+		{"GET", "/tenants/10/radsec/server-ca.pem", no, ok, ok, ok},
 	} {
 		for i, email := range []string{"a@example.com", "b@example.com", "c@example.com", "d@example.com"} {
 			h := e.as(email)
@@ -581,5 +598,219 @@ func TestRadsecApply(t *testing.T) {
 	wantStatus(t, "sources", w.Code, 200, w.Body.String())
 	if r := e.rs.radsec[10]; !slices.Equal(r.SourceCIDRs, []string{"198.51.100.0/24", "203.0.113.0/24"}) || r.RequestedRevision != r.Revision {
 		t.Errorf("radsec = %+v", r)
+	}
+}
+
+// testCAPEM は試験の CA の証明書を作る。
+func testCAPEM(t *testing.T, cn string) string {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: cn}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+const testCSRPEM = "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----\n"
+
+func TestRadsecAPs(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "acme")
+	e.addEdge("edge-01", 5)
+	if _, err := e.rs.AddPlacement(context.Background(), 10, "edge-01", "primary", "op"); err != nil {
+		t.Fatal(err)
+	}
+	h := e.as("b@example.com")
+	// A は見るだけ。
+	a := e.as("a@example.com")
+	mustNotContain(t, get(a, "/tenants/10/aps").Body.String(), `hx-post="/tenants/10/aps"`)
+	// 形の誤り。
+	w := post(h, "/tenants/10/aps", url.Values{"name": {"probe"}, "kind": {"ap"}, "csr": {"x"}})
+	wantStatus(t, "probe", w.Code, 400, w.Body.String())
+	mustContain(t, w.Body.String(), "予約", "CSR を PEM")
+	w = post(h, "/tenants/10/aps", url.Values{"name": {"g1"}, "kind": {"group"}, "csr": {testCSRPEM}})
+	wantStatus(t, "no purpose", w.Code, 400, w.Body.String())
+	mustContain(t, w.Body.String(), "用途を選んでください")
+	// 発行の失敗（4xx）では新しいキーになる。入力は残す。
+	e.pv.errs["ca.issue.ap-client"] = &provisioner.Error{Status: 422, Problem: provisioner.Problem{Cause: provisioner.CauseCSRInvalid, Downstream: "ca", Detail: "CSR を読めません"}}
+	w = post(h, "/tenants/10/aps", url.Values{"name": {"ap-1"}, "kind": {"ap"}, "csr": {testCSRPEM}, "idem": {"AAAAAAAAAAAAAAAAAAAAAAAAAA"}})
+	wantStatus(t, "csr invalid", w.Code, 502, w.Body.String())
+	mustContain(t, w.Body.String(), "radsec-ca: CSR を読めません", "BEGIN CERTIFICATE REQUEST")
+	mustNotContain(t, w.Body.String(), "AAAAAAAAAAAAAAAAAAAAAAAAAA")
+	delete(e.pv.errs, "ca.issue.ap-client")
+	// 登録。版は上がるが反映は求めない。
+	before := e.rs.radsec[10]
+	w = post(h, "/tenants/10/aps", url.Values{"name": {"ap-1"}, "kind": {"ap"}, "csr": {testCSRPEM}, "idem": {"BBBBBBBBBBBBBBBBBBBBBBBBBB"}})
+	if w.Code != 200 || !strings.Contains(w.Header().Get("HX-Redirect"), "/tenants/10/aps/") {
+		t.Fatalf("create = %d %v %s", w.Code, w.Header(), w.Body)
+	}
+	if op := e.pv.lastOp(); op != "ca.issue.ap-client b@example.com BBBBBBBBBBBBBBBBBBBBBBBBBB" {
+		t.Errorf("issue op = %q", op)
+	}
+	after := e.rs.radsec[10]
+	if after.Revision != before.Revision+1 || after.RequestedRevision != before.RequestedRevision {
+		t.Errorf("radsec = %+v", after)
+	}
+	ap := e.rs.aps[0]
+	if ap.NASID != "acme-ap-1" || len(ap.Certs) != 1 {
+		t.Errorf("ap = %+v", ap)
+	}
+	path := "/tenants/10/aps/" + strconv.FormatInt(ap.ID, 10)
+	// 詳細: 接続の案内。A には案内と操作を出さない。
+	body := get(h, path+"?created=1").Body.String()
+	mustContain(t, body, "反映してください", "primary.acme.radsec.example.net", ">20000<", "/radsec/server-ca.pem", "証明書の更新")
+	body = get(a, path).Body.String()
+	mustContain(t, body, "acme-ap-1")
+	mustNotContain(t, body, "接続の案内", "証明書の更新", "/certs/")
+	// 名前の重なり。
+	w = post(h, "/tenants/10/aps", url.Values{"name": {"ap-1"}, "kind": {"ap"}, "csr": {testCSRPEM}})
+	wantStatus(t, "same name", w.Code, 409, w.Body.String())
+	// 証明書の取り出し。別の AP の番号は 404。
+	serial := ap.Certs[0].Serial
+	if w := get(h, path+"/certs/"+serial+"/pem"); w.Code != 200 || w.Body.String() != "CERT-PEM-"+serial || !strings.Contains(w.Header().Get("Content-Disposition"), "acme-ap-1.pem") {
+		t.Errorf("pem = %d %v %s", w.Code, w.Header(), w.Body)
+	}
+	if w := get(h, path+"/certs/ffff/pem"); w.Code != 404 {
+		t.Errorf("other serial = %d", w.Code)
+	}
+	if w := get(a, path+"/certs/"+serial+"/pem"); w.Code != 403 {
+		t.Errorf("A pem = %d", w.Code)
+	}
+	// 更新と古い証明書の失効。
+	w = post(h, path+"/renew", url.Values{"csr": {testCSRPEM}})
+	wantStatus(t, "renew", w.Code, 200, w.Body.String())
+	mustContain(t, w.Body.String(), "新しい証明書を発行しました")
+	w = post(h, path+"/certs/"+serial+"/revoke", url.Values{"reason": {"bad"}})
+	wantStatus(t, "bad reason", w.Code, 400, w.Body.String())
+	w = post(h, path+"/certs/"+serial+"/revoke", url.Values{"reason": {provisioner.RevokeSuperseded}})
+	wantStatus(t, "revoke", w.Code, 200, w.Body.String())
+	if r := e.rs.radsec[10]; !r.CRLDirty {
+		t.Errorf("crl dirty = %+v", r)
+	}
+	w = post(h, path+"/certs/"+serial+"/revoke", url.Values{"reason": {provisioner.RevokeSuperseded}})
+	wantStatus(t, "revoke twice", w.Code, 409, w.Body.String())
+	// 接続の状態（エッジの ID を見せない）。
+	w = get(h, "/tenants/10/aps/seen")
+	mustContain(t, w.Body.String(), "ap-1", "primary", "198.51.100.1", "接続中")
+	mustNotContain(t, w.Body.String(), "edge-01")
+	// 認可ポリシーの候補。
+	// 削除: 失効できなければ消さない。
+	e.pv.errs["ca.revoke.cessationOfOperation"] = errors.New("dial")
+	w = post(h, path+"/delete", url.Values{})
+	wantStatus(t, "delete failed", w.Code, 502, w.Body.String())
+	mustContain(t, w.Body.String(), "削除していません")
+	if len(e.rs.aps) != 1 {
+		t.Error("deleted without revocation")
+	}
+	delete(e.pv.errs, "ca.revoke.cessationOfOperation")
+	w = post(h, path+"/delete", url.Values{})
+	wantStatus(t, "delete", w.Code, 200, w.Body.String())
+	if len(e.rs.aps) != 0 || e.db.lastAudit().Action != audit.ActionAPDelete {
+		t.Errorf("after delete: %+v, %+v", e.rs.aps, e.db.lastAudit())
+	}
+}
+
+func TestRadsecBroughtCA(t *testing.T) {
+	const apiKey = "very-secret-meraki-key"
+	e := newRadsecEnv(t)
+	e.enable(10, "acme")
+	e.rs.radsec[10] = func() db.TenantRadsec {
+		r := e.rs.radsec[10]
+		r.CACertificate = testCAPEM(t, "acme client CA")
+		return r
+	}()
+	h := e.as("d@example.com")
+	vendor := testCAPEM(t, "vendor CA")
+	base := url.Values{"name": {"vendor"}, "certPem": {vendor}, "source": {"meraki"}, "merakiOrgId": {"12"}, "merakiApiKey": {apiKey}, "tenantOnly": {"1"}}
+	clone := func(kv ...string) url.Values {
+		out := url.Values{}
+		for k, v := range base {
+			out[k] = v
+		}
+		for i := 0; i+1 < len(kv); i += 2 {
+			out.Set(kv[i], kv[i+1])
+		}
+		return out
+	}
+	// 確認の印がない。API キーは描き直さない。
+	w := post(h, "/tenants/10/brought-cas", clone("tenantOnly", ""))
+	wantStatus(t, "no confirm", w.Code, 400, w.Body.String())
+	mustContain(t, w.Body.String(), "専用の CA であることを確かめて")
+	mustNotContain(t, w.Body.String(), apiKey)
+	// API キーがない。
+	w = post(h, "/tenants/10/brought-cas", clone("merakiApiKey", ""))
+	wantStatus(t, "no key", w.Code, 400, w.Body.String())
+	// 同じ Subject の CA は画面で断る（E7）。
+	w = post(h, "/tenants/10/brought-cas", clone("certPem", testCAPEM(t, "acme client CA")))
+	wantStatus(t, "same subject", w.Code, 400, w.Body.String())
+	mustContain(t, w.Body.String(), "同じ Subject")
+	// CRL なしは了承と照合の形が必須。
+	w = post(h, "/tenants/10/brought-cas", clone("source", "none"))
+	wantStatus(t, "none", w.Code, 400, w.Body.String())
+	mustContain(t, w.Body.String(), "了承して", "業者の証明書の形")
+	w = post(h, "/tenants/10/brought-cas", clone("source", "none", "noCrl", "1", "matchAttr", "CN", "matchPattern", "no-anchor"))
+	wantStatus(t, "bad match", w.Code, 400, w.Body.String())
+	mustContain(t, w.Body.String(), "^ で始めて $ で終えて")
+	// radsec-ca の断り（4xx）: 新しいキーになり、キーの値は画面に出ない。
+	e.pv.errs["ca.brought"] = &provisioner.Error{Status: 422, Problem: provisioner.Problem{Cause: provisioner.CauseCRLInvalid, Downstream: "ca", Detail: "CRL を取れません"}}
+	w = post(h, "/tenants/10/brought-cas", clone("idem", "CCCCCCCCCCCCCCCCCCCCCCCCCC"))
+	wantStatus(t, "crl invalid", w.Code, 502, w.Body.String())
+	mustContain(t, w.Body.String(), "CRL を取れません")
+	mustNotContain(t, w.Body.String(), apiKey, "CCCCCCCCCCCCCCCCCCCCCCCCCC")
+	delete(e.pv.errs, "ca.brought")
+	// 登録。キーは radsec-ca に渡すだけで、台帳にも監査ログにもない。
+	w = post(h, "/tenants/10/brought-cas", clone())
+	wantStatus(t, "create", w.Code, 200, w.Body.String())
+	mustNotContain(t, w.Body.String(), apiKey)
+	if e.pv.lastBrought.CRL.MerakiAPIKey != apiKey || !e.pv.lastBrought.TenantOnlyConfirmed {
+		t.Errorf("sent = %+v", e.pv.lastBrought)
+	}
+	for _, a := range e.db.audit {
+		if strings.Contains(detailText(a.Detail), apiKey) {
+			t.Errorf("audit has the key: %+v", a)
+		}
+	}
+	if len(e.rs.brought) != 1 || e.rs.brought[0].CAID != "brought.acme.vendor" || e.db.lastAudit().Action != audit.ActionBroughtCreate {
+		t.Fatalf("brought = %+v, %+v", e.rs.brought, e.db.lastAudit())
+	}
+	if strings.Contains(e.rs.brought[0].Certificate, apiKey) {
+		t.Error("key in the row")
+	}
+	// C は見られるが、操作は出さず断る。
+	c := e.as("c@example.com")
+	mustNotContain(t, get(c, "/tenants/10/brought-cas").Body.String(), `/brought-cas/brought.acme.vendor/remove`, `hx-post="/tenants/10/brought-cas"`)
+	if w := post(c, "/tenants/10/brought-cas/brought.acme.vendor/remove", url.Values{}); w.Code != 403 {
+		t.Errorf("C remove = %d", w.Code)
+	}
+	// 取得先を none にすると反映を求める。
+	before := e.rs.radsec[10]
+	w = post(h, "/tenants/10/brought-cas/brought.acme.vendor/source", url.Values{"source": {"none"}, "noCrl": {"1"}, "matchAttr": {"CN"}, "matchPattern": {"^[0-9a-f]{12}$"}})
+	wantStatus(t, "to none", w.Code, 200, w.Body.String())
+	mustContain(t, w.Body.String(), "順に反映します")
+	if r := e.rs.radsec[10]; r.Revision != before.Revision+1 || r.RequestedRevision != r.Revision {
+		t.Errorf("after none = %+v", r)
+	}
+	// CRL の取り直しと置き直しは radsec-ca を呼ぶ（毎回新しいキー）。
+	w = post(h, "/tenants/10/brought-cas/brought.acme.vendor/refresh", url.Values{})
+	wantStatus(t, "refresh", w.Code, 200, w.Body.String())
+	w = post(h, "/tenants/10/brought-cas/brought.acme.vendor/crl", url.Values{"crlPem": {"x"}})
+	wantStatus(t, "bad crl", w.Code, 400, w.Body.String())
+	w = post(h, "/tenants/10/brought-cas/brought.acme.vendor/crl", url.Values{"crlPem": {"-----BEGIN X509 CRL-----\nx\n-----END X509 CRL-----"}})
+	wantStatus(t, "upload", w.Code, 200, w.Body.String())
+	// 照合の形。
+	w = post(h, "/tenants/10/brought-cas/match", url.Values{"matchAttr": {"CN"}, "matchPattern": {`^\d+$`}})
+	wantStatus(t, "bad pattern", w.Code, 400, w.Body.String())
+	// 外すと反映を求める（OB6）。
+	w = post(h, "/tenants/10/brought-cas/brought.acme.vendor/remove", url.Values{})
+	wantStatus(t, "remove", w.Code, 200, w.Body.String())
+	mustContain(t, w.Body.String(), "外している途中")
+	if !e.rs.brought[0].Removing() {
+		t.Errorf("brought = %+v", e.rs.brought[0])
 	}
 }

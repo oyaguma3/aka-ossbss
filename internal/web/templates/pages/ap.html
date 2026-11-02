@@ -1,0 +1,85 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/tenants/{{.Data.Tenant.ID}}/radsec">RadSec</a></li><li><a href="/tenants/{{.Data.Tenant.ID}}/aps">AP・グループ</a></li><li>{{.Data.AP.Name}}</li></ul></div>
+{{template "ap-detail" .Data}}
+{{- end}}
+
+{{define "ap-detail" -}}
+<div id="ap">
+  <h1 class="text-2xl font-bold mb-4">{{if eq .AP.Kind "group"}}グループ{{else}}AP{{end}} {{.AP.Name}}</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-48">NAS-Identifier</th><td class="font-mono">{{.AP.NASID}}{{if eq .AP.Kind "group"}}（AP が送らないときの値。送った値をそのまま通します）{{end}}</td></tr>
+          {{- if eq .AP.Kind "group"}}<tr><th>用途</th><td>{{.AP.Purpose}}</td></tr>{{end}}
+          <tr><th>登録</th><td>{{datetime .AP.CreatedAt}}（{{.AP.CreatedBy}}）</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <h2 class="card-title">証明書</h2>
+      {{- if .NoCRL}}<p class="text-sm text-warning">CRL のない持ち込みの CA があるので、失効させた証明書も TLS の検証を通ります。止めるには、この AP を削除します。</p>{{end}}
+      <table class="table table-sm">
+        <thead><tr><th>シリアル番号</th><th>発行</th><th>期限</th><th>状態</th>{{if .CanManage}}<th></th>{{end}}</tr></thead>
+        <tbody>
+          {{- range .AP.Certs}}
+          <tr>
+            <td class="font-mono text-sm">{{.Serial}}</td>
+            <td>{{datetime .IssuedAt}}</td>
+            <td>{{datetime .NotAfter}}</td>
+            <td>{{if .Valid}}<span class="badge badge-success badge-sm badge-outline">有効</span>{{else}}<span class="badge badge-sm">失効（{{.RevokeReason}}）</span>{{end}}</td>
+            {{- if $.CanManage}}
+            <td class="flex flex-wrap gap-1">
+              <a class="btn btn-xs" href="/tenants/{{$.Tenant.ID}}/aps/{{$.AP.ID}}/certs/{{.Serial}}/pem">証明書</a>
+              {{- if .Valid}}
+              <form hx-post="/tenants/{{$.Tenant.ID}}/aps/{{$.AP.ID}}/certs/{{.Serial}}/revoke" hx-target="#ap" hx-swap="outerHTML" hx-confirm="AP に新しい証明書を入れ替えましたか？この証明書を失効させます。"><input type="hidden" name="reason" value="superseded"><button class="btn btn-xs">入れ替えた後の失効</button></form>
+              <form hx-post="/tenants/{{$.Tenant.ID}}/aps/{{$.AP.ID}}/certs/{{.Serial}}/revoke" hx-target="#ap" hx-swap="outerHTML" hx-confirm="鍵が漏れた証明書として失効させます。"><input type="hidden" name="reason" value="keyCompromise"><button class="btn btn-xs btn-error btn-outline">鍵の漏えい</button></form>
+              {{- end}}
+            </td>
+            {{- end}}
+          </tr>
+          {{- end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {{- if .CanManage}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">接続の案内</h2>
+      <p class="text-sm">AP に次を設定します。{{.PurposeNote}}</p>
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-48">RadSec サーバーの名前</th><td class="font-mono">{{if .Domain}}{{range .SlotNames}}{{.}}<br>{{else}}配置がまだありません。{{end}}{{else}}radsec-ca に届かないので、名前を出せません。{{end}}</td></tr>
+          <tr><th>ポート</th><td class="font-mono">{{.Radsec.Port}}</td></tr>
+          <tr><th>シークレット</th><td class="font-mono">radsec</td></tr>
+          <tr><th>サーバーCA の証明書</th><td><a class="btn btn-xs" href="/tenants/{{.Tenant.ID}}/radsec/server-ca.pem">取り出す</a></td></tr>
+          <tr><th>クライアント証明書</th><td>上の表の「証明書」と、顧客の手元の鍵</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">証明書の更新</h2>
+      <form hx-post="/tenants/{{.Tenant.ID}}/aps/{{.AP.ID}}/renew" hx-target="#ap" hx-swap="outerHTML" autocomplete="off">
+        <input type="hidden" name="idem" value="{{.IdemKey}}">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">新しい CSR（PEM）</legend>
+          <textarea name="csr" rows="6" class="textarea font-mono w-full{{if .CSRError}} textarea-error{{end}}">{{.CSR}}</textarea>
+          {{- if .CSRError}}{{template "field-error" .CSRError}}{{else}}<p class="label">同じ名前で発行するので、エッジの設定は変わりません。新旧が両方有効な間はどちらでもつながります。</p>{{end}}
+        </fieldset>
+        <button type="submit" class="btn btn-primary btn-sm mt-2">発行する</button>
+      </form>
+    </div>
+  </div>
+  <form id="ap-delete" hx-post="/tenants/{{.Tenant.ID}}/aps/{{.AP.ID}}/delete" hx-target="#ap" hx-swap="outerHTML" hx-push-url="/tenants/{{.Tenant.ID}}/aps"></form>
+  <button type="button" class="btn btn-error btn-outline" command="show-modal" commandfor="dialog-ap-delete">削除する</button>
+  {{template "confirm" (dict "ID" "dialog-ap-delete" "Title" "削除" "Form" "ap-delete" "Label" "削除する" "Class" "btn-error"
+    "Message" (printf "%s の証明書をすべて失効させて削除します。よろしいですか？" .AP.Name))}}
+  {{- end}}
+</div>
+{{- end}}

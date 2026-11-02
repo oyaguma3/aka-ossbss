@@ -1,0 +1,105 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/tenants/{{.Data.Tenant.ID}}/radsec">RadSec</a></li><li>AP・グループ</li></ul></div>
+{{template "aps-section" .Data}}
+{{- end}}
+
+{{define "aps-section" -}}
+<div id="aps">
+  <h1 class="text-2xl font-bold mb-4">AP・グループ {{.Tenant.Name}}</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+  {{- if not .Enabled}}
+  <div class="card bg-base-100 shadow mb-6"><div class="card-body"><p>このテナントは RadSec を有効にしていません。</p></div></div>
+  {{- else}}
+  {{- if .NoCRL}}
+  <div role="alert" class="alert alert-warning mb-4"><span>CRL のない持ち込みの CA があるので、失効させた証明書も TLS の検証を通ります。止めるには AP を削除します。削除した名前は使い回せません。</span></div>
+  {{- end}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <table class="table table-sm">
+        <thead><tr><th>名前</th><th>種類</th><th>NAS-Identifier</th><th>証明書の期限</th><th>有効な証明書</th></tr></thead>
+        <tbody>
+          {{- range .Rows}}
+          <tr>
+            <td><a class="link font-mono" href="/tenants/{{$.Tenant.ID}}/aps/{{.ID}}">{{.Name}}</a></td>
+            <td>{{if eq .Kind "group"}}グループ（{{.Purpose}}）{{else}}AP{{end}}</td>
+            <td class="font-mono">{{.NASID}}</td>
+            <td>{{if .ValidCount}}{{datetime .Latest.NotAfter}}{{if .Expiring}} <span class="badge badge-warning badge-sm">期限が近い</span>{{end}}{{else}}<span class="badge badge-error badge-sm">なし</span>{{end}}</td>
+            <td>{{.ValidCount}}</td>
+          </tr>
+          {{- else}}
+          <tr><td colspan="5">AP・グループはまだ登録していません。</td></tr>
+          {{- end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <h2 class="card-title">接続の状態</h2>
+      <div hx-get="/tenants/{{.Tenant.ID}}/aps/seen" hx-trigger="load" hx-swap="innerHTML"><p class="text-sm text-base-content/60">各エッジから読んでいます…</p></div>
+    </div>
+  </div>
+  {{- if .CanManage}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">登録する</h2>
+      <form hx-post="/tenants/{{.Tenant.ID}}/aps" hx-target="#aps" hx-swap="outerHTML" autocomplete="off">
+        <input type="hidden" name="idem" value="{{.IdemKey}}">
+        <div class="grid md:grid-cols-3 gap-x-4">
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">名前</legend>
+            <input name="name" value="{{.Name}}" required maxlength="32" class="input w-full font-mono{{if index .Errors "name"}} input-error{{end}}">
+            {{template "field-error" (index .Errors "name")}}
+          </fieldset>
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">種類</legend>
+            <select name="kind" class="select w-full">
+              <option value="ap"{{if eq .Kind "ap"}} selected{{end}}>AP（AP ごとに 1 枚の証明書）</option>
+              <option value="group"{{if eq .Kind "group"}} selected{{end}}>グループ（証明書を共有する製品、Box）</option>
+            </select>
+            {{template "field-error" (index .Errors "kind")}}
+          </fieldset>
+          <fieldset class="fieldset">
+            <legend class="fieldset-legend">用途（グループだけ）</legend>
+            <select name="purpose" class="select w-full{{if index .Errors "purpose"}} select-error{{end}}">
+              <option value="">-</option>
+              {{- range .Purposes}}<option value="{{.Value}}"{{if eq .Value $.Purpose}} selected{{end}}>{{.Label}}</option>{{end}}
+            </select>
+            {{template "field-error" (index .Errors "purpose")}}
+          </fieldset>
+        </div>
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">CSR（PEM）</legend>
+          <textarea name="csr" rows="6" class="textarea font-mono w-full{{if index .Errors "csr"}} textarea-error{{end}}">{{.CSR}}</textarea>
+          {{- if index .Errors "csr"}}{{template "field-error" (index .Errors "csr")}}{{else}}<p class="label">鍵は顧客の手元で作り、外に出しません。例: <code>openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout ap.key -out ap.csr -subj "/CN=ap"</code></p>{{end}}
+        </fieldset>
+        <button type="submit" class="btn btn-primary mt-2">登録して発行する</button>
+      </form>
+      <p class="text-sm text-base-content/60 mt-2">登録しただけではつながりません。登録を終えたら <a class="link" href="/tenants/{{.Tenant.ID}}/radsec">RadSec の画面</a>で反映してください（何件足しても再起動は 1 回で済みます）。</p>
+    </div>
+  </div>
+  {{- end}}
+  {{- end}}
+</div>
+{{- end}}
+
+{{define "ap-seen" -}}
+{{- if .Unreachable}}<p class="text-sm text-warning mb-2">読めなかったスロット: {{joinStrings .Unreachable}}（反映前か、エッジに届きません）。</p>{{end}}
+<table class="table table-sm">
+  <thead><tr><th>名前</th><th>スロット</th><th>接続</th><th>最後の接続</th><th>送信元</th><th>最後の拒否</th></tr></thead>
+  <tbody>
+    {{- range .Rows}}
+    <tr><td class="font-mono">{{.Name}}</td><td class="font-mono">{{.Slot}}</td><td>{{if .Connected}}<span class="badge badge-success badge-sm">接続中</span>{{else}}-{{end}}</td><td>{{datetime .LastUp}}</td><td class="font-mono">{{.LastIP}}</td><td>{{datetime .LastReject}}</td></tr>
+    {{- else}}
+    <tr><td colspan="6">接続の記録はありません。</td></tr>
+    {{- end}}
+  </tbody>
+</table>
+{{- if .Shared}}
+<h3 class="font-bold mt-4">持ち込みの CA の AP（送信元の IP ごと）</h3>
+<table class="table table-sm">
+  <thead><tr><th>送信元</th><th>スロット</th><th>接続の数</th><th>最後の接続</th></tr></thead>
+  <tbody>{{range .Shared}}<tr><td class="font-mono">{{.IP}}</td><td class="font-mono">{{.Slot}}</td><td>{{.Connections}}</td><td>{{datetime .LastUp}}</td></tr>{{end}}</tbody>
+</table>
+{{- end}}
+{{- end}}
