@@ -5,18 +5,19 @@
 
 > このリポジトリは、VPS に分けて置いて顧客を収容する **MVP セット**（[aka-mvpset](https://github.com/oyaguma3/aka-mvpset)）の、運用者とテナントの利用者が使う画面と管理面の業務の処理を受け持つノードです。PoC セット（[eapaka-pocset](https://github.com/oyaguma3/eapaka-pocset) の `pocset-v1.0.1`）の [eapaka-ossbss-sample](https://github.com/oyaguma3/eapaka-ossbss-sample) の履歴を引き継いで作りました（もとのコミット `d970d48`）。
 >
-> MVP のための改修は、[設計概要](docs/design-overview.md)のとおりに MVP セットの段階 3・4 で行っています。段階 3（加入者の台帳、[aka-provisioner](https://github.com/oyaguma3/aka-provisioner) 2.0.0 の型つきのクライアント、加入者の画面、認可ポリシーの編集、セッション、一括投入と一括の物理削除、台帳と下流の突き合わせ、定期の処理、課金レコード）を終えました（設計概要 §19.2）。RadSec の受け口の管理は段階 4 で足します。
+> MVP のための改修は、[設計概要](docs/design-overview.md)のとおりに MVP セットの段階 3・4 で行っています。
 
-運用者とテナントの利用者が使う画面と、管理面の業務の処理（加入者の台帳など）を受け持つノード（コマンド名 `aka-ossbss`）です。aka-provisioner 2.0.0 を通して、[aka-vecgen](https://github.com/oyaguma3/aka-vecgen)（vecgen 側: 鍵・SQN・状態）と [aka-radius](https://github.com/oyaguma3/aka-radius)（radius 側: 状態・取得先・認可ポリシーのルール）の加入者を、テナントと役割に基づく権限で別々に操作します。
+運用者とテナントの利用者が使う画面と、管理面の業務の処理（加入者の台帳など）を受け持つノード（コマンド名 `aka-ossbss`）です。aka-provisioner を通して、[aka-vecgen](https://github.com/oyaguma3/aka-vecgen)（vecgen 側: 鍵・SQN・状態）と [aka-radius](https://github.com/oyaguma3/aka-radius)（radius 側: 状態・取得先・認可ポリシーのルール）の加入者を、テナントと役割に基づく権限で別々に操作します。
 
 ```
-[ブラウザ] ─> Cloudflare Access（メール認証）─ Tunnel ─> aka-ossbss ─mTLS─> aka-provisioner ─> aka-vecgen / aka-radius
+[ブラウザ] ─> Cloudflare Access（メール認証）─ Tunnel ─> aka-ossbss ─mTLS─> aka-provisioner ─> aka-vecgen / aka-radius / radsec-ca / エッジ
                                                             │
-                                                       PostgreSQL（テナント・アカウント・台帳・一括投入のジョブ・突き合わせの結果・課金レコード・監査ログ）
+                                                       PostgreSQL（テナント・アカウント・台帳・一括投入のジョブ・突き合わせの結果・課金レコード・RadSec の望む状態・監査ログ）
 ```
 
 - すべての加入者（IMSI）はどれか 1 つのテナントに属し、テナントの利用者は自分のテナントのものだけを扱います。
 - 加入者の台帳（所属、両側の有無と状態、取得先）は、aka-provisioner を通した操作が成功したときだけ書き、課金レコードの状態の事実と同じトランザクションで書きます。結果が分からない操作は印を付け、その場で下流を読み直して台帳を直します。毎日の突き合わせで、台帳を下流に合わせます。
+- RadSec の受け口（エッジ、配置、AP・グループ、持ち込みの CA）の望む状態を持ち、中央の整合のループが配置したエッジに 1 台ずつ反映します。
 - 認証は Cloudflare Access / Tunnel（メールのワンタイム PIN）で行い、aka-ossbss は Access の JWT を検証して利用者を識別します。
 - 画面は Go + htmx + daisyUI です。
 
@@ -32,6 +33,9 @@
 | 一括投入 | CSV での登録と物理削除のジョブ（全行を確かめてから確定、対象ごとの待ち行列、進み具合、中断、成功以外の行の CSV） | 運用担当（閲覧）・システム管理者 |
 | 突き合わせ | 台帳と下流の突き合わせの履歴とずれの一覧、手動の実行、台帳にない IMSI の取り込みと下流からの削除、大量のずれの保留の承認、定期の処理の状態 | 運用担当（閲覧）・システム管理者 |
 | 課金レコード | 月次のまとめの一覧とダウンロード、利用の集計の取り込みと締めの状態、外部の番号の設定、PGP の公開鍵の登録・作り直し・今すぐ取り込む・今すぐ締める（システム管理者） | 運用担当・システム管理者 |
+| RadSec | テナントの RadSec の有効化と配置、AP・グループの登録と証明書、反映とやり直し、DNS のレコードの表、接続の状態 | 全員（閲覧。AP・グループと反映はテナント管理者以上、配置は運用担当以上） |
+| 持ち込みの CA | 業者の CA と CRL の取得先の登録、外す | 運用担当（閲覧）・システム管理者 |
+| エッジ | エッジの台帳、接続の状態、再起動とログ、エッジにしかないテナント | 運用担当（閲覧・運用）・システム管理者 |
 | テナント | 作成・名前の変更・削除（システム管理者）、一覧と詳細の閲覧・外部の顧客番号の設定（運用担当・システム管理者） | 運用担当・システム管理者 |
 | アカウント | 作成・役割とテナントの変更・無効化・削除 | テナント管理者（自分のテナントのテナントユーザー）・システム管理者 |
 | 監査ログ | aka-ossbss の監査ログ（テナントの範囲）、aka-provisioner・aka-vecgen・aka-radius の監査ログ | テナント管理者（aka-ossbss の分）・運用担当・システム管理者 |
@@ -74,7 +78,7 @@ DB のバックアップと戻しは `scripts/backup-db.sh`・`scripts/restore-d
 | `OSSBSS_PROVISIONER_TIMEOUT` | aka-provisioner の 1 回の呼び出しの上限時間 | `15s` |
 | `OSSBSS_PROVISIONER_RADSEC_TIMEOUT` | radsec-ca とエッジの呼び出しの上限時間（aka-provisioner の `PROVISIONER_RADSEC_TIMEOUT` より長くする） | `35s` |
 | `OSSBSS_EDGE_CAPACITY_DEFAULT` | エッジの容量の既定（新しいエッジのフォームの初期値） | `150` |
-| `OSSBSS_RADSEC_RECONCILE_INTERVAL` | 中央の整合のループの間隔（10 秒〜1 時間） | `1m` |
+| `OSSBSS_RADSEC_RECONCILE_INTERVAL` | 中央の整合のループの間隔（1 分〜1 時間） | `1m` |
 | `OSSBSS_RADSEC_RENEW_AT` | エッジの証明書の更新を確かめる毎日の時刻（日本時間） | `05:00` |
 | `OSSBSS_BULK_CONCURRENCY` | 一括投入の同時の呼び出しの数（1〜8） | `5` |
 | `OSSBSS_RECONCILE_AT`・`OSSBSS_RECONCILE_MAX_FIXES` | 毎日の突き合わせの時刻（日本時間）と、自動で直す数の上限 | `04:00`・`1000` |
@@ -92,6 +96,7 @@ compose が固定で渡す項目: `OSSBSS_ADDR`（`:8446`）、`OSSBSS_DB_ADDR`�
 | [docs/design-overview.md](docs/design-overview.md) | 設計概要（MVP。決定事項と段階の記録） |
 | [docs/screen-spec.md](docs/screen-spec.md) | 画面仕様（画面ごとの URL・役割・項目・操作・誤り、監査ログの操作の名前） |
 | [docs/operation-guide.md](docs/operation-guide.md) | 運用ガイド |
+| [docs/ap-connection-guide.md](docs/ap-connection-guide.md) | AP の接続の手順書（テナント向け。一般的な RadSec の手順） |
 
 ## 開発
 
