@@ -162,14 +162,14 @@ func TestRadsecSettings(t *testing.T) {
 	if err != nil || c.RadsecReconcileInterval != time.Minute || c.RadsecRenewAt != "05:00" {
 		t.Errorf("defaults = %v, %q, %v", c.RadsecReconcileInterval, c.RadsecRenewAt, err)
 	}
-	t.Setenv("OSSBSS_RADSEC_RECONCILE_INTERVAL", "30s")
+	t.Setenv("OSSBSS_RADSEC_RECONCILE_INTERVAL", "2m")
 	t.Setenv("OSSBSS_RADSEC_RENEW_AT", "02:15")
-	if c, err := Load(); err != nil || c.RadsecReconcileInterval != 30*time.Second || c.RadsecRenewAt != "02:15" {
+	if c, err := Load(); err != nil || c.RadsecReconcileInterval != 2*time.Minute || c.RadsecRenewAt != "02:15" {
 		t.Errorf("set = %v, %q, %v", c.RadsecReconcileInterval, c.RadsecRenewAt, err)
 	}
-	t.Setenv("OSSBSS_RADSEC_RECONCILE_INTERVAL", "1s")
+	t.Setenv("OSSBSS_RADSEC_RECONCILE_INTERVAL", "30s")
 	if _, err := Load(); err == nil {
-		t.Error("OSSBSS_RADSEC_RECONCILE_INTERVAL=1s was accepted")
+		t.Error("OSSBSS_RADSEC_RECONCILE_INTERVAL=30s was accepted")
 	}
 	t.Setenv("OSSBSS_RADSEC_RECONCILE_INTERVAL", "")
 	t.Setenv("OSSBSS_RADSEC_RENEW_AT", "25:00")

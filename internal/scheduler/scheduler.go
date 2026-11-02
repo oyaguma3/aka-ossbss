@@ -170,7 +170,8 @@ func (s *Scheduler) due(ctx context.Context, e *entry, now time.Time) (bool, tim
 	if e.job.Every > 0 {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return e.last.IsZero() || now.Sub(e.last) >= e.job.Every, time.Time{}, nil
+		// 確かめの時刻はわずかにずれるので、確かめの間隔の半分だけゆとりを持たせる（ないと 59.99 秒で飛ばし、次の確かめまで待つことになる）。
+		return e.last.IsZero() || now.Sub(e.last) >= e.job.Every-s.opts.Tick/2, time.Time{}, nil
 	}
 	slot := LastDue(now, e.hour, e.minute)
 	s.mu.Lock()

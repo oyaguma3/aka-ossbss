@@ -285,6 +285,32 @@ func TestEveryRecordsOnlyWhenSomethingHappened(t *testing.T) {
 }
 
 // 長い処理の間も、ほかの処理は動く。同じ処理は重ねない。
+// TestEveryToleratesJitter は確かめの時刻のわずかなずれで間隔の処理を飛ばさないことを確かめる（確かめの間隔と同じ間隔の処理が、確かめのたびに動く）。
+func TestEveryToleratesJitter(t *testing.T) {
+	m := &memStore{}
+	c := &clock{t: jstTime(10, 12, 0)}
+	runs := 0
+	s := newTestScheduler(t, m, c, Job{Name: "every", Every: time.Minute, Run: func(context.Context) (string, error) {
+		runs++
+		return "", nil
+	}})
+	at := c.now()
+	for i, d := range []time.Duration{0, 59990 * time.Millisecond, 60020 * time.Millisecond, 59950 * time.Millisecond} {
+		at = at.Add(d)
+		c.set(at)
+		tick(t.Context(), s)
+		if runs != i+1 {
+			t.Fatalf("after %d ticks: %d runs", i+1, runs)
+		}
+	}
+	// 間隔の半分より短ければ動かない。
+	c.set(at.Add(29 * time.Second))
+	tick(t.Context(), s)
+	if runs != 4 {
+		t.Errorf("ran too early: %d runs", runs)
+	}
+}
+
 func TestJobsDoNotBlockEachOther(t *testing.T) {
 	m := &memStore{}
 	c := &clock{t: jstTime(10, 12, 0)}

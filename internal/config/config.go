@@ -185,8 +185,9 @@ func Load() (Config, error) {
 	c.RadsecReconcileInterval = time.Minute
 	if v := os.Getenv("OSSBSS_RADSEC_RECONCILE_INTERVAL"); v != "" {
 		d, err := time.ParseDuration(v)
-		if err != nil || d < 10*time.Second || d > time.Hour {
-			errs = append(errs, errors.New("OSSBSS_RADSEC_RECONCILE_INTERVAL: must be a duration between 10s and 1h (e.g. 1m)"))
+		// スケジューラーが 1 分ごとに確かめるので、1 分より短い間隔は効かない。
+		if err != nil || d < time.Minute || d > time.Hour {
+			errs = append(errs, errors.New("OSSBSS_RADSEC_RECONCILE_INTERVAL: must be a duration between 1m and 1h (e.g. 1m)"))
 		}
 		c.RadsecReconcileInterval = d
 	}
