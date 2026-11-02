@@ -67,6 +67,8 @@ type Provisioner struct {
 	ServerCertFile string
 	// Timeout は 1 回の呼び出しの上限時間。
 	Timeout time.Duration
+	// RadsecTimeout は radsec-ca とエッジの 1 回の呼び出しの上限時間（aka-provisioner の 30 秒より長くする。OB17）。
+	RadsecTimeout time.Duration
 }
 
 // DB は PostgreSQL への接続の設定。
@@ -158,6 +160,13 @@ func Load() (Config, error) {
 			errs = append(errs, errors.New("OSSBSS_PROVISIONER_TIMEOUT: must be a duration between 1s and 5m (e.g. 15s)"))
 		}
 		c.Provisioner.Timeout = d
+	}
+	if v := os.Getenv("OSSBSS_PROVISIONER_RADSEC_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < time.Second || d > 5*time.Minute {
+			errs = append(errs, errors.New("OSSBSS_PROVISIONER_RADSEC_TIMEOUT: must be a duration between 1s and 5m (e.g. 35s)"))
+		}
+		c.Provisioner.RadsecTimeout = d
 	}
 	if c.DB.Password == "" {
 		errs = append(errs, errors.New("OSSBSS_DB_PASSWORD is not set"))

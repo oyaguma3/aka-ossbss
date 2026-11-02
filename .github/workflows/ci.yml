@@ -186,14 +186,16 @@ jobs:
   provisioner:
     name: aka-provisioner との契約テスト
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     env:
-      # 契約テストの相手にする aka-provisioner と、その下流（aka-vecgen・aka-radius）のコミット。
-      # 下流は aka-provisioner の ci.yml の VECGEN_REF・RADIUS_REF（aka-mvpset の versions.env）に合わせる。
+      # 契約テストの相手にする aka-provisioner と、その下流（aka-vecgen・aka-radius・radsec-ca・エッジ）のコミット。
+      # 下流は aka-provisioner の ci.yml の VECGEN_REF・RADIUS_REF・CA_REF・EDGE_REF（aka-mvpset の versions.env）に合わせる。
       # aka-provisioner や下流の API を変えたら、その main のコミットに更新する。
-      PROVISIONER_REF: 9a5f4b05d402032fa031b9e15872665dfc6f3b0c
+      PROVISIONER_REF: 138ea60fb263219514be0452d48908bb3d2430f7
       VECGEN_REF: 2d4837939660fbadcec67b27b4ac333f96a77374
       RADIUS_REF: 00506874286cca3d454e3ba64365c6e7f0b10fe6
+      CA_REF: 934eaeb4e3e5d26196a40731edea1fdb681422f1
+      EDGE_REF: 6d5652dca97b26e2674debdbc0f75363fbbd65fb
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
@@ -211,6 +213,16 @@ jobs:
           repository: oyaguma3/aka-radius
           ref: ${{ env.RADIUS_REF }}
           path: aka-radius
+      - uses: actions/checkout@v7
+        with:
+          repository: oyaguma3/radsec-ca
+          ref: ${{ env.CA_REF }}
+          path: radsec-ca
+      - uses: actions/checkout@v7
+        with:
+          repository: oyaguma3/radsec-edge
+          ref: ${{ env.EDGE_REF }}
+          path: radsec-edge
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -219,6 +231,8 @@ jobs:
           git -C aka-provisioner log -1 --format='aka-provisioner: %h %s'
           git -C aka-vecgen log -1 --format='aka-vecgen: %h %s'
           git -C aka-radius log -1 --format='aka-radius: %h %s'
+          git -C radsec-ca log -1 --format='radsec-ca: %h %s'
+          git -C radsec-edge log -1 --format='radsec-edge: %h %s'
           mkdir -p "$RUNNER_TEMP/bin"
           (cd aka-provisioner && go build -o "$RUNNER_TEMP/bin/aka-provisioner" ./cmd/aka-provisioner)
           (cd aka-vecgen && go build -o "$RUNNER_TEMP/bin/aka-vecgen" ./cmd/aka-vecgen)
@@ -227,6 +241,10 @@ jobs:
       - name: 下流と aka-provisioner の起動
         # aka-provisioner の scripts/contract.sh が、Valkey 3 つ（Docker）と aka-vecgen・aka-radius の admin・aka-provisioner を
         # ループバックで起動し、管理クライアント（ossbss-ci）の証明書と試験の環境変数（contract.env）を作る。
+        # CA_SRC・EDGE_SRC を与えると、radsec-ca とエッジも固定のコミットから compose で起動して登録簿に足す。
+        env:
+          CA_SRC: ${{ github.workspace }}/radsec-ca
+          EDGE_SRC: ${{ github.workspace }}/radsec-edge
         run: aka-provisioner/scripts/contract.sh up "$RUNNER_TEMP/bin" "$RUNNER_TEMP/work"
       - name: aka-provisioner に接続できることの確認
         env:
@@ -245,7 +263,7 @@ jobs:
           . "$RUNNER_TEMP/work/contract.env"
           export OSSBSS_TEST_PROVISIONER_URL="$PROVISIONER_TEST_URL" OSSBSS_TEST_PROVISIONER_CLIENT_CERT="$PROVISIONER_TEST_CLIENT_CERT" \
             OSSBSS_TEST_PROVISIONER_SERVER_CERT="$PROVISIONER_TEST_SERVER_CERT" OSSBSS_TEST_PROVISIONER_AV_CLIENT_ID="$PROVISIONER_TEST_AV_CLIENT_ID" \
-            OSSBSS_TEST_PROVISIONER_SOURCE_ID="$PROVISIONER_TEST_SOURCE_ID"
+            OSSBSS_TEST_PROVISIONER_SOURCE_ID="$PROVISIONER_TEST_SOURCE_ID" OSSBSS_TEST_EDGE_ID="$PROVISIONER_TEST_EDGE_ID"
           go test -count=1 -race -run Integration -v ./internal/provisioner/ | tee contract.log
           # 接続先の指定が漏れると契約テストはスキップされ、テスト自体は成功してしまうので、別に確かめる。
           if grep -q -- '--- SKIP' contract.log; then
@@ -257,6 +275,9 @@ jobs:
         run: |
           for f in aka-vecgen aka-radius aka-provisioner; do
             echo "---- $f ----"; cat "$RUNNER_TEMP/work/$f.log" || true
+          done
+          for c in contract-ca-radsec-ca-1 contract-edge-radsec-edge-1 contract-edge-radsec-edge-agent-1 radsecproxy-acme; do
+            echo "---- $c ----"; docker logs "$c" 2>&1 | tail -n 200 || true
           done
       - name: 片付け
         if: always()

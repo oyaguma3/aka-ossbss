@@ -1,7 +1,7 @@
-// Package provisioner は aka-provisioner（以下「provisioner」）の API 2.0.0 の型つきのクライアント（設計概要 §1。段階 3-1 の W12）。
-// API 仕様は aka-provisioner のリポジトリの docs/openapi/provisioner-api.yaml（2.0.0）を参照。provisioner は
-// /admin/v2/vecgen/... と /admin/v2/radius/... を下流（aka-vecgen・aka-radius の管理API 2.0.0）にそのまま中継するので、
-// 本文の項目は下流の OpenAPI（各リポジトリの docs/openapi/admin-api.yaml）に合わせる。画面が項目を使うので型を持つ。
+// Package provisioner は aka-provisioner（以下「provisioner」）の API 2.1.0 の型つきのクライアント（設計概要 §1。段階 3-1 の W12、段階 4-3 の OB17）。
+// API 仕様は aka-provisioner のリポジトリの docs/openapi/provisioner-api.yaml（2.1.0）を参照。provisioner は
+// /admin/v2/vecgen/...、/admin/v2/radius/...、/admin/v2/ca/...、/admin/v2/edges/{edgeId}/... を下流にそのまま中継するので、
+// 本文の項目は下流の OpenAPI に合わせる。画面が項目を使うので型を持つ。
 //
 // 接続は mTLS で、aka-ossbss のクライアント証明書を提示し、provisioner のサーバー証明書（自己署名）を
 // 信頼する証明書として検証する（ホスト名も検証する）。
@@ -41,6 +41,8 @@ import (
 const (
 	// defaultTimeout は 1 回の呼び出しの上限の既定。provisioner は下流を 1 回だけ呼ぶ（下流の上限は既定 5 秒）。
 	defaultTimeout = 15 * time.Second
+	// defaultRadsecTimeout は radsec-ca とエッジの呼び出しの上限の既定。provisioner の上限（PROVISIONER_RADSEC_TIMEOUT、既定 30 秒）より長くする。
+	defaultRadsecTimeout = 35 * time.Second
 	// maxResponseBytes は応答ボディを読む上限。一覧の最大（500 件）でも収まる大きさにする。
 	maxResponseBytes     = 16 << 20
 	operatorHeader       = "X-Operator-Id"
@@ -78,14 +80,18 @@ type Options struct {
 	ServerCertFile string
 	// Timeout は 1 回の呼び出しの上限時間。0 なら 15 秒。
 	Timeout time.Duration
-	Log     *slog.Logger
+	// RadsecTimeout は radsec-ca とエッジの 1 回の呼び出しの上限時間。0 なら 35 秒。
+	RadsecTimeout time.Duration
+	Log           *slog.Logger
 }
 
 // Client は provisioner のクライアント。
 type Client struct {
 	base *url.URL
 	hc   *http.Client
-	log  *slog.Logger
+	// hcLong は radsec-ca とエッジの呼び出し用（接続は hc と共用で、上限時間だけが違う）。
+	hcLong *http.Client
+	log    *slog.Logger
 	// clientCert は提示するクライアント証明書。フィンガープリントの表示に使う。
 	clientCert *x509.Certificate
 }
@@ -122,14 +128,12 @@ func New(opts Options) (*Client, error) {
 		IdleConnTimeout:     90 * time.Second,
 		MaxIdleConnsPerHost: 8,
 	}
+	// provisioner はリダイレクトを返さない。返ってきたらそのまま応答として扱う。
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{
-		base: base,
-		hc: &http.Client{
-			Transport: tr,
-			Timeout:   cmp.Or(opts.Timeout, defaultTimeout),
-			// provisioner はリダイレクトを返さない。返ってきたらそのまま応答として扱う。
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		},
+		base:       base,
+		hc:         &http.Client{Transport: tr, Timeout: cmp.Or(opts.Timeout, defaultTimeout), CheckRedirect: noRedirect},
+		hcLong:     &http.Client{Transport: tr, Timeout: cmp.Or(opts.RadsecTimeout, defaultRadsecTimeout), CheckRedirect: noRedirect},
 		log:        opts.Log,
 		clientCert: cert.Leaf,
 	}, nil
@@ -193,14 +197,14 @@ type InvalidParam struct {
 }
 
 // Problem は provisioner のエラー応答（ProblemDetails）。中継した操作では下流のエラーがそのまま入り、
-// provisioner が Downstream（vecgen / radius）を足す。
+// provisioner が Downstream（vecgen / radius / ca / edge:<ID>）を足す。
 type Problem struct {
 	Title         string         `json:"title,omitempty"`
 	Status        int            `json:"status,omitzero"`
 	Detail        string         `json:"detail,omitempty"`
 	Cause         string         `json:"cause,omitempty"`
 	InvalidParams []InvalidParam `json:"invalidParams,omitempty"`
-	// Downstream はエラーの元の下流（vecgen / radius。provisioner 自身の誤りでは空）。
+	// Downstream はエラーの元の下流（vecgen / radius / ca / edge:<ID>。provisioner 自身の誤りでは空）。
 	Downstream string `json:"downstream,omitempty"`
 	// DownstreamStatus は、下流が ProblemDetails でない誤りを返したとき（DOWNSTREAM_ERROR）の下流の HTTP ステータス。
 	DownstreamStatus int `json:"downstreamStatus,omitzero"`
@@ -280,6 +284,8 @@ type request struct {
 	write bool
 	// idempotencyKey は Idempotency-Key ヘッダーの値（write のとき）。
 	idempotencyKey string
+	// long は radsec-ca かエッジの呼び出しか（上限時間が長い）。
+	long bool
 }
 
 // call は provisioner を呼び出し、2xx の応答ボディを T として読む。T が struct{} ならボディは読まない。
@@ -345,8 +351,12 @@ func (c *Client) send(ctx context.Context, req request) (*http.Response, error) 
 		hreq.Header.Set(idempotencyKeyHeader, req.idempotencyKey)
 	}
 
+	hc := c.hc
+	if req.long {
+		hc = c.hcLong
+	}
 	start := time.Now()
-	resp, err := c.hc.Do(hreq)
+	resp, err := hc.Do(hreq)
 	if err != nil {
 		c.log.Warn("provisioner call failed", "method", req.method, "path", u.Path,
 			"trace_id", traceID, "error", err)

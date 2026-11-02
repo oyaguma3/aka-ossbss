@@ -24,6 +24,7 @@ func newProvisioner(cfg config.Config, log *slog.Logger) (*provisioner.Client, e
 		ClientKeyFile:  cfg.Provisioner.ClientKeyFile,
 		ServerCertFile: cfg.Provisioner.ServerCertFile,
 		Timeout:        cfg.Provisioner.Timeout,
+		RadsecTimeout:  cfg.Provisioner.RadsecTimeout,
 		Log:            log,
 	})
 }

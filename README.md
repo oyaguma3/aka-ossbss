@@ -72,6 +72,7 @@ DB のバックアップと戻しは `scripts/backup-db.sh`・`scripts/restore-d
 | `OSSBSS_PROVISIONER_URL` | aka-provisioner のベース URL | `https://aka-provisioner:9446/admin/v2` |
 | `OSSBSS_PROVISIONER_CLIENT_KEY` | クライアント証明書の秘密鍵を別のファイルにしたときの、コンテナの中のパス（`/certs/…`） | （空） |
 | `OSSBSS_PROVISIONER_TIMEOUT` | aka-provisioner の 1 回の呼び出しの上限時間 | `15s` |
+| `OSSBSS_PROVISIONER_RADSEC_TIMEOUT` | radsec-ca とエッジの呼び出しの上限時間（aka-provisioner の `PROVISIONER_RADSEC_TIMEOUT` より長くする） | `35s` |
 | `OSSBSS_BULK_CONCURRENCY` | 一括投入の同時の呼び出しの数（1〜8） | `5` |
 | `OSSBSS_RECONCILE_AT`・`OSSBSS_RECONCILE_MAX_FIXES` | 毎日の突き合わせの時刻（日本時間）と、自動で直す数の上限 | `04:00`・`1000` |
 | `OSSBSS_USAGE_IMPORT_AT` | 毎日の利用の集計の取り込みの時刻（日本時間） | `03:00` |

@@ -6,9 +6,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner/provisionertest"
@@ -367,5 +369,59 @@ func TestNewErrors(t *testing.T) {
 		if _, err := provisioner.New(opts); err == nil {
 			t.Errorf("%s: want error", name)
 		}
+	}
+}
+
+// TestRadsecCalls は radsec-ca とエッジの呼び出しのパス・キー・本文を確かめる（":" はそのまま送る、Meraki の API キーは本文にだけ入る）。
+func TestRadsecCalls(t *testing.T) {
+	type seen struct{ method, path, key, body string }
+	var got []seen
+	c, _ := provisionertest.NewServer(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = append(got, seen{r.Method, r.URL.EscapedPath(), r.Header.Get("Idempotency-Key"), string(b)})
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{}`)
+	}, provisioner.Options{})
+	ctx := provisioner.WithOperator(t.Context(), "op@example.com")
+	if _, err := c.RefreshEdgeCRL(ctx, "edge-01", 42, "k1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.RefreshCACRL(ctx, "brought.a.b", "k2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateBroughtCA(ctx, provisioner.BroughtCACreate{Tenant: "a", Name: "b", CertPEM: "PEM", TenantOnlyConfirmed: true,
+		CRL: provisioner.CRLSource{Source: provisioner.CRLSourceMeraki, MerakiOrgID: "1", MerakiAPIKey: "secret"}}, "k3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PutEdgeTenant(ctx, "edge-01", 42, provisioner.EdgeDeclaration{Revision: 3, Slug: "a", Port: 20000, ClientCAs: []provisioner.EdgeClientCA{}}, "k4"); err != nil {
+		t.Fatal(err)
+	}
+	want := []seen{
+		{"POST", "/admin/v2/edges/edge-01/tenants/42/crl:refresh", "k1", ""},
+		{"POST", "/admin/v2/ca/cas/brought.a.b/crl:refresh", "k2", ""},
+		{"POST", "/admin/v2/ca/cas", "k3", `{"tenant":"a","kind":"brought","name":"b","certPem":"PEM","crl":{"source":"meraki","merakiOrgId":"1","merakiApiKey":"secret"},"tenantOnlyConfirmed":true}`},
+		{"PUT", "/admin/v2/edges/edge-01/tenants/42", "k4", `{"revision":3,"slug":"a","port":20000,"authUpstream":"","acctUpstream":"","clientCas":[]}`},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("calls = %+v", got)
+	}
+	// キーがなければ送らない。
+	if _, err := c.ApplyEdgeTenant(ctx, "edge-01", 42, ""); !errors.Is(err, provisioner.ErrNoIdempotencyKey) {
+		t.Errorf("no key = %v", err)
+	}
+}
+
+// TestRadsecTimeout は radsec-ca とエッジの呼び出しだけが長い上限を使うことを確かめる。
+func TestRadsecTimeout(t *testing.T) {
+	c, _ := provisionertest.NewServer(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{}`)
+	}, provisioner.Options{Timeout: 50 * time.Millisecond, RadsecTimeout: 5 * time.Second})
+	if _, err := c.Status(t.Context()); !provisioner.IsUnavailable(err) {
+		t.Errorf("status = %v, want a timeout", err)
+	}
+	if _, err := c.CAStatus(t.Context()); err != nil {
+		t.Errorf("ca status = %v", err)
 	}
 }

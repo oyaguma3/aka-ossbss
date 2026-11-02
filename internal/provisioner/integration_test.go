@@ -2,7 +2,14 @@ package provisioner_test
 
 import (
 	"cmp"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"slices"
 	"strconv"
@@ -27,7 +34,7 @@ func integrationClient(t *testing.T) (*provisioner.Client, int64, string) {
 	c, err := provisioner.New(provisioner.Options{BaseURL: u,
 		ClientCertFile: os.Getenv("OSSBSS_TEST_PROVISIONER_CLIENT_CERT"),
 		ServerCertFile: os.Getenv("OSSBSS_TEST_PROVISIONER_SERVER_CERT"),
-		Timeout:        30 * time.Second, Log: provisionertest.Discard})
+		Timeout:        30 * time.Second, RadsecTimeout: 40 * time.Second, Log: provisionertest.Discard})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,4 +213,206 @@ func TestIntegrationLifecycle(t *testing.T) {
 	wantCause(t, "get deleted vecgen", err, 404, provisioner.CauseUserNotFound)
 	_, err = c.RadiusSubscriber(ctx, imsi)
 	wantCause(t, "get deleted radius", err, 404, provisioner.CauseUserNotFound)
+}
+
+// TestIntegrationRadsec は radsec-ca とエッジの実物を相手に、型つきのクライアントの項目と口を確かめる（段階 4-3 の OB17・OB23）。
+// aka-provisioner の scripts/contract.sh に CA_SRC・EDGE_SRC を与えて起動したものにつなぐ。OSSBSS_TEST_EDGE_ID を指定したときだけ動く。
+// テナントの名前は contract.sh の片付けに合わせて acme にする。
+func TestIntegrationRadsec(t *testing.T) {
+	edge := os.Getenv("OSSBSS_TEST_EDGE_ID")
+	if edge == "" {
+		t.Skip("OSSBSS_TEST_EDGE_ID is not set")
+	}
+	c, _, _ := integrationClient(t)
+	ctx := trace.With(provisioner.WithOperator(t.Context(), "ossbss-ci@example.com"), "ossbss-contract-radsec")
+	run := time.Now().UTC().Format("150405")
+	key := func(name string) string { return "contract-" + run + "-" + name }
+	const slug, tenant = "acme", int64(42)
+
+	st, err := c.CAStatus(ctx)
+	if err != nil || st.DNSDomain == "" || st.URNPrefix == "" {
+		t.Fatalf("ca status = %+v, %v", st, err)
+	}
+	ca, err := c.CreateTenantCA(ctx, slug, key("ca"))
+	if err != nil || ca.ID != "tenant."+slug || ca.Certificate == "" || !ca.HasCRL || !ca.SelfSigned {
+		t.Fatalf("create ca = %+v, %v", ca, err)
+	}
+	_, err = c.CreateTenantCA(ctx, slug, key("ca-again"))
+	wantCause(t, "create the ca again", err, 409, provisioner.CauseCAExists)
+	if got, err := c.GetCA(ctx, ca.ID); err != nil || got.Certificate != ca.Certificate {
+		t.Errorf("get ca = %+v, %v", got, err)
+	}
+
+	// 持ち込みの CA。Meraki の取得先は届かないので断られる。upload は登録できる。
+	vendorPEM, crlPEM := vendorCA(t)
+	_, err = c.CreateBroughtCA(ctx, provisioner.BroughtCACreate{Tenant: slug, Name: "meraki", CertPEM: vendorPEM, TenantOnlyConfirmed: true,
+		CRL: provisioner.CRLSource{Source: provisioner.CRLSourceMeraki, MerakiOrgID: "1", MerakiAPIKey: "contract-key"}}, key("meraki"))
+	wantCause(t, "meraki", err, 422, provisioner.CauseCRLInvalid)
+	brought, err := c.CreateBroughtCA(ctx, provisioner.BroughtCACreate{Tenant: slug, Name: "vendor", CertPEM: vendorPEM, TenantOnlyConfirmed: true,
+		CRL: provisioner.CRLSource{Source: provisioner.CRLSourceUpload, PEM: crlPEM}}, key("brought"))
+	if err != nil || brought.ID != "brought."+slug+".vendor" || brought.CRLSource != provisioner.CRLSourceUpload || brought.CRL == nil {
+		t.Fatalf("brought ca = %+v, %v", brought, err)
+	}
+	if list, err := c.TenantCAs(ctx, slug); err != nil || len(list) != 2 {
+		t.Errorf("tenant cas = %+v, %v", list, err)
+	}
+	if _, err := c.UploadCRL(ctx, brought.ID, crlPEM, key("upload")); err != nil {
+		t.Errorf("upload crl: %v", err)
+	}
+	if _, err := c.ChangeCRLSource(ctx, brought.ID, provisioner.CRLSourceChange{CRL: provisioner.CRLSource{Source: provisioner.CRLSourceUpload, PEM: crlPEM}}, key("source")); err != nil {
+		t.Errorf("change crl source: %v", err)
+	}
+	_, err = c.RefreshCACRL(ctx, brought.ID, key("refresh"))
+	wantCause(t, "refresh upload", err, 400, provisioner.CauseValidationError)
+
+	// 宣言。
+	decl := provisioner.EdgeDeclaration{Revision: 1, Slug: slug, Port: 20993, AuthUpstream: "10.255.0.1:1812", AcctUpstream: "10.255.0.1:1813",
+		ClientCAs: []provisioner.EdgeClientCA{
+			{ID: ca.ID, Kind: "issued", Certificate: ca.Certificate, HasCRL: true},
+			{ID: brought.ID, Kind: "brought", Certificate: vendorPEM, HasCRL: true},
+		},
+		APs: []provisioner.EdgeAP{{Name: "hq", Kind: "group", Purpose: "unifi"}}}
+	got, err := c.PutEdgeTenant(ctx, edge, tenant, decl, key("put"))
+	if err != nil || got.ID != "42" || got.Revision != 1 || !got.Pending || got.ServerCert != nil {
+		t.Fatalf("put = %+v, %v", got, err)
+	}
+	_, err = c.ApplyEdgeTenant(ctx, edge, tenant, key("apply0"))
+	wantCause(t, "apply without certificates", err, 422, provisioner.CauseNotReady)
+
+	// CSR に署名して置く。
+	serverCSR, err := c.EdgeServerCSR(ctx, edge, tenant, key("server-csr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := c.IssueCert(ctx, provisioner.CertIssue{Profile: provisioner.ProfileTenantServer, Tenant: slug, Edge: edge, CSR: serverCSR}, key("server"))
+	if err != nil || server.Serial == "" || len(server.SANDNS) != 3 || server.NotAfter.IsZero() {
+		t.Fatalf("issue server = %+v, %v", server, err)
+	}
+	got, err = c.PutEdgeServerCert(ctx, edge, tenant, server.Certificate, key("server-cert"))
+	if err != nil || got.ServerCert == nil || got.ServerCert.Serial != server.Serial || got.ServerCert.NotAfter.IsZero() {
+		t.Fatalf("put server = %+v, %v", got, err)
+	}
+	probeCSR, err := c.EdgeProbeCSR(ctx, edge, tenant, key("probe-csr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, err := c.IssueCert(ctx, provisioner.CertIssue{Profile: provisioner.ProfileProbeClient, Tenant: slug, Edge: edge, CSR: probeCSR}, key("probe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = c.PutEdgeProbeCert(ctx, edge, tenant, probe.Certificate, key("probe-cert"))
+	if err != nil || got.ProbeCert == nil {
+		t.Fatalf("put probe = %+v, %v", got, err)
+	}
+
+	// 反映は裏で動く。
+	if a, err := c.ApplyEdgeTenant(ctx, edge, tenant, key("apply1")); err != nil || a.State != "running" {
+		t.Fatalf("apply = %+v, %v", a, err)
+	}
+	deadline := time.Now().Add(150 * time.Second)
+	for {
+		got, err = c.EdgeTenant(ctx, edge, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Apply.State == "idle" && got.Apply.LastResult != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("apply did not finish: %+v", got.Apply)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if got.Apply.LastResult != "ok" || got.AppliedRevision != 1 || got.Pending || len(got.Missing) != 0 || got.Apply.LastRevision != 1 {
+		logs, _ := c.EdgeTenantLogs(ctx, edge, tenant, 100)
+		t.Fatalf("after apply = %+v\n%s", got, logs)
+	}
+	list, err := c.EdgeTenants(ctx, edge)
+	if err != nil || !slices.ContainsFunc(list, func(s provisioner.EdgeTenantSummary) bool {
+		return s.ID == "42" && s.Slug == slug && s.Enabled && s.Revision == 1 && s.AppliedRevision == 1 && s.APCount == 1
+	}) {
+		t.Errorf("edge tenants = %+v, %v", list, err)
+	}
+	if st, err := c.Status(ctx); err != nil || !slices.ContainsFunc(st.Downstreams, func(d provisioner.DownstreamStatus) bool {
+		return d.Name == provisioner.EdgeDownstream(edge) && d.Reachable
+	}) {
+		t.Errorf("status = %+v, %v", st, err)
+	}
+	if logs, err := c.EdgeTenantLogs(ctx, edge, tenant, 50); err != nil || logs == "" {
+		t.Errorf("logs = %q, %v", logs, err)
+	}
+	if seen, err := c.EdgeTenantLastSeen(ctx, edge, tenant); err != nil || len(seen.APs) != 1 || seen.APs[0].Name != "hq" {
+		t.Errorf("last seen = %+v, %v", seen, err)
+	}
+
+	// グループの証明書の発行と失効、CRL の取り直し。
+	_, groupCSR := testCSR(t)
+	group, err := c.IssueCert(ctx, provisioner.CertIssue{Profile: provisioner.ProfileGroupClient, Tenant: slug, Group: "hq", CSR: groupCSR}, key("group"))
+	if err != nil || group.SANURI != "urn:"+st.URNPrefix+":grp:"+slug+":hq" || group.CACertificate == "" {
+		t.Fatalf("issue group = %+v, %v", group, err)
+	}
+	if got, err := c.GetCert(ctx, group.Serial); err != nil || got.Status != "valid" {
+		t.Errorf("get cert = %+v, %v", got, err)
+	}
+	if got, err := c.RevokeCert(ctx, group.Serial, provisioner.RevokeSuperseded, key("revoke")); err != nil || got.Status != "revoked" || got.RevokeReason != provisioner.RevokeSuperseded {
+		t.Errorf("revoke = %+v, %v", got, err)
+	}
+	if r, err := c.RefreshEdgeCRL(ctx, edge, tenant, key("crl")); err != nil || !r.OK || len(r.Items) != 2 {
+		t.Errorf("edge crl refresh = %+v, %v", r, err)
+	}
+	if err := c.RestartEdgeTenant(ctx, edge, tenant, key("restart")); err != nil {
+		t.Errorf("restart: %v", err)
+	}
+
+	// 片付け。
+	if err := c.DeleteEdgeTenant(ctx, edge, tenant, key("delete")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.EdgeTenant(ctx, edge, tenant)
+	wantCause(t, "deleted tenant", err, 404, provisioner.CauseTenantNotFound)
+	if got, err := c.DisableCA(ctx, brought.ID, key("disable")); err != nil || got.Status != "disabled" {
+		t.Errorf("disable = %+v, %v", got, err)
+	}
+	_, err = c.EdgeTenants(ctx, "no-such-edge")
+	wantCause(t, "unknown edge", err, 404, provisioner.CauseEdgeNotFound)
+}
+
+// vendorCA は持ち込みの CA の代わり（自己署名）の証明書と CRL（PEM）を作る。
+func vendorCA(t *testing.T) (certPEM, crlPEM string) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "contract vendor CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, k.Public(), k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crl, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1),
+		ThisUpdate: time.Now().Add(-time.Minute), NextUpdate: time.Now().Add(7 * 24 * time.Hour)}, cert, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), string(pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: crl}))
+}
+
+// testCSR は鍵と CSR（PEM）を作る。
+func testCSR(t *testing.T) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "contract"}}, k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }

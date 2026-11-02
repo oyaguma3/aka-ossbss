@@ -215,8 +215,8 @@ func serve(ctx context.Context) error {
 		return err
 	}
 	return server.Run(ctx, server.Options{Addr: cfg.Addr, Handler: h.Routes(), Log: log,
-		// 画面の 1 回の要求で aka-provisioner を何度か呼ぶ（両側の操作、結果の読み直し）ので、呼び出しの上限より十分に長くする。
-		WriteTimeout: max(90*time.Second, 4*cfg.Provisioner.Timeout+30*time.Second)})
+		// 画面の 1 回の要求で aka-provisioner を何度か呼ぶ（両側の操作、結果の読み直し、RadSec の発行と失効）ので、呼び出しの上限より十分に長くする。
+		WriteTimeout: max(90*time.Second, 4*cfg.Provisioner.Timeout+30*time.Second, 4*cmp.Or(cfg.Provisioner.RadsecTimeout, 35*time.Second)+30*time.Second)})
 }
 
 // auditRetentionDays は監査ログの日ごとのファイルを持つ日数（ほかのノードと同じ。PostgreSQL の監査ログは 13 か月）。
