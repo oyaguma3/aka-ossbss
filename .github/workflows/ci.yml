@@ -263,8 +263,10 @@ jobs:
           . "$RUNNER_TEMP/work/contract.env"
           export OSSBSS_TEST_PROVISIONER_URL="$PROVISIONER_TEST_URL" OSSBSS_TEST_PROVISIONER_CLIENT_CERT="$PROVISIONER_TEST_CLIENT_CERT" \
             OSSBSS_TEST_PROVISIONER_SERVER_CERT="$PROVISIONER_TEST_SERVER_CERT" OSSBSS_TEST_PROVISIONER_AV_CLIENT_ID="$PROVISIONER_TEST_AV_CLIENT_ID" \
-            OSSBSS_TEST_PROVISIONER_SOURCE_ID="$PROVISIONER_TEST_SOURCE_ID" OSSBSS_TEST_EDGE_ID="$PROVISIONER_TEST_EDGE_ID"
-          go test -count=1 -race -run Integration -v ./internal/provisioner/ | tee contract.log
+            OSSBSS_TEST_PROVISIONER_SOURCE_ID="$PROVISIONER_TEST_SOURCE_ID" OSSBSS_TEST_EDGE_ID="$PROVISIONER_TEST_EDGE_ID" \
+            OSSBSS_TEST_EDGE_DOWN_ID="$PROVISIONER_TEST_EDGE_DOWN_ID"
+          # どちらも同じテナントの名前とポートを使うので、パッケージを並べて動かさない。
+          go test -count=1 -race -p 1 -timeout 15m -run Integration -v ./internal/provisioner/ ./internal/radsec/ | tee contract.log
           # 接続先の指定が漏れると契約テストはスキップされ、テスト自体は成功してしまうので、別に確かめる。
           if grep -q -- '--- SKIP' contract.log; then
             echo "契約テストがスキップされました"

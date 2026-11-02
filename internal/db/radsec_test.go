@@ -1,10 +1,13 @@
 package db
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func radsecFixture(t *testing.T) (*DB, Tenant) {
@@ -479,4 +482,210 @@ func TestRadsecCountsAt(t *testing.T) {
 	if err != nil || pc.Radsec != 1 {
 		t.Errorf("purge = %+v, %v", pc, err)
 	}
+}
+
+// TestRadsecLoopState は中央の整合のループの DB の操作を確かめる（段階 4-4）。
+func TestRadsecLoopState(t *testing.T) {
+	d, tn := radsecFixture(t)
+	ctx := t.Context()
+	if err := d.CreateEdge(ctx, testEdge("edge-01", 5), "op"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.EnableRadsec(ctx, tn.ID, "acme", "PEM", "op"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := d.AddPlacement(ctx, tn.ID, "edge-01", "primary", "op")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ServerSerial != "" || !p.ServerNotAfter.IsZero() || p.CertGeneration != 0 || p.CertApplyNeeded || len(p.SupersededSerials) != 0 {
+		t.Errorf("new placement = %+v", p)
+	}
+	read := func() Placement {
+		t.Helper()
+		ps, err := d.Placements(ctx, tn.ID)
+		if err != nil || len(ps) != 1 {
+			t.Fatalf("placements = %+v, %v", ps, err)
+		}
+		return ps[0]
+	}
+
+	// 状態の写し。
+	if err := d.SetPlacementApply(ctx, p.ID, 3, 4, "rolled_back", "誤り"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.AppliedRevision != 3 || got.FailedRevision != 4 || got.ApplyResult != "rolled_back" || got.ApplyError != "誤り" || got.CheckedAt.IsZero() {
+		t.Errorf("state = %+v", got)
+	}
+	before := read().CheckedAt
+	if err := d.TouchPlacements(ctx, "edge-01"); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.CheckedAt.Before(before) {
+		t.Errorf("checked at %v before %v", got.CheckedAt, before)
+	}
+
+	// 証明書の控えと世代。最初の配置では失効の待ちに入らない。同じ証明書を置き直しても入らない。新しい証明書で古いものが入る。
+	at := time.Date(2027, 11, 2, 0, 0, 0, 0, time.UTC)
+	if err := d.PlacementCertPlaced(ctx, p.ID, CertKindServer, "s1", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.PlacementCertPlaced(ctx, p.ID, CertKindServer, "s1", at); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.ServerSerial != "s1" || !got.ServerNotAfter.Equal(at) || got.CertGeneration != 2 || !got.CertApplyNeeded || len(got.SupersededSerials) != 0 {
+		t.Errorf("placed = %+v", got)
+	}
+	if err := d.PlacementCertPlaced(ctx, p.ID, CertKindServer, "s2", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RecordPlacementCert(ctx, p.ID, CertKindProbe, "p1", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.BumpCertGeneration(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.ServerSerial != "s2" || !slices.Equal(got.SupersededSerials, []string{"s1"}) || got.ProbeSerial != "p1" || !got.ProbeNotAfter.Equal(at) || got.CertGeneration != 4 {
+		t.Errorf("replaced = %+v", got)
+	}
+	if err := d.FinishCertApply(ctx, p.ID, []string{"s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.CertApplyNeeded || !slices.Equal(got.SupersededSerials, []string{"s1"}) {
+		t.Errorf("finish = %+v", got)
+	}
+	if err := d.FinishCertApply(ctx, p.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); len(got.SupersededSerials) != 0 {
+		t.Errorf("finish = %+v", got)
+	}
+
+	// 更新の印は期限の近いものだけ。もう一度数えない。
+	if n, err := d.MarkRenewals(ctx, at.Add(-time.Hour)); err != nil || n != 0 {
+		t.Errorf("mark = %d, %v", n, err)
+	}
+	if n, err := d.MarkRenewals(ctx, at.Add(time.Hour)); err != nil || n != 1 {
+		t.Errorf("mark = %d, %v", n, err)
+	}
+	if n, err := d.MarkRenewals(ctx, at.Add(time.Hour)); err != nil || n != 0 {
+		t.Errorf("mark again = %d, %v", n, err)
+	}
+	if !read().RenewRequested {
+		t.Error("not marked")
+	}
+	if err := d.ClearRenew(ctx, p.ID); err != nil || read().RenewRequested {
+		t.Errorf("clear renew: %v", err)
+	}
+
+	// やり直しの印。別のテナントの配置には立てられない。
+	if err := d.RequestRetry(ctx, tn.ID+1, p.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("other tenant: %v", err)
+	}
+	if err := d.RequestRetry(ctx, tn.ID, p.ID); err != nil || !read().RetryRequested {
+		t.Errorf("retry: %v", err)
+	}
+	if err := d.ClearRetry(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); got.RetryRequested || got.FailedRevision != 0 {
+		t.Errorf("clear retry = %+v", got)
+	}
+
+	// CRL の印は読んだ版のときだけ消す。
+	if err := d.MarkAPCertRevokedForTest(ctx, tn.ID); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := d.TenantRadsec(ctx, tn.ID)
+	if !r.CRLDirty {
+		t.Fatal("not dirty")
+	}
+	if err := d.ClearCRLDirty(ctx, tn.ID, r.Revision-1); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.TenantRadsec(ctx, tn.ID); !got.CRLDirty {
+		t.Error("cleared with an old revision")
+	}
+	if err := d.ClearCRLDirty(ctx, tn.ID, r.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.TenantRadsec(ctx, tn.ID); got.CRLDirty {
+		t.Error("not cleared")
+	}
+
+	// 持ち込みの CA を外す。
+	if err := d.AddBroughtCA(ctx, BroughtCA{CAID: "brought.acme.v", Name: "v", TenantID: tn.ID, Certificate: "V", Subject: "CN=v", HasCRL: true, CreatedBy: "op"}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.StartRemoveBrought(ctx, tn.ID, "brought.acme.v"); err != nil {
+		t.Fatal(err)
+	}
+	list, err := d.RemovingBroughtCAs(ctx)
+	if err != nil || len(list) != 1 || list[0].CAID != "brought.acme.v" {
+		t.Fatalf("removing = %+v, %v", list, err)
+	}
+	if err := d.FinishRemoveBrought(ctx, "brought.acme.v"); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := d.RemovingBroughtCAs(ctx); err != nil || len(list) != 0 {
+		t.Errorf("after finish = %+v, %v", list, err)
+	}
+	if list, err := d.BroughtCAs(ctx, tn.ID); err != nil || len(list) != 0 {
+		t.Errorf("brought = %+v, %v", list, err)
+	}
+
+	// AP・グループの期限は、有効な証明書のうち一番新しいもので見る。
+	ap, err := d.CreateAP(ctx, AP{TenantID: tn.ID, Name: "ap1", Kind: KindAP, NASID: "acme-ap1", CreatedBy: "op"}, APCert{Serial: "a1", NotAfter: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list, err := d.ExpiringAPCerts(ctx, at.Add(time.Hour)); err != nil || len(list) != 1 || list[0].Serial != "a1" || list[0].TenantName == "" || list[0].AP != "ap1" {
+		t.Errorf("expiring = %+v, %v", list, err)
+	}
+	if err := d.AddAPCert(ctx, tn.ID, ap.ID, APCert{Serial: "a2", NotAfter: at.AddDate(1, 0, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := d.ExpiringAPCerts(ctx, at.Add(time.Hour)); err != nil || len(list) != 0 {
+		t.Errorf("renewed = %+v, %v", list, err)
+	}
+
+	// 配置を消し終えると一覧から消え、テナントを消して CA を止める待ちに入る。
+	if _, err := d.DeleteAP(ctx, tn.ID, ap.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RemovePlacement(ctx, tn.ID, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.MarkPlacementRemoved(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ps, err := d.Placements(ctx, tn.ID); err != nil || len(ps) != 0 {
+		t.Errorf("placements = %+v, %v", ps, err)
+	}
+	if list, err := d.RadsecCADisablePending(ctx); err != nil || len(list) != 0 {
+		t.Errorf("pending = %+v, %v", list, err)
+	}
+	if err := d.DeleteTenant(ctx, tn.ID, Meta{Operator: "op"}); err != nil {
+		t.Fatal(err)
+	}
+	list2, err := d.RadsecCADisablePending(ctx)
+	if err != nil || len(list2) != 1 || list2[0].Slug != "acme" {
+		t.Fatalf("pending = %+v, %v", list2, err)
+	}
+	if err := d.MarkRadsecCADisabled(ctx, tn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, err := d.RadsecCADisablePending(ctx); err != nil || len(list) != 0 {
+		t.Errorf("pending after = %+v, %v", list, err)
+	}
+}
+
+// MarkAPCertRevokedForTest は CRL の印を立て、版を上げる（失効の操作と同じ書き方）。
+func (d *DB) MarkAPCertRevokedForTest(ctx context.Context, tenant int64) error {
+	return d.radsecTx(ctx, "test", tenant, func(tx pgx.Tx, _ TenantRadsec) error {
+		if _, err := tx.Exec(ctx, "UPDATE tenant_radsec SET crl_dirty = true WHERE tenant_id = $1", tenant); err != nil {
+			return err
+		}
+		return bumpRevision(ctx, tx, tenant, false)
+	})
 }
