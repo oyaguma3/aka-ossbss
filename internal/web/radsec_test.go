@@ -34,6 +34,7 @@ type fakeRadsec struct {
 	brought   []db.BroughtCA
 	requested int
 	nextID    int64
+	expiring  []db.ExpiringAPCert
 }
 
 func newFakeRadsec() *fakeRadsec {
@@ -109,6 +110,18 @@ func (f *fakeRadsec) EnableRadsec(_ context.Context, t int64, slug, ca, by strin
 	r := db.TenantRadsec{TenantID: t, Slug: slug, Port: db.RadsecPortMin + len(f.radsec), CACertificate: ca, Revision: 1, CreatedBy: by}
 	f.radsec[t] = r
 	return r, nil
+}
+func (f *fakeRadsec) RequestRetry(_ context.Context, t, id int64) error {
+	for i := range f.places {
+		if f.places[i].ID == id && f.places[i].TenantID == t {
+			f.places[i].RetryRequested = true
+			return nil
+		}
+	}
+	return db.ErrNotFound
+}
+func (f *fakeRadsec) ExpiringAPCerts(context.Context, time.Time) ([]db.ExpiringAPCert, error) {
+	return f.expiring, nil
 }
 func (f *fakeRadsec) bump(t int64, request bool) {
 	r := f.radsec[t]
@@ -599,6 +612,178 @@ func TestRadsecApply(t *testing.T) {
 	if r := e.rs.radsec[10]; !slices.Equal(r.SourceCIDRs, []string{"198.51.100.0/24", "203.0.113.0/24"}) || r.RequestedRevision != r.Revision {
 		t.Errorf("radsec = %+v", r)
 	}
+}
+
+// TestRadsecRetry は失敗した反映の「やり直す」を確かめる（OB2。B・C・D で、A には出さない）。
+func TestRadsecRetry(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "acme")
+	if _, err := e.rs.AddPlacement(context.Background(), 10, "edge-01", "primary", "op"); !errors.Is(err, db.ErrNotFound) {
+		t.Fatal(err)
+	}
+	e.rs.edges["edge-01"] = db.Edge{ID: "edge-01", Capacity: 5}
+	p, err := e.rs.AddPlacement(context.Background(), 10, "edge-01", "primary", "op")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.rs.places[0].ApplyResult, e.rs.places[0].ApplyError = "rolled_back", "edge-01 のヘルスチェックに失敗しました"
+	path := "/tenants/10/radsec/placements/" + strconv.FormatInt(p.ID, 10) + "/retry"
+	b := e.as("b@example.com")
+	body := get(b, "/tenants/10/radsec").Body.String()
+	mustContain(t, body, "やり直す")
+	mustContain(t, body, "反映に失敗しました")
+	// A・B にはエッジの ID を含みうる誤りの文を見せない。C・D には見せる。
+	if strings.Contains(body, "ヘルスチェックに失敗") {
+		t.Errorf("the error text was shown to a tenant admin")
+	}
+	mustContain(t, get(e.as("c@example.com"), "/tenants/10/radsec").Body.String(), "ヘルスチェックに失敗")
+	if strings.Contains(get(e.as("a@example.com"), "/tenants/10/radsec").Body.String(), "やり直す") {
+		t.Errorf("the retry button was shown to a tenant user")
+	}
+	w := post(e.as("a@example.com"), path, url.Values{})
+	wantStatus(t, "tenant user", w.Code, 403, w.Body.String())
+	w = post(b, path, url.Values{})
+	wantStatus(t, "retry", w.Code, 200, w.Body.String())
+	mustContain(t, w.Body.String(), "やり直しを求めました")
+	if !e.rs.places[0].RetryRequested || e.db.lastAudit().Action != audit.ActionRadsecRetry {
+		t.Errorf("place %+v, audit %+v", e.rs.places[0], e.db.lastAudit())
+	}
+	w = post(b, "/tenants/10/radsec/placements/999/retry", url.Values{})
+	wantStatus(t, "unknown placement", w.Code, 404, w.Body.String())
+}
+
+// TestRadsecWake は画面の書き込みの後にループを起こすことを確かめる（OB18）。読み出しでは起こさない。
+func TestRadsecWake(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "acme")
+	loop := &fakeLoop{}
+	h, err := New(Options{Log: discard, Version: "test", DB: e.db, Identifier: auth.Dev("b@example.com"), Provisioner: e.pv, AuditFiles: audit.NewFiles(t.TempDir(), 14), Radsec: e.rs, RadsecLoop: loop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get(h.Routes(), "/tenants/10/radsec")
+	if loop.n != 0 {
+		t.Errorf("woken by a read: %d", loop.n)
+	}
+	w := post(h.Routes(), "/tenants/10/radsec/apply", url.Values{})
+	wantStatus(t, "apply", w.Code, 200, w.Body.String())
+	if loop.n != 1 {
+		t.Errorf("woken %d times", loop.n)
+	}
+}
+
+type fakeLoop struct{ n int }
+
+func (f *fakeLoop) Wake() { f.n++ }
+
+// TestRadsecState は反映の状態の見出しと行の文を確かめる。
+func TestRadsecState(t *testing.T) {
+	r := db.TenantRadsec{Revision: 5, RequestedRevision: 4}
+	for _, c := range []struct {
+		name  string
+		ps    []db.Placement
+		label string
+	}{
+		{"配置なし", nil, "未反映の変更あり"},
+		{"求めた版より新しい版まで届いた", []db.Placement{{AppliedRevision: 5, ApplyResult: "ok"}}, "反映済み"},
+		{"求めた版まで", []db.Placement{{AppliedRevision: 4, ApplyResult: "ok"}}, "未反映の変更あり"},
+		{"求めた版に届いていない", []db.Placement{{AppliedRevision: 3, ApplyResult: "ok"}}, "反映待ち"},
+		{"最初の反映", []db.Placement{{AppliedRevision: 5}, {}}, "反映待ち"},
+		{"失敗", []db.Placement{{AppliedRevision: 3, ApplyResult: "failed"}}, "反映の失敗あり"},
+		{"送れていない", []db.Placement{{AppliedRevision: 4, ApplyResult: db.ApplyResultSyncError}}, "反映の失敗あり"},
+		{"消している途中は数えない", []db.Placement{{AppliedRevision: 5}, {AppliedRevision: 1, ApplyResult: "failed", DeletedAt: time.Now()}}, "反映済み"},
+	} {
+		if got := evaluateRadsec(r, c.ps).Label(); got != c.label {
+			t.Errorf("%s: label = %q, want %q", c.name, got, c.label)
+		}
+	}
+	rows := placementRows(r, []db.Placement{
+		{ID: 1, EdgeID: "edge-02", AppliedRevision: 5},
+		{ID: 2, EdgeID: "edge-01", ApplyResult: db.ApplyResultStopped, AppliedRevision: 5},
+		{ID: 3, EdgeID: "edge-01", ApplyResult: db.ApplyResultSyncError},
+		{ID: 4, EdgeID: "edge-01", ApplyResult: "failed"},
+		{ID: 5, EdgeID: "edge-01", ApplyResult: "failed", DeletedAt: time.Now()},
+	}, map[string]bool{"edge-02": true})
+	for i, want := range []string{"エッジに届きません", "止めている", "送れていません", "反映に失敗しました", "エッジから消しています"} {
+		if !strings.Contains(rows[i].Label, want) {
+			t.Errorf("row %d: %q, want %q", i, rows[i].Label, want)
+		}
+	}
+	if rows[2].Retryable || !rows[3].Retryable || rows[4].Retryable {
+		t.Errorf("retryable = %v %v %v", rows[2].Retryable, rows[3].Retryable, rows[4].Retryable)
+	}
+}
+
+// TestRadsecDashboard はダッシュボードの欄を確かめる（OB21。C・D だけ）。
+func TestRadsecDashboard(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "acme")
+	// エッジがまだなければ欄を出さない。
+	if strings.Contains(get(e.as("c@example.com"), "/").Body.String(), "RadSec の受け口") {
+		t.Error("the card was shown without edges")
+	}
+	e.rs.edges["edge-01"] = db.Edge{ID: "edge-01", Capacity: 5}
+	e.rs.edges["edge-02"] = db.Edge{ID: "edge-02", Capacity: 5}
+	e.rs.places = []db.Placement{{ID: 1, TenantID: 10, EdgeID: "edge-01", Slot: "primary", ApplyResult: "failed", ApplyError: "ヘルスチェックに失敗しました", ServerNotAfter: time.Now().Add(24 * time.Hour)}}
+	e.rs.expiring = []db.ExpiringAPCert{{TenantID: 10, TenantName: "acme", AP: "ap-soon", Serial: "aa", NotAfter: time.Now().Add(48 * time.Hour)}}
+	for i := range e.pv.status.Downstreams {
+		if e.pv.status.Downstreams[i].Name == provisioner.EdgeDownstream("edge-01") {
+			e.pv.status.Downstreams[i].Status = jsontext.Value(`{"tenants":[{"id":"10","slug":"acme","crls":[{"caId":"tenant.acme","ok":true,"warn":true,"nextUpdate":"2026-11-05T00:00:00Z"}]}]}`)
+		}
+	}
+	body := get(e.as("c@example.com"), "/").Body.String()
+	for _, want := range []string{"RadSec の受け口", "届かないエッジ", "/edges/edge-02", "ヘルスチェックに失敗しました", "サーバー証明書", "ap-soon", "tenant.acme"} {
+		mustContain(t, body, want)
+	}
+	if strings.Contains(get(e.as("b@example.com"), "/").Body.String(), "RadSec の受け口") {
+		t.Error("the card was shown to a tenant admin")
+	}
+	// 問題がなければそう言う。
+	e.rs.places, e.rs.expiring = nil, nil
+	for i := range e.pv.status.Downstreams {
+		if strings.HasPrefix(string(e.pv.status.Downstreams[i].Name), "edge:") {
+			e.pv.status.Downstreams[i].Reachable, e.pv.status.Downstreams[i].Status = true, jsontext.Value(`{"tenants":[]}`)
+		}
+	}
+	mustContain(t, get(e.as("c@example.com"), "/").Body.String(), "警告はありません")
+}
+
+// TestEdgeOrphans はエッジにしかないテナントの表示と削除を確かめる（OB18。消せるのは D）。
+func TestEdgeOrphans(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "acme")
+	e.rs.edges["edge-01"] = db.Edge{ID: "edge-01", Capacity: 5}
+	if _, err := e.rs.AddPlacement(context.Background(), 10, "edge-01", "primary", "op"); err != nil {
+		t.Fatal(err)
+	}
+	e.pv.edgeTenants = []provisioner.EdgeTenantSummary{{ID: "10", Slug: "acme"}, {ID: "77", Slug: "stale", APCount: 3}}
+	c := e.as("c@example.com")
+	w := get(c, "/edges/edge-01/orphans")
+	wantStatus(t, "orphans", w.Code, 200, w.Body.String())
+	mustContain(t, w.Body.String(), "stale")
+	if strings.Contains(w.Body.String(), "acme") || strings.Contains(w.Body.String(), "/orphans/77/delete") {
+		t.Errorf("body = %s", w.Body.String())
+	}
+	if w := post(c, "/edges/edge-01/orphans/77/delete", url.Values{}); w.Code != 403 {
+		t.Errorf("operator delete = %d", w.Code)
+	}
+	if w := get(e.as("b@example.com"), "/edges/edge-01/orphans"); w.Code != 403 {
+		t.Errorf("tenant admin = %d", w.Code)
+	}
+	d := e.as("d@example.com")
+	mustContain(t, get(d, "/edges/edge-01/orphans").Body.String(), "/orphans/77/delete")
+	// 台帳に配置があるテナントは消せない。
+	w = post(d, "/edges/edge-01/orphans/10/delete", url.Values{})
+	wantStatus(t, "placed", w.Code, 409, w.Body.String())
+	w = post(d, "/edges/edge-01/orphans/77/delete", url.Values{})
+	wantStatus(t, "delete", w.Code, 200, w.Body.String())
+	mustContain(t, w.Body.String(), "消しました")
+	if e.db.lastAudit().Action != audit.ActionEdgeOrphanDelete || !slices.ContainsFunc(e.pv.ops, func(op string) bool { return strings.HasPrefix(op, "edge.delete.edge-01") }) {
+		t.Errorf("audit %+v, ops %q", e.db.lastAudit(), e.pv.ops)
+	}
+	// エッジに届かなければ、その旨を出す。
+	e.pv.errs["edge.tenants"] = errors.New("dial")
+	mustContain(t, get(c, "/edges/edge-01/orphans").Body.String(), "エッジを読めませんでした")
 }
 
 // testCAPEM は試験の CA の証明書を作る。

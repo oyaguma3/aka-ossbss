@@ -73,7 +73,10 @@
           <tr>
             <td class="font-mono">{{.Slot}}{{if .Moving}} <span class="badge badge-info badge-sm">移動中</span>{{end}}</td>
             {{- if $.Staff}}<td class="font-mono"><a class="link" href="/edges/{{.EdgeID}}">{{.EdgeID}}</a></td>{{end}}
-            <td>{{.Label}}{{with .ApplyError}}<br><span class="text-sm text-error">{{.}}</span>{{end}}</td>
+            <td>{{.Label}}{{if $.Staff}}{{with .ApplyError}}<br><span class="text-sm text-error">{{.}}</span>{{end}}{{end}}
+              {{- if and .Retryable $.CanApply}}
+              <form hx-post="/tenants/{{$.Tenant.ID}}/radsec/placements/{{.ID}}/retry" hx-target="#tenant-radsec" hx-swap="outerHTML" hx-confirm="このエッジの反映をやり直します。設定によっては AP の接続がいったん切れます。"><button class="btn btn-xs btn-primary mt-1">やり直す</button></form>
+              {{- end}}</td>
             {{- if $.Staff}}
             <td class="font-mono">{{.AppliedRevision}} / {{$.Radsec.Revision}}</td>
             <td class="flex flex-wrap gap-1">

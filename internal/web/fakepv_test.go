@@ -40,6 +40,8 @@ type fakePV struct {
 	// lastBrought は最後の持ち込みの CA の登録（API キーを含む。送ったことの確かめにだけ使う）。serial は発行の通し番号。
 	lastBrought provisioner.BroughtCACreate
 	serial      int
+	// edgeTenants は EdgeTenants が返すもの。
+	edgeTenants []provisioner.EdgeTenantSummary
 }
 
 func newFakePV() *fakePV {
@@ -424,6 +426,16 @@ func (f *fakePV) GetCert(_ context.Context, serial string) (provisioner.Cert, er
 
 func (f *fakePV) RevokeCert(ctx context.Context, serial, reason, key string) (provisioner.Cert, error) {
 	return provisioner.Cert{Serial: serial, Status: "revoked", RevokeReason: reason}, f.radsecOp(ctx, "ca.revoke."+reason, key)
+}
+
+func (f *fakePV) EdgeTenants(context.Context, string) ([]provisioner.EdgeTenantSummary, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.edgeTenants, f.errs["edge.tenants"]
+}
+
+func (f *fakePV) DeleteEdgeTenant(ctx context.Context, edge string, _ int64, key string) error {
+	return f.radsecOp(ctx, "edge.delete."+edge, key)
 }
 
 func (f *fakePV) RestartEdgeTenant(ctx context.Context, edge string, _ int64, key string) error {

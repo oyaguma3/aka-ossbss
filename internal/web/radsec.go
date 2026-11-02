@@ -19,6 +19,7 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/authz"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 	"github.com/oyaguma3/aka-ossbss/internal/provisioner"
+	"github.com/oyaguma3/aka-ossbss/internal/radsec"
 )
 
 // RadSec の受け口の画面（設計概要 §13。段階 4-3 の OB11〜OB13、OB21）。画面は DB の望む状態を書いて版を上げるだけで、エッジには触らない（OB3）。
@@ -59,6 +60,8 @@ type RadsecStore interface {
 	AddBroughtCA(ctx context.Context, b db.BroughtCA, matchAttr, matchPattern string) error
 	SetBroughtHasCRL(ctx context.Context, tenant int64, caID string, has bool, matchAttr, matchPattern string) error
 	StartRemoveBrought(ctx context.Context, tenant int64, caID string) error
+	RequestRetry(ctx context.Context, tenant, id int64) error
+	ExpiringAPCerts(ctx context.Context, before time.Time) ([]db.ExpiringAPCert, error)
 }
 
 // slugPattern はテナントの slug・エッジの ID・AP の名前の形（radsec-edge §8.1）。
@@ -308,6 +311,8 @@ type edgeData struct {
 type edgeTenantRow struct {
 	db.Placement
 	TenantName string
+	// Failed は反映に失敗したか、宣言や証明書を送れていないか。
+	Failed bool
 }
 
 func (h *Handler) renderEdge(w http.ResponseWriter, r *http.Request, id string, status int, mutate func(*edgeData)) {
@@ -334,7 +339,7 @@ func (h *Handler) renderEdge(w http.ResponseWriter, r *http.Request, id string, 
 	}
 	d := edgeData{Edge: e, Form: formOfEdge(e), CanManage: can(r, authz.EdgeManage)}
 	for _, p := range ps {
-		d.Tenants = append(d.Tenants, edgeTenantRow{Placement: p, TenantName: t.Name(p.TenantID)})
+		d.Tenants = append(d.Tenants, edgeTenantRow{Placement: p, TenantName: t.Name(p.TenantID), Failed: applyFailed(p.ApplyResult)})
 	}
 	if st, ok := h.radsecStatus(r); ok {
 		d.Status, d.Registered = edgeStatuses(st)[id]
@@ -422,6 +427,79 @@ func (h *Handler) edgeDelete(w http.ResponseWriter, r *http.Request) {
 	seeOther(w, r, "/edges?deleted=1")
 }
 
+// ---- エッジにしかないテナント ----
+
+type edgeOrphansData struct {
+	Edge      string
+	Rows      []provisioner.EdgeTenantSummary
+	Error     string
+	Message   string
+	CanManage bool
+}
+
+// renderOrphans はエッジにしかないテナントを各エッジから読んで出す（読み出しなので同期で呼ぶ。OB3）。
+func (h *Handler) renderOrphans(w http.ResponseWriter, r *http.Request, edge string, status int, d edgeOrphansData) {
+	d.Edge, d.CanManage = edge, can(r, authz.EdgeManage)
+	ctx, cancel := context.WithTimeout(r.Context(), radsecStatusTimeout)
+	defer cancel()
+	list, err := h.pv.EdgeTenants(ctx, edge)
+	if err != nil {
+		d.Error = "エッジを読めませんでした: " + h.radsecFailure(r, err)
+		h.renderBlock(w, r, status, "edge", "edge-orphans", d)
+		return
+	}
+	dctx, dcancel := dbContext(r)
+	defer dcancel()
+	ps, err := h.radsec.EdgePlacements(dctx, edge)
+	if err != nil {
+		h.dbUnavailable(w, r, err)
+		return
+	}
+	for _, s := range list {
+		if !slices.ContainsFunc(ps, func(p db.Placement) bool { return formatID(p.TenantID) == s.ID }) {
+			d.Rows = append(d.Rows, s)
+		}
+	}
+	h.renderBlock(w, r, status, "edge", "edge-orphans", d)
+}
+
+func (h *Handler) edgeOrphans(w http.ResponseWriter, r *http.Request) {
+	if !h.requireOp(w, r, authz.EdgeView) {
+		return
+	}
+	h.renderOrphans(w, r, r.PathValue("id"), http.StatusOK, edgeOrphansData{})
+}
+
+// edgeOrphanDelete はエッジにしかないテナントを消す（D。ループは報告するだけで消さない。OB18）。消す前に台帳の配置を読み直す。
+func (h *Handler) edgeOrphanDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.requireOp(w, r, authz.EdgeManage) {
+		return
+	}
+	edge := r.PathValue("id")
+	tenant, err := parseID(r.PathValue("tenant"))
+	if err != nil {
+		h.notFound(w, r)
+		return
+	}
+	ctx, cancel := dbContext(r)
+	ps, err := h.radsec.EdgePlacements(ctx, edge)
+	cancel()
+	if err != nil {
+		h.dbUnavailable(w, r, err)
+		return
+	}
+	if slices.ContainsFunc(ps, func(p db.Placement) bool { return p.TenantID == tenant }) {
+		h.renderOrphans(w, r, edge, http.StatusConflict, edgeOrphansData{Error: "このテナントは台帳に配置があるので、ここからは消せません。"})
+		return
+	}
+	if err := h.pv.DeleteEdgeTenant(r.Context(), edge, tenant, newIdemKey()); err != nil && provisioner.CauseOf(err) != provisioner.CauseTenantNotFound {
+		h.renderOrphans(w, r, edge, http.StatusBadGateway, edgeOrphansData{Error: h.radsecFailure(r, err)})
+		return
+	}
+	h.record(r, audit.ActionEdgeOrphanDelete, edge, authz.NoTenant, map[string]any{"edge": edge, "tenant": tenant})
+	h.renderOrphans(w, r, edge, http.StatusOK, edgeOrphansData{Message: "エッジからテナント " + formatID(tenant) + " を消しました。"})
+}
+
 // ---- 全テナントの状態 ----
 
 type radsecListData struct {
@@ -491,38 +569,52 @@ func (s radsecState) Label() string {
 	return "反映済み"
 }
 
-// applyFailed は反映の結果が失敗か。
-func applyFailed(result string) bool { return result == "failed" || result == "rolled_back" }
+// applyRetryable は人が「やり直す」を押すまで止まる失敗か（同じ版を自動でやり直さない。OB2）。
+func applyRetryable(result string) bool { return result == "failed" || result == "rolled_back" }
+
+// applyFailed は反映に失敗したか、宣言や証明書を送れていないか（後者はループが次の周回でやり直す）。
+func applyFailed(result string) bool {
+	return applyRetryable(result) || result == db.ApplyResultSyncError
+}
 
 // evaluateRadsec はテナントの反映の状態を求める。
 func evaluateRadsec(t db.TenantRadsec, ps []db.Placement) radsecState {
-	s := radsecState{Unrequested: t.RequestedRevision < t.Revision}
+	s := radsecState{}
+	// 反映は宣言をまるごと読むので、求めた版より新しい版まで届くことがある。全配置が今の版に届いていれば、求めていない変更は残っていない。
+	allApplied, placed := true, false
 	for _, p := range ps {
 		if p.Removing() {
 			continue
 		}
+		placed = true
 		if applyFailed(p.ApplyResult) {
 			s.Failed = true
 		}
 		if p.AppliedRevision == 0 || p.AppliedRevision < t.RequestedRevision {
 			s.Waiting = true
 		}
+		if p.AppliedRevision < t.Revision {
+			allApplied = false
+		}
 	}
+	s.Unrequested = t.RequestedRevision < t.Revision && !(placed && allApplied)
 	return s
 }
 
 // placementRow は配置の 1 行。
 type placementRow struct {
 	db.Placement
-	// Label は状態の文。MovedBy はこの配置を置き換えている配置の ID（移動の途中）。
-	Label   string
-	MovedBy int64
+	// Label は状態の文。MovedBy はこの配置を置き換えている配置の ID（移動の途中）。Retryable は「やり直す」を出すか。
+	Label     string
+	MovedBy   int64
+	Retryable bool
 }
 
 // Moving は移動の途中か（どちらの側でも）。
 func (p placementRow) Moving() bool { return p.Replaces != 0 || p.MovedBy != 0 }
 
-func placementRows(t db.TenantRadsec, ps []db.Placement) []placementRow {
+// placementRows は配置の行を作る。unreachable は aka-provisioner から届かないエッジ（読めないときは nil）。
+func placementRows(t db.TenantRadsec, ps []db.Placement, unreachable map[string]bool) []placementRow {
 	movedBy := map[int64]int64{}
 	for _, p := range ps {
 		if p.Replaces != 0 {
@@ -531,12 +623,18 @@ func placementRows(t db.TenantRadsec, ps []db.Placement) []placementRow {
 	}
 	var out []placementRow
 	for _, p := range ps {
-		row := placementRow{Placement: p, MovedBy: movedBy[p.ID]}
+		row := placementRow{Placement: p, MovedBy: movedBy[p.ID], Retryable: !p.Removing() && applyRetryable(p.ApplyResult)}
 		switch {
 		case p.Removing():
 			row.Label = "エッジから消しています"
-		case applyFailed(p.ApplyResult):
-			row.Label = "反映に失敗しました"
+		case unreachable[p.EdgeID]:
+			row.Label = "エッジに届きません（届いたら続けます）"
+		case p.ApplyResult == db.ApplyResultStopped:
+			row.Label = "エッジの画面で止めているので、反映を飛ばしています"
+		case p.ApplyResult == db.ApplyResultSyncError:
+			row.Label = "エッジへ送れていません（自動でやり直します）"
+		case applyRetryable(p.ApplyResult):
+			row.Label = "反映に失敗しました（順の残りのエッジには送っていません）"
 		case p.AppliedRevision == 0:
 			row.Label = "反映待ち（最初の反映）"
 		case p.AppliedRevision < t.RequestedRevision:
@@ -622,7 +720,15 @@ func (h *Handler) renderTenantRadsec(w http.ResponseWriter, r *http.Request, id 
 			h.dbUnavailable(w, r, err)
 			return
 		}
-		d.Rows, d.State = placementRows(rad, ps), evaluateRadsec(rad, ps)
+		st, stOK := h.radsecStatus(r)
+		var unreachable map[string]bool
+		if stOK {
+			unreachable = map[string]bool{}
+			for id, e := range edgeStatuses(st) {
+				unreachable[id] = !e.Reachable
+			}
+		}
+		d.Rows, d.State = placementRows(rad, ps, unreachable), evaluateRadsec(rad, ps)
 		used := map[string]bool{}
 		for _, p := range ps {
 			if !p.Removing() {
@@ -646,7 +752,7 @@ func (h *Handler) renderTenantRadsec(w http.ResponseWriter, r *http.Request, id 
 				return
 			}
 		}
-		if st, ok := h.radsecStatus(r); ok {
+		if stOK {
 			d.Domain = dnsDomain(st)
 		}
 		if d.Domain != "" {
@@ -819,6 +925,28 @@ func (h *Handler) radsecApply(w http.ResponseWriter, r *http.Request) {
 	h.record(r, audit.ActionRadsecApply, formatID(id), id, map[string]any{"revision": rev})
 	h.renderTenantRadsec(w, r, id, http.StatusOK, func(d *tenantRadsecData) {
 		d.Message = "反映を求めました。配置したエッジに 1 台ずつ順に反映します。設定によっては、そのエッジの AP の接続がいったん切れます。"
+	})
+}
+
+// radsecRetry は失敗した反映のやり直しを求める（B・C・D。同じ版を自動でやり直さないので、人が押す。OB2）。
+func (h *Handler) radsecRetry(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.radsecScope(w, r, authz.RadsecApply)
+	if !ok {
+		return
+	}
+	p, ok := h.placementOf(w, r, id)
+	if !ok {
+		return
+	}
+	ctx, cancel := dbContext(r)
+	err := h.radsec.RequestRetry(ctx, id, p.ID)
+	cancel()
+	if h.radsecDBError(w, r, err) {
+		return
+	}
+	h.record(r, audit.ActionRadsecRetry, p.EdgeID, id, map[string]any{"edge": p.EdgeID, "slot": p.Slot})
+	h.renderTenantRadsec(w, r, id, http.StatusOK, func(d *tenantRadsecData) {
+		d.Message = "スロット " + p.Slot + " の反映のやり直しを求めました。"
 	})
 }
 
@@ -1006,6 +1134,113 @@ func (h *Handler) radsecLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	d.Logs = logs
 	h.render(w, r, http.StatusOK, "radsec_logs", "ログ "+p.EdgeID, d)
+}
+
+// ---- ダッシュボード ----
+
+// radsecSummary はダッシュボードの RadSec の欄の値（OB21）。
+type radsecSummary struct {
+	// Disconnected は届かないエッジ。Failed は反映に失敗したか、送れていない配置。
+	Disconnected []string
+	Failed       []radsecSummaryRow
+	// EdgeCerts は自動の更新ができないまま期限が近いエッジの証明書。APs は期限の近い AP・グループ（APsTotal はその総数。多ければ先頭だけを出す）。
+	EdgeCerts []radsecSummaryRow
+	APs       []db.ExpiringAPCert
+	APsTotal  int
+	// CRLs は CRL の期限が近いか切れた CA。
+	CRLs []radsecSummaryRow
+}
+
+// radsecSummaryRow は欄の 1 行。
+type radsecSummaryRow struct {
+	TenantID   int64
+	TenantName string
+	EdgeID     string
+	Slot       string
+	// Detail は誤りの文か、証明書の種類か、CA の ID。NotAfter は期限。Expired は切れているか。
+	Detail   string
+	NotAfter time.Time
+	Expired  bool
+}
+
+// Clean は知らせることがないか。
+func (s radsecSummary) Clean() bool {
+	return len(s.Disconnected)+len(s.Failed)+len(s.EdgeCerts)+s.APsTotal+len(s.CRLs) == 0
+}
+
+// radsecSummaryAPs は欄に出す AP・グループの数の上限。
+const radsecSummaryAPs = 10
+
+// loadRadsecSummary はダッシュボードの欄の値を読む（読めなければ nil。エッジがまだなければ欄を出さない）。接続と CRL は aka-provisioner が 30 秒ごとに集めた状態から読む。
+func (h *Handler) loadRadsecSummary(ctx context.Context, st *provisionerData) *radsecSummary {
+	edges, err := h.radsec.Edges(ctx)
+	if err != nil {
+		h.log.Warn("home: edges", "error", err)
+		return nil
+	}
+	if len(edges) == 0 {
+		return nil
+	}
+	tenants, err := h.radsec.RadsecOverviews(ctx)
+	if err != nil {
+		h.log.Warn("home: radsec overviews", "error", err)
+		return nil
+	}
+	now := time.Now()
+	s := &radsecSummary{}
+	names := map[string]string{}
+	for _, t := range tenants {
+		names[formatID(t.TenantID)] = t.TenantName
+		for _, p := range t.Placements {
+			if p.Removing() {
+				continue
+			}
+			row := radsecSummaryRow{TenantID: t.TenantID, TenantName: t.TenantName, EdgeID: p.EdgeID, Slot: p.Slot}
+			if applyFailed(p.ApplyResult) {
+				row.Detail = p.ApplyError
+				s.Failed = append(s.Failed, row)
+			}
+			for _, c := range []struct {
+				kind     string
+				notAfter time.Time
+			}{{"サーバー証明書", p.ServerNotAfter}, {"ヘルスチェック用の証明書", p.ProbeNotAfter}} {
+				if !c.notAfter.IsZero() && c.notAfter.Before(now.Add(radsec.WarnBefore)) {
+					row.Detail, row.NotAfter, row.Expired = c.kind, c.notAfter, c.notAfter.Before(now)
+					s.EdgeCerts = append(s.EdgeCerts, row)
+				}
+			}
+		}
+	}
+	aps, err := h.radsec.ExpiringAPCerts(ctx, now.Add(radsec.APWarnBefore))
+	if err != nil {
+		h.log.Warn("home: expiring ap certs", "error", err)
+		return nil
+	}
+	s.APsTotal, s.APs = len(aps), aps[:min(len(aps), radsecSummaryAPs)]
+	if st == nil || st.Error != "" {
+		return s
+	}
+	status := edgeStatuses(st.Status)
+	for _, e := range edges {
+		d, ok := status[e.ID]
+		if !ok || !d.Reachable {
+			s.Disconnected = append(s.Disconnected, e.ID)
+			continue
+		}
+		var es provisioner.EdgeStatus
+		if len(d.Status) == 0 || json.Unmarshal(d.Status, &es) != nil {
+			continue
+		}
+		for _, t := range es.Tenants {
+			for _, c := range t.CRLs {
+				if c.Warn || c.Expired {
+					id, _ := parseID(t.ID)
+					s.CRLs = append(s.CRLs, radsecSummaryRow{TenantID: id, TenantName: cmp.Or(names[t.ID], t.Slug), EdgeID: e.ID, Detail: c.CAID, NotAfter: c.NextUpdate, Expired: c.Expired})
+				}
+			}
+		}
+	}
+	return s
 }
 
 // disableReleasedCA は削除したテナントの CA を止める（OB12。届かなければ後でループがやり直す）。

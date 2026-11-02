@@ -200,3 +200,46 @@
   </div>
 </div>
 {{- end}}
+
+{{/* radsec-summary はダッシュボードの RadSec の受け口の欄（引数は radsecSummary）。 */}}
+{{define "radsec-summary" -}}
+<div class="card bg-base-100 shadow mb-6">
+  <div class="card-body overflow-x-auto">
+    <h2 class="card-title">RadSec の受け口 <a class="link text-sm font-normal" href="/radsec">一覧へ</a></h2>
+    {{- if .Clean}}
+    <p>エッジの切断、反映の失敗、証明書と CRL の期限の警告はありません。</p>
+    {{- end}}
+    {{- if .Disconnected}}
+    <div role="alert" class="alert alert-error mb-2"><span>届かないエッジがあります: {{range $i, $e := .Disconnected}}{{if $i}}、{{end}}<a class="link font-mono" href="/edges/{{$e}}">{{$e}}</a>{{end}}。反映はこのエッジを飛ばして続けます。</span></div>
+    {{- end}}
+    {{- if .Failed}}
+    <h3 class="font-semibold mt-2">反映の失敗</h3>
+    <table class="table table-sm">
+      <thead><tr><th>テナント</th><th>エッジ</th><th>スロット</th><th>内容</th></tr></thead>
+      <tbody>{{range .Failed}}<tr><td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td><td class="font-mono">{{.EdgeID}}</td><td class="font-mono">{{.Slot}}</td><td class="text-sm">{{.Detail}}</td></tr>{{end}}</tbody>
+    </table>
+    {{- end}}
+    {{- if .EdgeCerts}}
+    <h3 class="font-semibold mt-2">期限が近いのに自動で更新できていないエッジの証明書</h3>
+    <table class="table table-sm">
+      <thead><tr><th>テナント</th><th>エッジ</th><th>種類</th><th>期限</th></tr></thead>
+      <tbody>{{range .EdgeCerts}}<tr><td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td><td class="font-mono">{{.EdgeID}}</td><td>{{.Detail}}</td><td>{{datetime .NotAfter}}{{if .Expired}} <span class="badge badge-error badge-sm">切れています</span>{{end}}</td></tr>{{end}}</tbody>
+    </table>
+    {{- end}}
+    {{- if .APs}}
+    <h3 class="font-semibold mt-2">期限の近い AP・グループ（{{.APsTotal}} 件。更新は人が行います）</h3>
+    <table class="table table-sm">
+      <thead><tr><th>テナント</th><th>名前</th><th>期限</th></tr></thead>
+      <tbody>{{range .APs}}<tr><td><a class="link" href="/tenants/{{.TenantID}}/aps">{{.TenantName}}</a></td><td class="font-mono">{{.AP}}</td><td>{{datetime .NotAfter}}</td></tr>{{end}}</tbody>
+    </table>
+    {{- end}}
+    {{- if .CRLs}}
+    <h3 class="font-semibold mt-2">CRL の期限の警告</h3>
+    <table class="table table-sm">
+      <thead><tr><th>テナント</th><th>エッジ</th><th>CA</th><th>次の更新の期限</th></tr></thead>
+      <tbody>{{range .CRLs}}<tr><td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td><td class="font-mono">{{.EdgeID}}</td><td class="font-mono">{{.Detail}}</td><td>{{datetime .NotAfter}}{{if .Expired}} <span class="badge badge-error badge-sm">切れています</span>{{end}}</td></tr>{{end}}</tbody>
+    </table>
+    {{- end}}
+  </div>
+</div>
+{{- end}}

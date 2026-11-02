@@ -146,6 +146,8 @@ type Provisioner interface {
 	RestartEdgeTenant(ctx context.Context, edge string, tenant int64, idempotencyKey string) error
 	EdgeTenantLogs(ctx context.Context, edge string, tenant int64, lines int) (string, error)
 	EdgeTenantLastSeen(ctx context.Context, edge string, tenant int64) (provisioner.EdgeLastSeen, error)
+	EdgeTenants(ctx context.Context, edge string) ([]provisioner.EdgeTenantSummary, error)
+	DeleteEdgeTenant(ctx context.Context, edge string, tenant int64, idempotencyKey string) error
 }
 
 // defaultEdgeCapacity はエッジの容量の既定（4 GB のエッジで 150。概要の決定事項 25）。
@@ -303,11 +305,14 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /edges/{id}", h.edge)
 	mux.HandleFunc("POST /edges/{id}/update", h.wakeAfter(h.edgeUpdate))
 	mux.HandleFunc("POST /edges/{id}/delete", h.wakeAfter(h.edgeDelete))
+	mux.HandleFunc("GET /edges/{id}/orphans", h.edgeOrphans)
+	mux.HandleFunc("POST /edges/{id}/orphans/{tenant}/delete", h.edgeOrphanDelete)
 	mux.HandleFunc("GET /radsec", h.radsecList)
 	mux.HandleFunc("GET /tenants/{id}/radsec", h.tenantRadsec)
 	mux.HandleFunc("POST /tenants/{id}/radsec/enable", h.wakeAfter(h.radsecEnable))
 	mux.HandleFunc("POST /tenants/{id}/radsec/sources", h.wakeAfter(h.radsecSources))
 	mux.HandleFunc("POST /tenants/{id}/radsec/apply", h.wakeAfter(h.radsecApply))
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/retry", h.wakeAfter(h.radsecRetry))
 	mux.HandleFunc("POST /tenants/{id}/radsec/placements", h.wakeAfter(h.radsecPlacementAdd))
 	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/remove", h.wakeAfter(h.radsecPlacementRemove))
 	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move", h.wakeAfter(h.radsecMoveStart))
@@ -379,6 +384,8 @@ type homeData struct {
 	Reconcile *reconcileSummary
 	// Charging は課金レコードの欄（C・D）。
 	Charging *chargingSummary
+	// Radsec は RadSec の受け口の欄（C・D）。
+	Radsec *radsecSummary
 }
 
 // provisionerData は aka-provisioner の状態のカードに出す値。
@@ -474,6 +481,11 @@ func (h *Handler) home(w http.ResponseWriter, r *http.Request) {
 	cancel()
 	if authz.Allowed(a, authz.ProvisionerView, authz.NoTenant) {
 		d.Provisioner = h.provisionerStatus(r)
+	}
+	if d.DBReachable && h.radsec != nil && authz.Allowed(a, authz.RadsecConfig, authz.NoTenant) {
+		ctx, cancel := dbContext(r)
+		d.Radsec = h.loadRadsecSummary(ctx, d.Provisioner)
+		cancel()
 	}
 	h.render(w, r, http.StatusOK, "home", "ダッシュボード", d)
 }

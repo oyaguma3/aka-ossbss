@@ -60,12 +60,18 @@
         <thead><tr><th>テナント</th><th>スロット</th><th>状態</th></tr></thead>
         <tbody>
           {{- range .Tenants}}
-          <tr><td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td><td>{{.Slot}}</td><td>{{if .Removing}}エッジから消しています{{else if .Replaces}}移動の途中{{else}}配置中{{end}}</td></tr>
+          <tr><td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td><td>{{.Slot}}</td><td>{{if .Removing}}エッジから消しています{{else if .Failed}}<span class="badge badge-error badge-sm">反映の失敗</span>{{else if .Replaces}}移動の途中{{else}}配置中{{end}}</td></tr>
           {{- else}}
           <tr><td colspan="3">ありません。</td></tr>
           {{- end}}
         </tbody>
       </table>
+    </div>
+  </div>
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <h2 class="card-title">エッジにしかないテナント</h2>
+      <div hx-get="/edges/{{.Edge.ID}}/orphans" hx-trigger="load" hx-swap="outerHTML"><p class="text-sm text-base-content/60">エッジから読んでいます…</p></div>
     </div>
   </div>
   {{- if .CanManage}}
@@ -82,6 +88,26 @@
   <button type="button" class="btn btn-error btn-outline" command="show-modal" commandfor="dialog-edge-delete">台帳から消す</button>
   {{template "confirm" (dict "ID" "dialog-edge-delete" "Title" "エッジを台帳から消す" "Form" "edge-delete" "Label" "消す" "Class" "btn-error"
     "Message" (printf "エッジ %s を台帳から消します。同じ ID で登録し直せます。よろしいですか？" .Edge.ID))}}
+  {{- end}}
+</div>
+{{- end}}
+
+{{define "edge-orphans" -}}
+<div id="edge-orphans">
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+  {{- if .Rows}}
+  <p class="text-sm text-base-content/60">台帳に配置がないのに、エッジにあるテナントです。ループは報告するだけで消しません。データを戻した後などに残ります。</p>
+  <table class="table table-sm">
+    <thead><tr><th>ID</th><th>slug</th><th>ポート</th><th>AP・グループ</th><th></th></tr></thead>
+    <tbody>
+      {{- range .Rows}}
+      <tr><td class="font-mono">{{.ID}}</td><td class="font-mono">{{.Slug}}</td><td class="font-mono">{{.Port}}</td><td>{{.APCount}}</td>
+        <td>{{if $.CanManage}}<form hx-post="/edges/{{$.Edge}}/orphans/{{.ID}}/delete" hx-target="#edge-orphans" hx-swap="outerHTML" hx-confirm="エッジからテナント {{.Slug}} を消します（コンテナ・設定・鍵）。よろしいですか？"><button class="btn btn-xs btn-error btn-outline">消す</button></form>{{end}}</td></tr>
+      {{- end}}
+    </tbody>
+  </table>
+  {{- else if not .Error}}
+  <p class="text-sm text-base-content/60">ありません。</p>
   {{- end}}
 </div>
 {{- end}}

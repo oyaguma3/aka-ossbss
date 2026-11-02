@@ -336,9 +336,24 @@ type EdgeTenant struct {
 
 // EdgeCRLState は CA ごとの CRL の状態。
 type EdgeCRLState struct {
-	CAID      string `json:"caId"`
-	OK        bool   `json:"ok"`
-	LastError string `json:"lastError,omitempty"`
+	CAID       string    `json:"caId"`
+	OK         bool      `json:"ok"`
+	LastError  string    `json:"lastError,omitempty"`
+	NextUpdate time.Time `json:"nextUpdate,omitzero"`
+	Expired    bool      `json:"expired,omitzero"`
+	Warn       bool      `json:"warn,omitzero"`
+}
+
+// EdgeStatus はエッジの /status の、画面に要る項目（aka-provisioner の /status の downstreams[].status と同じ）。
+type EdgeStatus struct {
+	Tenants []EdgeStatusTenant `json:"tenants"`
+}
+
+// EdgeStatusTenant はエッジの /status のテナントごとの CRL の状態。
+type EdgeStatusTenant struct {
+	ID   string         `json:"id"`
+	Slug string         `json:"slug"`
+	CRLs []EdgeCRLState `json:"crls"`
 }
 
 // EdgeCRLRefresh は CRL の取り直しの結果。
