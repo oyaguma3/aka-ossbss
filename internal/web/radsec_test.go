@@ -652,6 +652,17 @@ func TestRadsecRetry(t *testing.T) {
 	wantStatus(t, "unknown placement", w.Code, 404, w.Body.String())
 }
 
+// TestAPServerCAButton はサーバーCA の「取り出す」を、取り出せる役割だけに出すことを確かめる（G12）。
+func TestAPServerCAButton(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "acme")
+	e.rs.aps = []db.AP{{ID: 5, TenantID: 10, Name: "ap1", Kind: db.KindAP, NASID: "acme-ap1"}}
+	if w := get(e.as("a@example.com"), "/tenants/10/aps/5"); w.Code != 200 || strings.Contains(w.Body.String(), "server-ca.pem") {
+		t.Errorf("tenant user: %d, shows the button: %v", w.Code, strings.Contains(w.Body.String(), "server-ca.pem"))
+	}
+	mustContain(t, get(e.as("b@example.com"), "/tenants/10/aps/5").Body.String(), "server-ca.pem")
+}
+
 // TestRadsecWake は画面の書き込みの後にループを起こすことを確かめる（OB18）。読み出しでは起こさない。
 func TestRadsecWake(t *testing.T) {
 	e := newRadsecEnv(t)
@@ -691,6 +702,7 @@ func TestRadsecState(t *testing.T) {
 		{"最初の反映", []db.Placement{{AppliedRevision: 5}, {}}, "反映待ち"},
 		{"失敗", []db.Placement{{AppliedRevision: 3, ApplyResult: "failed"}}, "反映の失敗あり"},
 		{"送れていない", []db.Placement{{AppliedRevision: 4, ApplyResult: db.ApplyResultSyncError}}, "反映の失敗あり"},
+		{"エッジのほうが新しい", []db.Placement{{AppliedRevision: 7, ApplyResult: "ok"}}, "DB より新しい版のエッジあり"},
 		{"消している途中は数えない", []db.Placement{{AppliedRevision: 5}, {AppliedRevision: 1, ApplyResult: "failed", DeletedAt: time.Now()}}, "反映済み"},
 	} {
 		if got := evaluateRadsec(r, c.ps).Label(); got != c.label {
@@ -703,11 +715,15 @@ func TestRadsecState(t *testing.T) {
 		{ID: 3, EdgeID: "edge-01", ApplyResult: db.ApplyResultSyncError},
 		{ID: 4, EdgeID: "edge-01", ApplyResult: "failed"},
 		{ID: 5, EdgeID: "edge-01", ApplyResult: "failed", DeletedAt: time.Now()},
+		{ID: 6, EdgeID: "edge-01", ApplyResult: "ok", AppliedRevision: 7},
 	}, map[string]bool{"edge-02": true})
-	for i, want := range []string{"エッジに届きません", "止めている", "送れていません", "反映に失敗しました", "エッジから消しています"} {
+	for i, want := range []string{"エッジに届きません", "止めている", "送れていません", "反映に失敗しました", "エッジから消しています", "エッジのほうが新しい版"} {
 		if !strings.Contains(rows[i].Label, want) {
 			t.Errorf("row %d: %q, want %q", i, rows[i].Label, want)
 		}
+	}
+	if !rows[5].Retryable {
+		t.Error("a placement ahead of the database should be retryable")
 	}
 	if rows[2].Retryable || !rows[3].Retryable || rows[4].Retryable {
 		t.Errorf("retryable = %v %v %v", rows[2].Retryable, rows[3].Retryable, rows[4].Retryable)
@@ -781,6 +797,12 @@ func TestEdgeOrphans(t *testing.T) {
 	if e.db.lastAudit().Action != audit.ActionEdgeOrphanDelete || !slices.ContainsFunc(e.pv.ops, func(op string) bool { return strings.HasPrefix(op, "edge.delete.edge-01") }) {
 		t.Errorf("audit %+v, ops %q", e.db.lastAudit(), e.pv.ops)
 	}
+	// 同じ番号で slug の違うテナントは台帳のものではないので、出して消せる（G11）。
+	e.pv.edgeTenants = []provisioner.EdgeTenantSummary{{ID: "10", Slug: "later"}}
+	body := get(d, "/edges/edge-01/orphans").Body.String()
+	mustContain(t, body, "later", "別です", "/orphans/10/delete")
+	w = post(d, "/edges/edge-01/orphans/10/delete", url.Values{})
+	wantStatus(t, "other tenant", w.Code, 200, w.Body.String())
 	// エッジに届かなければ、その旨を出す。
 	e.pv.errs["edge.tenants"] = errors.New("dial")
 	mustContain(t, get(c, "/edges/edge-01/orphans").Body.String(), "エッジを読めませんでした")

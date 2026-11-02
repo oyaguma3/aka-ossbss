@@ -175,6 +175,8 @@ jobs:
           docker compose up -d --wait --wait-timeout 180 aka-ossbss postgres
           test "$(q "SELECT string_agg(name, ',') FROM tenants")" = before
           test "$(q "SELECT to_regclass('after_backup') IS NULL")" = t
+          # テナントの番号は写しの後のものと重ならないよう先へ進む
+          test "$(q "SELECT last_value FROM tenants_id_seq")" -ge 10001
           docker compose exec -T aka-ossbss /aka-ossbss healthcheck
       - name: compose のログ（失敗時）
         if: failure()

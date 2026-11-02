@@ -659,6 +659,116 @@ func TestEdgeLostItsData(t *testing.T) {
 	}
 }
 
+// TestCentralRestored は DB を古いバックアップに戻しても自動で反映しないことを確かめる（G1）。宣言は送るが、人が「やり直す」を押すまで効かせない。
+func TestCentralRestored(t *testing.T) {
+	var b strings.Builder
+	e := newEnv(t)
+	e.r.opts.Log = slog.New(slog.NewTextHandler(&b, nil))
+	e.settle()
+	// エッジは版 7 まで反映済み。DB は版 5 の写しに戻った。
+	e.s.tenant(42).Revision, e.s.tenant(42).RequestedRevision = 7, 7
+	e.pass()
+	e.pv.finish("edge-01", 42, "ok")
+	e.pass()
+	e.pv.finish("edge-02", 42, "ok")
+	e.pass()
+	e.pv.calls = nil
+	e.s.tenant(42).Revision, e.s.tenant(42).RequestedRevision = 5, 5
+	for _, id := range []int64{1, 2} {
+		e.s.place(id).AppliedRevision = 5
+	}
+	e.pass()
+	e.pass()
+	if e.pv.count("put edge-01") != 1 || e.pv.count("put edge-02") != 1 || e.pv.count("apply") != 0 {
+		t.Fatalf("calls %q", e.pv.calls)
+	}
+	if p := e.s.place(1); p.AppliedRevision != 7 {
+		t.Errorf("primary = %+v", p)
+	}
+	if n := strings.Count(b.String(), "newer revision"); n != 2 {
+		t.Errorf("logged %d times, want once per placement", n)
+	}
+	// 人が押すと、そのエッジだけ DB の状態に合わせる。
+	e.s.place(1).RetryRequested = true
+	e.pass()
+	if e.pv.count("apply edge-01") != 1 || e.pv.count("apply edge-02") != 0 {
+		t.Fatalf("calls %q", e.pv.calls)
+	}
+	e.pv.finish("edge-01", 42, "ok")
+	e.pass()
+	if p := e.s.place(1); p.AppliedRevision != 5 || e.pv.count("apply edge-02") != 0 {
+		t.Fatalf("primary %+v, calls %q", p, e.pv.calls)
+	}
+}
+
+// TestRevisionCaughtUpAfterRestore は DB を戻した後に版が同じ番号まで追いついたとき、未反映の変更を反映できることを確かめる（G1）。
+func TestRevisionCaughtUpAfterRestore(t *testing.T) {
+	e := newEnv(t)
+	e.settle()
+	e.s.tenant(42).Revision, e.s.tenant(42).RequestedRevision = 3, 3
+	e.pass()
+	e.pv.finish("edge-01", 42, "ok")
+	e.pass()
+	e.pv.finish("edge-02", 42, "ok")
+	e.pass()
+	e.pv.calls = nil
+	// 版 3 のまま中身の違う宣言が届いて未反映になった形（戻した後に番号が追いついた）。求めていなければ反映しない。
+	e.pv.edges["edge-01"][42].sum.Pending = true
+	e.s.tenant(42).RequestedRevision = 2
+	e.pass()
+	if e.pv.count("apply") != 0 {
+		t.Fatalf("applied without a request: %q", e.pv.calls)
+	}
+	e.s.tenant(42).RequestedRevision = 3
+	e.pass()
+	if e.pv.count("apply edge-01") != 1 {
+		t.Fatalf("calls %q", e.pv.calls)
+	}
+}
+
+// TestSameNumberOtherTenant は DB を戻した後に番号が重なったテナントを取り違えないことを確かめる（G11）。
+// 版が同じでも自分のものとして扱わず、消されたら進む。外しても別のテナントを消さない。
+func TestSameNumberOtherTenant(t *testing.T) {
+	var b strings.Builder
+	e := newEnv(t)
+	e.r.opts.Log = slog.New(slog.NewTextHandler(&b, nil))
+	other := &fakeTenant{sum: provisioner.EdgeTenantSummary{ID: "42", Slug: "later", Revision: 1, AppliedRevision: 1, Apply: provisioner.EdgeApply{State: "idle", LastResult: "ok"}},
+		server: &provisioner.EdgeCertInfo{Serial: "s"}, probe: &provisioner.EdgeCertInfo{Serial: "p"}}
+	e.pv.edges["edge-01"][42] = other
+	e.s.tenant(42).RequestedRevision = 1
+	e.pass()
+	e.pass()
+	// primary で順を止め、何も送らない。secondary にも進まない。別のテナントの証明書を読み取った記録もしない。
+	if e.pv.count("put edge-01") != 0 || e.pv.count("server-csr edge-01") != 0 || e.pv.count("apply") != 0 || e.pv.edges["edge-01"][42] != other {
+		t.Fatalf("calls %q", e.pv.calls)
+	}
+	p := e.s.place(1)
+	if p.ApplyResult != db.ApplyResultSyncError || !strings.Contains(p.ApplyError, "later") || p.AppliedRevision != 0 || p.ServerSerial != "" {
+		t.Errorf("primary = %+v", p)
+	}
+	if n := strings.Count(b.String(), "RADSEC_ORPHAN_TENANT"); n != 1 {
+		t.Errorf("orphan logged %d times", n)
+	}
+	// 外しても別のテナントを消さない。
+	saved := *e.s.place(1)
+	e.s.place(1).DeletedAt = testNow
+	e.pass()
+	if e.pv.count("delete") != 0 || e.pv.edges["edge-01"][42] != other {
+		t.Fatalf("deleted another tenant: %q", e.pv.calls)
+	}
+	// 人が消すと、次の周回で宣言から進む。
+	e.s.places = append([]db.Placement{saved}, e.s.places...)
+	delete(e.pv.edges["edge-01"], 42)
+	e.pv.calls = nil
+	e.pass()
+	if e.pv.count("put edge-01") != 1 || e.pv.count("apply edge-01") != 1 {
+		t.Fatalf("calls %q", e.pv.calls)
+	}
+	if p := e.s.place(1); p.ApplyResult != "" || p.ApplyError != "" {
+		t.Errorf("primary after the delete = %+v", p)
+	}
+}
+
 // TestProbeProblemIsBounded はヘルスチェック用の証明書の問題で、周回ごとに証明書を増やさないことを確かめる。
 func TestProbeProblemIsBounded(t *testing.T) {
 	e := newEnv(t)

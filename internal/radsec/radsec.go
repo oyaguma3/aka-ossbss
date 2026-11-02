@@ -336,10 +336,11 @@ func (p *pass) markUp(ev *edgeView) {
 
 // reportOrphans はエッジにしかないテナントを報告する（消さない。D が画面で消せる。OB18）。
 func (p *pass) reportOrphans(tenants []db.RadsecOverview) {
-	placed := map[string]bool{}
+	// 同じ番号でも slug が違えば、台帳のテナントとは別のものである（DB を戻した後に番号が重なったとき。G11）。
+	placed := map[string]string{}
 	for _, t := range tenants {
 		for _, pl := range t.Placements {
-			placed[pl.EdgeID+"/"+strconv.FormatInt(t.TenantID, 10)] = true
+			placed[pl.EdgeID+"/"+strconv.FormatInt(t.TenantID, 10)] = t.Slug
 		}
 	}
 	seen := map[string]bool{}
@@ -355,7 +356,7 @@ func (p *pass) reportOrphans(tenants []db.RadsecOverview) {
 		}
 		for tenant, s := range ev.tenants {
 			k := id + "/" + strconv.FormatInt(tenant, 10)
-			if placed[k] {
+			if placed[k] == s.Slug {
 				continue
 			}
 			seen[k] = true
@@ -438,8 +439,14 @@ func (p *pass) syncTenant(ctx context.Context, t db.RadsecOverview) {
 			downSeen = true
 			continue
 		}
-		st := &placementState{pl: pl, ev: ev, s: ev.tenants[t.TenantID]}
+		st := &placementState{pl: pl, ev: ev, s: ev.tenants[t.TenantID], failed: pl.FailedRevision}
 		states = append(states, st)
+		if st.s != nil && st.s.Slug != t.Slug {
+			// 別のテナントである。版が同じでも自分のものとして扱わず、人が消すまで何も送らない（刻印の取り違えを防ぐ。G11）。
+			st.syncErr = fmt.Errorf("エッジに同じ番号で別のテナント（slug %s）があります。エッジの詳細の「エッジにしかないテナント」で消してください。", st.s.Slug)
+			st.s = nil
+			continue
+		}
 		if st.s != nil {
 			st.failed = failedRevision(pl, st.s)
 		}
@@ -467,7 +474,8 @@ func (p *pass) remove(ctx context.Context, t db.RadsecOverview, pl *db.Placement
 	if ev.down {
 		return
 	}
-	if _, onEdge := ev.tenants[t.TenantID]; onEdge {
+	// 同じ番号で slug の違うテナントは別のものなので消さない（エッジにしかないテナントとして報告する。G11）。
+	if s, onEdge := ev.tenants[t.TenantID]; onEdge && s.Slug == t.Slug {
 		st := &placementState{pl: pl, ev: ev}
 		err := p.r.opts.PV.DeleteEdgeTenant(ctx, pl.EdgeID, t.TenantID, fmt.Sprintf("radsec-p%d-delete-%d", pl.ID, p.now.Unix()))
 		if err != nil && provisioner.CauseOf(err) != provisioner.CauseTenantNotFound {
@@ -702,13 +710,16 @@ func applyReason(t db.TenantRadsec, pl *db.Placement, s *provisioner.EdgeTenantS
 	switch {
 	case pl.RetryRequested:
 		return "retry"
+	case s.AppliedRevision > t.Revision:
+		// DB を古いバックアップに戻したとき。自動で古い状態に合わせると、写しの後に足した AP が切れるので、人が「やり直す」を押すまで反映しない（G1）。
+		return ""
 	case s.AppliedRevision == 0:
 		return "first"
 	case s.AppliedRevision < t.RequestedRevision:
 		return "requested"
-	case s.AppliedRevision > t.Revision:
-		// DB を古いバックアップに戻したとき。エッジの反映済みの版を望む状態に合わせる。
-		return "central-restored"
+	case s.Pending && s.Revision == t.Revision && t.RequestedRevision >= t.Revision:
+		// DB を戻した後に版が同じ番号まで追いつくと、版を比べるだけでは未反映の変更を見分けられない。
+		return "requested"
 	case pl.CertApplyNeeded && s.Pending:
 		return "cert"
 	}
@@ -867,6 +878,10 @@ func (p *pass) writeState(ctx context.Context, t db.RadsecOverview, st *placemen
 	if err := p.r.opts.DB.SetPlacementApply(ctx, pl.ID, applied, st.failed, result, errText); err != nil {
 		p.r.opts.Log.Warn("radsec: write placement state", "event_id", "RADSEC_SYNC_ERR", "placement", pl.ID, "error", err)
 		return
+	}
+	if applied > t.Revision && applied != pl.AppliedRevision {
+		// 版が戻ったのは DB を古いバックアップに戻したとき。自動では反映しない（G1）。
+		p.r.opts.Log.Warn("radsec: the edge has a newer revision than the database", "event_id", "RADSEC_SYNC_ERR", "edge", pl.EdgeID, "tenant", t.TenantID, "applied_revision", applied, "revision", t.Revision)
 	}
 	if result == pl.ApplyResult && errText == pl.ApplyError {
 		return

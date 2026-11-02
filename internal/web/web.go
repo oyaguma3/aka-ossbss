@@ -306,7 +306,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /edges/{id}/update", h.wakeAfter(h.edgeUpdate))
 	mux.HandleFunc("POST /edges/{id}/delete", h.wakeAfter(h.edgeDelete))
 	mux.HandleFunc("GET /edges/{id}/orphans", h.edgeOrphans)
-	mux.HandleFunc("POST /edges/{id}/orphans/{tenant}/delete", h.edgeOrphanDelete)
+	mux.HandleFunc("POST /edges/{id}/orphans/{tenant}/delete", h.wakeAfter(h.edgeOrphanDelete))
 	mux.HandleFunc("GET /radsec", h.radsecList)
 	mux.HandleFunc("GET /tenants/{id}/radsec", h.tenantRadsec)
 	mux.HandleFunc("POST /tenants/{id}/radsec/enable", h.wakeAfter(h.radsecEnable))
@@ -408,7 +408,7 @@ func (h *Handler) provisionerStatus(r *http.Request) *provisionerData {
 		h.log.Warn("provisioner status", "error", err)
 		return &provisionerData{Error: "aka-provisioner が誤りを返しました（OSSBSS_PROVISIONER_URL が /admin/v2 を指しているか確かめてください）。"}
 	case !st.IsProvisioner():
-		return &provisionerData{Error: "接続先は aka-provisioner 2.0.0 ではないようです。OSSBSS_PROVISIONER_URL を確かめてください。"}
+		return &provisionerData{Error: "接続先は aka-provisioner ではないようです。OSSBSS_PROVISIONER_URL を確かめてください。"}
 	}
 	return &provisionerData{Status: st}
 }

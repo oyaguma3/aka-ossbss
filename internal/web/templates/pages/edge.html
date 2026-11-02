@@ -101,7 +101,7 @@
     <thead><tr><th>ID</th><th>slug</th><th>ポート</th><th>AP・グループ</th><th></th></tr></thead>
     <tbody>
       {{- range .Rows}}
-      <tr><td class="font-mono">{{.ID}}</td><td class="font-mono">{{.Slug}}</td><td class="font-mono">{{.Port}}</td><td>{{.APCount}}</td>
+      <tr><td class="font-mono">{{.ID}}{{if .Other}} <span class="badge badge-warning badge-sm">台帳の同じ番号のテナントとは別です</span>{{end}}</td><td class="font-mono">{{.Slug}}</td><td class="font-mono">{{.Port}}</td><td>{{.APCount}}</td>
         <td>{{if $.CanManage}}<form hx-post="/edges/{{$.Edge}}/orphans/{{.ID}}/delete" hx-target="#edge-orphans" hx-swap="outerHTML" hx-confirm="エッジからテナント {{.Slug}} を消します（コンテナ・設定・鍵）。よろしいですか？"><button class="btn btn-xs btn-error btn-outline">消す</button></form>{{end}}</td></tr>
       {{- end}}
     </tbody>

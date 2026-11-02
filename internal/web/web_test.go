@@ -554,9 +554,9 @@ func TestHomeProvisioner(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "provisioner が起動しているか") {
 		t.Errorf("unavailable = %d %s", w.Code, w.Body)
 	}
-	// aka-provisioner 2.0.0 でない相手。
+	// aka-provisioner でない相手。
 	pv.statusErr, pv.status = nil, provisioner.Status{Version: "0.3.0"}
-	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "aka-provisioner 2.0.0 ではないようです") {
+	if body := do(newHandlerPV(t, d, auth.Dev("d@example.com"), discard, pv), "GET", "/", nil).Body.String(); !strings.Contains(body, "aka-provisioner ではないようです") {
 		t.Error("not provisioner is not shown")
 	}
 }

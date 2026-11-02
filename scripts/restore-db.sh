@@ -25,4 +25,6 @@ docker compose stop aka-ossbss cloudflared
 
 docker compose exec -T postgres psql -U ossbss -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS ossbss WITH (FORCE)' -c 'CREATE DATABASE ossbss'
 docker compose exec -T postgres pg_restore -U ossbss -d ossbss --exit-on-error < "$in"
+# テナントの番号は認証の刻印の値で、エッジと aka-radius に残っている。写しの後に作ったテナントと同じ番号を使わないよう、採番を先へ進める（設計概要の G11）。
+docker compose exec -T postgres psql -U ossbss -d ossbss -v ON_ERROR_STOP=1 -At -c "SELECT 'restore-db: 次のテナントの番号: ' || setval('tenants_id_seq', GREATEST((SELECT COALESCE(MAX(id), 0) FROM tenants), (SELECT last_value FROM tenants_id_seq)) + 10000) + 1"
 echo "restore-db: 戻した。docker compose up -d で起動する（運用ガイド 11 章の「戻した後」）"

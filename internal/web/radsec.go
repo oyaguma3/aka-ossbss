@@ -429,9 +429,15 @@ func (h *Handler) edgeDelete(w http.ResponseWriter, r *http.Request) {
 
 // ---- エッジにしかないテナント ----
 
+// orphanRow はエッジにしかないテナントの 1 行。Other は同じ番号で slug の違うテナントが台帳にあること（DB を戻した後に番号が重なったとき。G11）。
+type orphanRow struct {
+	provisioner.EdgeTenantSummary
+	Other bool
+}
+
 type edgeOrphansData struct {
 	Edge      string
-	Rows      []provisioner.EdgeTenantSummary
+	Rows      []orphanRow
 	Error     string
 	Message   string
 	CanManage bool
@@ -448,19 +454,39 @@ func (h *Handler) renderOrphans(w http.ResponseWriter, r *http.Request, edge str
 		h.renderBlock(w, r, status, "edge", "edge-orphans", d)
 		return
 	}
-	dctx, dcancel := dbContext(r)
-	defer dcancel()
-	ps, err := h.radsec.EdgePlacements(dctx, edge)
-	if err != nil {
-		h.dbUnavailable(w, r, err)
-		return
-	}
 	for _, s := range list {
-		if !slices.ContainsFunc(ps, func(p db.Placement) bool { return formatID(p.TenantID) == s.ID }) {
-			d.Rows = append(d.Rows, s)
+		orphan, other, err := h.isOrphan(r, edge, s)
+		if err != nil {
+			h.dbUnavailable(w, r, err)
+			return
+		}
+		if orphan {
+			d.Rows = append(d.Rows, orphanRow{EdgeTenantSummary: s, Other: other})
 		}
 	}
 	h.renderBlock(w, r, status, "edge", "edge-orphans", d)
+}
+
+// isOrphan はエッジのテナントが台帳にないかを返す。other は同じ番号で slug の違うテナントが台帳にあること。
+func (h *Handler) isOrphan(r *http.Request, edge string, s provisioner.EdgeTenantSummary) (orphan, other bool, err error) {
+	ctx, cancel := dbContext(r)
+	defer cancel()
+	ps, err := h.radsec.EdgePlacements(ctx, edge)
+	if err != nil {
+		return false, false, err
+	}
+	i := slices.IndexFunc(ps, func(p db.Placement) bool { return formatID(p.TenantID) == s.ID })
+	if i < 0 {
+		return true, false, nil
+	}
+	t, err := h.radsec.TenantRadsec(ctx, ps[i].TenantID)
+	switch {
+	case errors.Is(err, db.ErrNotFound):
+		return true, false, nil
+	case err != nil:
+		return false, false, err
+	}
+	return t.Slug != s.Slug, t.Slug != s.Slug, nil
 }
 
 func (h *Handler) edgeOrphans(w http.ResponseWriter, r *http.Request) {
@@ -470,7 +496,7 @@ func (h *Handler) edgeOrphans(w http.ResponseWriter, r *http.Request) {
 	h.renderOrphans(w, r, r.PathValue("id"), http.StatusOK, edgeOrphansData{})
 }
 
-// edgeOrphanDelete はエッジにしかないテナントを消す（D。ループは報告するだけで消さない。OB18）。消す前に台帳の配置を読み直す。
+// edgeOrphanDelete はエッジにしかないテナントを消す（D。ループは報告するだけで消さない。OB18）。
 func (h *Handler) edgeOrphanDelete(w http.ResponseWriter, r *http.Request) {
 	if !h.requireOp(w, r, authz.EdgeManage) {
 		return
@@ -481,16 +507,24 @@ func (h *Handler) edgeOrphanDelete(w http.ResponseWriter, r *http.Request) {
 		h.notFound(w, r)
 		return
 	}
-	ctx, cancel := dbContext(r)
-	ps, err := h.radsec.EdgePlacements(ctx, edge)
-	cancel()
+	// 消す前にエッジと台帳を読み直す。台帳のテナントそのものは消さない。
+	lctx, lcancel := context.WithTimeout(r.Context(), radsecStatusTimeout)
+	list, err := h.pv.EdgeTenants(lctx, edge)
+	lcancel()
 	if err != nil {
-		h.dbUnavailable(w, r, err)
+		h.renderOrphans(w, r, edge, http.StatusBadGateway, edgeOrphansData{Error: h.radsecFailure(r, err)})
 		return
 	}
-	if slices.ContainsFunc(ps, func(p db.Placement) bool { return p.TenantID == tenant }) {
-		h.renderOrphans(w, r, edge, http.StatusConflict, edgeOrphansData{Error: "このテナントは台帳に配置があるので、ここからは消せません。"})
-		return
+	if i := slices.IndexFunc(list, func(s provisioner.EdgeTenantSummary) bool { return s.ID == formatID(tenant) }); i >= 0 {
+		orphan, _, err := h.isOrphan(r, edge, list[i])
+		if err != nil {
+			h.dbUnavailable(w, r, err)
+			return
+		}
+		if !orphan {
+			h.renderOrphans(w, r, edge, http.StatusConflict, edgeOrphansData{Error: "このテナントは台帳に配置があるので、ここからは消せません。"})
+			return
+		}
 	}
 	if err := h.pv.DeleteEdgeTenant(r.Context(), edge, tenant, newIdemKey()); err != nil && provisioner.CauseOf(err) != provisioner.CauseTenantNotFound {
 		h.renderOrphans(w, r, edge, http.StatusBadGateway, edgeOrphansData{Error: h.radsecFailure(r, err)})
@@ -553,7 +587,8 @@ func (h *Handler) radsecList(w http.ResponseWriter, r *http.Request) {
 // radsecState はテナントの反映の状態の見出し。
 type radsecState struct {
 	// Unrequested は反映を求めていない変更があるか。Waiting は求めた版にまだ届いていないエッジがあるか。Failed は反映に失敗したエッジがあるか。
-	Unrequested, Waiting, Failed bool
+	// Ahead は DB より新しい版を反映しているエッジがあるか（DB を古いバックアップに戻したとき）。
+	Unrequested, Waiting, Failed, Ahead bool
 }
 
 // Label は状態の短い名前。
@@ -561,6 +596,8 @@ func (s radsecState) Label() string {
 	switch {
 	case s.Failed:
 		return "反映の失敗あり"
+	case s.Ahead:
+		return "DB より新しい版のエッジあり"
 	case s.Waiting:
 		return "反映待ち"
 	case s.Unrequested:
@@ -596,6 +633,9 @@ func evaluateRadsec(t db.TenantRadsec, ps []db.Placement) radsecState {
 		if p.AppliedRevision < t.Revision {
 			allApplied = false
 		}
+		if p.AppliedRevision > t.Revision {
+			s.Ahead = true
+		}
 	}
 	s.Unrequested = t.RequestedRevision < t.Revision && !(placed && allApplied)
 	return s
@@ -623,7 +663,7 @@ func placementRows(t db.TenantRadsec, ps []db.Placement, unreachable map[string]
 	}
 	var out []placementRow
 	for _, p := range ps {
-		row := placementRow{Placement: p, MovedBy: movedBy[p.ID], Retryable: !p.Removing() && applyRetryable(p.ApplyResult)}
+		row := placementRow{Placement: p, MovedBy: movedBy[p.ID], Retryable: !p.Removing() && (applyRetryable(p.ApplyResult) || p.AppliedRevision > t.Revision)}
 		switch {
 		case p.Removing():
 			row.Label = "エッジから消しています"
@@ -635,6 +675,8 @@ func placementRows(t db.TenantRadsec, ps []db.Placement, unreachable map[string]
 			row.Label = "エッジへ送れていません（自動でやり直します）"
 		case applyRetryable(p.ApplyResult):
 			row.Label = "反映に失敗しました（順の残りのエッジには送っていません）"
+		case p.AppliedRevision > t.Revision:
+			row.Label = "エッジのほうが新しい版です（DB を戻した可能性があります。「やり直す」で今の DB の状態に合わせます）"
 		case p.AppliedRevision == 0:
 			row.Label = "反映待ち（最初の反映）"
 		case p.AppliedRevision < t.RequestedRevision:
@@ -1196,8 +1238,12 @@ func (h *Handler) loadRadsecSummary(ctx context.Context, st *provisionerData) *r
 				continue
 			}
 			row := radsecSummaryRow{TenantID: t.TenantID, TenantName: t.TenantName, EdgeID: p.EdgeID, Slot: p.Slot}
-			if applyFailed(p.ApplyResult) {
+			switch {
+			case applyFailed(p.ApplyResult):
 				row.Detail = p.ApplyError
+				s.Failed = append(s.Failed, row)
+			case p.AppliedRevision > t.Revision:
+				row.Detail = "エッジのほうが DB より新しい版です（DB を戻した可能性があります）。"
 				s.Failed = append(s.Failed, row)
 			}
 			for _, c := range []struct {

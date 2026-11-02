@@ -84,7 +84,7 @@ func (d DownstreamStatus) Node() (NodeStatus, bool) {
 	return n, true
 }
 
-// IsProvisioner は、この状態が provisioner 2.0.0 の応答かを返す（下流の登録簿を必ず持つ）。
+// IsProvisioner は、この状態が provisioner の応答かを返す（下流の登録簿を必ず持つ）。
 func (s Status) IsProvisioner() bool { return s.Version != "" && len(s.Downstreams) > 0 }
 
 // Status は provisioner の状態を取得する（下流の状態は provisioner が 30 秒ごとに集めたもの）。

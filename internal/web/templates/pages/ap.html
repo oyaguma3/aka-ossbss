@@ -56,7 +56,7 @@
           <tr><th class="w-48">RadSec サーバーの名前</th><td class="font-mono">{{if .Domain}}{{range .SlotNames}}{{.}}<br>{{else}}配置がまだありません。{{end}}{{else}}radsec-ca に届かないので、名前を出せません。{{end}}</td></tr>
           <tr><th>ポート</th><td class="font-mono">{{.Radsec.Port}}</td></tr>
           <tr><th>シークレット</th><td class="font-mono">radsec</td></tr>
-          <tr><th>サーバーCA の証明書</th><td><a class="btn btn-xs" href="/tenants/{{.Tenant.ID}}/radsec/server-ca.pem">取り出す</a></td></tr>
+          {{- if .CanManage}}<tr><th>サーバーCA の証明書</th><td><a class="btn btn-xs" href="/tenants/{{.Tenant.ID}}/radsec/server-ca.pem">取り出す</a></td></tr>{{end}}
           <tr><th>クライアント証明書</th><td>上の表の「証明書」と、顧客の手元の鍵</td></tr>
         </tbody>
       </table>
