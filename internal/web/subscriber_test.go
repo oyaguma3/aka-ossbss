@@ -59,7 +59,7 @@ func (e *testEnv) handler(t *testing.T, email string) http.Handler {
 	if e.auditDir == "" {
 		e.auditDir = t.TempDir()
 	}
-	h, err := New(Options{Log: discard, Version: "test", DB: e.db, Identifier: auth.Dev(email), Provisioner: e.pv,
+	h, err := New(Options{Radsec: newFakeRadsec(), Log: discard, Version: "test", DB: e.db, Identifier: auth.Dev(email), Provisioner: e.pv,
 		AuditFiles: audit.NewFiles(e.auditDir, 14)})
 	if err != nil {
 		t.Fatal(err)

@@ -291,7 +291,7 @@ func newHandler(t *testing.T, d *fakeDB, ident auth.Identifier, log *slog.Logger
 
 func newHandlerPV(t *testing.T, d *fakeDB, ident auth.Identifier, log *slog.Logger, pv *fakePV) http.Handler {
 	t.Helper()
-	h, err := New(Options{Log: log, Version: "test", DB: d, Identifier: ident, Provisioner: pv, AuditFiles: audit.NewFiles(t.TempDir(), 14)})
+	h, err := New(Options{Radsec: newFakeRadsec(), Log: log, Version: "test", DB: d, Identifier: ident, Provisioner: pv, AuditFiles: audit.NewFiles(t.TempDir(), 14)})
 	if err != nil {
 		t.Fatal(err)
 	}

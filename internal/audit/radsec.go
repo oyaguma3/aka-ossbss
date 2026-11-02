@@ -1,0 +1,28 @@
+package audit
+
+// RadSec の受け口の監査ログの操作の名前（設計概要 §13。段階 4-3 の OB19）。
+const (
+	ActionEdgeCreate        = "radsec.edge.create"
+	ActionEdgeUpdate        = "radsec.edge.update"
+	ActionEdgeDelete        = "radsec.edge.delete"
+	ActionEdgeRestart       = "radsec.edge.restart"
+	ActionRadsecEnable      = "radsec.enable"
+	ActionRadsecSources     = "radsec.sources"
+	ActionRadsecMatch       = "radsec.match"
+	ActionRadsecApply       = "radsec.apply"
+	ActionRadsecCADisable   = "radsec.ca.disable"
+	ActionPlacementAdd      = "radsec.placement.add"
+	ActionPlacementRemove   = "radsec.placement.remove"
+	ActionPlacementMove     = "radsec.placement.move"
+	ActionPlacementMoveDone = "radsec.placement.move_finish"
+	ActionPlacementMoveStop = "radsec.placement.move_cancel"
+	ActionAPCreate          = "radsec.ap.create"
+	ActionAPRenew           = "radsec.ap.renew"
+	ActionAPRevoke          = "radsec.ap.revoke"
+	ActionAPDelete          = "radsec.ap.delete"
+	ActionBroughtCreate     = "radsec.brought.create"
+	ActionBroughtSource     = "radsec.brought.source"
+	ActionBroughtUploadCRL  = "radsec.brought.crl_upload"
+	ActionBroughtRefreshCRL = "radsec.brought.crl_refresh"
+	ActionBroughtRemove     = "radsec.brought.remove"
+)

@@ -231,7 +231,7 @@ func TestAccountManage(t *testing.T) {
 // newHandlerPVWithAdmin は、最初のシステム管理者を initialAdmin にした画面を作る。
 func newHandlerPVWithAdmin(t *testing.T, e *testEnv, email, initialAdmin string) http.Handler {
 	t.Helper()
-	h, err := New(Options{Log: discard, Version: "test", DB: e.db, Identifier: auth.Dev(email), Provisioner: e.pv, InitialAdminEmail: initialAdmin})
+	h, err := New(Options{Radsec: newFakeRadsec(), Log: discard, Version: "test", DB: e.db, Identifier: auth.Dev(email), Provisioner: e.pv, InitialAdminEmail: initialAdmin})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,46 @@
+{{define "content" -}}
+<h1 class="text-2xl font-bold mb-4">RadSec</h1>
+{{- with .Data}}
+<div class="card bg-base-100 shadow mb-6">
+  <div class="card-body overflow-x-auto">
+    <h2 class="card-title">テナント</h2>
+    <p class="text-sm text-base-content/60">RadSec を有効にしたテナントです。有効にするには、<a class="link" href="/tenants">テナント</a>の詳細から RadSec の画面を開きます。</p>
+    <table class="table table-sm">
+      <thead><tr><th>テナント</th><th>slug</th><th>ポート</th><th>配置</th><th>AP・グループ</th><th>版</th><th>状態</th></tr></thead>
+      <tbody>
+        {{- range .Rows}}
+        <tr>
+          <td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td>
+          <td class="font-mono">{{.Slug}}</td>
+          <td class="font-mono">{{.Port}}</td>
+          <td class="font-mono">{{range .Placements}}{{if not .Removing}}{{.Slot}}: {{.EdgeID}}{{if .Replaces}}（移動中）{{end}}<br>{{end}}{{end}}</td>
+          <td>{{.APs}}</td>
+          <td class="font-mono">{{.Revision}}</td>
+          <td>{{if .State.Failed}}<span class="badge badge-error badge-sm">{{.State.Label}}</span>{{else if or .State.Waiting .State.Unrequested}}<span class="badge badge-warning badge-sm">{{.State.Label}}</span>{{else}}<span class="badge badge-success badge-sm badge-outline">{{.State.Label}}</span>{{end}}</td>
+        </tr>
+        {{- else}}
+        <tr><td colspan="7">RadSec を有効にしたテナントはまだありません。</td></tr>
+        {{- end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+<div class="card bg-base-100 shadow mb-6">
+  <div class="card-body overflow-x-auto">
+    <h2 class="card-title">DNS に登録するレコード</h2>
+    {{- if not .Domain}}
+    <div role="alert" class="alert alert-warning"><span>radsec-ca に届かないので、名前のドメインを読めません。</span></div>
+    {{- else}}
+    <p class="text-sm text-base-content/60">登録は人が行います。エッジの名前に A レコードを 1 つ持ち、テナントのスロットはそこへの CNAME にします（エッジのアドレスが変わっても 1 件の直しで済みます）。</p>
+    <table class="table table-sm font-mono">
+      <thead><tr><th>名前</th><th>種類</th><th>値</th><th></th></tr></thead>
+      <tbody>
+        {{- range .EdgeRecords}}<tr><td>{{.Name}}</td><td>{{.Type}}</td><td>{{.Value}}</td><td></td></tr>{{end}}
+        {{- range .SlotRecords}}<tr><td>{{.Name}}</td><td>{{.Type}}</td><td>{{.Value}}</td><td class="font-sans text-sm">{{.Note}}</td></tr>{{end}}
+      </tbody>
+    </table>
+    {{- end}}
+  </div>
+</div>
+{{- end}}
+{{- end}}

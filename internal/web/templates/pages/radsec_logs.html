@@ -1,0 +1,8 @@
+{{define "content" -}}
+{{- with .Data}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/tenants/{{.Tenant}}/radsec">RadSec</a></li><li>ログ {{.Edge}}</li></ul></div>
+<h1 class="text-2xl font-bold mb-4">radsecproxy のログ（エッジ {{.Edge}}）</h1>
+{{template "alerts" (dict "Error" .Error)}}
+<div class="card bg-base-100 shadow"><div class="card-body overflow-x-auto"><pre class="text-sm whitespace-pre-wrap">{{.Logs}}</pre></div></div>
+{{- end}}
+{{- end}}

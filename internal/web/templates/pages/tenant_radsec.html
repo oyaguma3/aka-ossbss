@@ -1,0 +1,150 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul>{{if .Data.Staff}}<li><a href="/radsec">RadSec</a></li>{{end}}<li>{{.Data.Tenant.Name}}</li></ul></div>
+{{template "tenant-radsec" .Data}}
+{{- end}}
+
+{{define "tenant-radsec" -}}
+<div id="tenant-radsec">
+  <h1 class="text-2xl font-bold mb-4">RadSec {{.Tenant.Name}}</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+
+  {{- if not .Enabled}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <p>このテナントは RadSec を有効にしていません。</p>
+      {{- if .CanConfig}}
+      <form hx-post="/tenants/{{.Tenant.ID}}/radsec/enable" hx-target="#tenant-radsec" hx-swap="outerHTML" autocomplete="off" class="flex flex-wrap items-end gap-2">
+        <input type="hidden" name="idem" value="{{.IdemKey}}">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">slug（RadSec の名前）</legend>
+          <input name="slug" value="{{.Slug}}" required maxlength="32" class="input font-mono{{if .SlugError}} input-error{{end}}">
+          {{- if .SlugError}}{{template "field-error" .SlugError}}{{else}}<p class="label">DNS の名前と証明書に入ります。変えられず、使い回せません。ポートは自動で割り当てます。</p>{{end}}
+        </fieldset>
+        <button type="submit" class="btn btn-primary mb-6">有効にする</button>
+      </form>
+      {{- end}}
+    </div>
+  </div>
+  {{- else}}
+
+  {{- if .NoCRL}}
+  <div role="alert" class="alert alert-warning mb-4"><span>CRL のない持ち込みの CA があるので、このテナント全体で CRL の確認が止まっています。こちらが発行した証明書を失効させても TLS の検証を通ります（止めるには AP を削除します）。</span></div>
+  {{- end}}
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-48">slug</th><td class="font-mono">{{.Radsec.Slug}}</td></tr>
+          <tr><th>ポート</th><td class="font-mono">{{.Radsec.Port}}</td></tr>
+          <tr><th>AP に設定する名前</th><td class="font-mono">{{if .Domain}}{{range .SlotNames}}{{.}}<br>{{else}}配置がまだありません。{{end}}{{else}}radsec-ca に届かないので、名前を出せません。{{end}}</td></tr>
+          <tr><th>AP・グループ</th><td><a class="link" href="/tenants/{{.Tenant.ID}}/aps">一覧を開く</a></td></tr>
+          {{- if .Staff}}<tr><th>持ち込みの CA</th><td><a class="link" href="/tenants/{{.Tenant.ID}}/brought-cas">一覧を開く</a></td></tr>{{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">反映
+        {{- if .State.Failed}} <span class="badge badge-error">{{.State.Label}}</span>
+        {{- else if or .State.Waiting .State.Unrequested}} <span class="badge badge-warning">{{.State.Label}}</span>
+        {{- else}} <span class="badge badge-success badge-outline">{{.State.Label}}</span>{{end}}</h2>
+      {{- if .State.Unrequested}}<p class="text-sm">未反映の変更があります。足した AP やグループは、反映するまでつながりません（版 {{.Radsec.RequestedRevision}} → {{.Radsec.Revision}}）。</p>{{end}}
+      {{- if .CanApply}}
+      <form hx-post="/tenants/{{.Tenant.ID}}/radsec/apply" hx-target="#tenant-radsec" hx-swap="outerHTML">
+        <button type="submit" class="btn btn-primary btn-sm"{{if not .State.Unrequested}} disabled{{end}}>反映する</button>
+      </form>
+      <p class="text-sm text-base-content/60">配置したエッジに 1 台ずつ順に反映します。AP・グループの増減では、そのエッジの AP の接続がいったん切れ、AP は予備のサーバーにつなぎ替えます。</p>
+      {{- end}}
+    </div>
+  </div>
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <h2 class="card-title">配置</h2>
+      {{template "field-error" .PlacementError}}
+      {{- if and (eq (len .Rows) 1) .CanConfig}}<p class="text-sm text-warning">配置が 1 つだけです。エッジが止まると、このテナントの AP はつながりません。</p>{{end}}
+      <table class="table table-sm">
+        <thead><tr><th>スロット</th>{{if $.Staff}}<th>エッジ</th>{{end}}<th>状態</th>{{if $.Staff}}<th>版</th><th></th>{{end}}</tr></thead>
+        <tbody>
+          {{- range .Rows}}
+          <tr>
+            <td class="font-mono">{{.Slot}}{{if .Moving}} <span class="badge badge-info badge-sm">移動中</span>{{end}}</td>
+            {{- if $.Staff}}<td class="font-mono"><a class="link" href="/edges/{{.EdgeID}}">{{.EdgeID}}</a></td>{{end}}
+            <td>{{.Label}}{{with .ApplyError}}<br><span class="text-sm text-error">{{.}}</span>{{end}}</td>
+            {{- if $.Staff}}
+            <td class="font-mono">{{.AppliedRevision}} / {{$.Radsec.Revision}}</td>
+            <td class="flex flex-wrap gap-1">
+              {{- if not .Removing}}
+              {{- if $.CanOperate}}
+              <a class="btn btn-xs" href="/tenants/{{$.Tenant.ID}}/radsec/placements/{{.ID}}/logs">ログ</a>
+              <form hx-post="/tenants/{{$.Tenant.ID}}/radsec/placements/{{.ID}}/restart" hx-target="#tenant-radsec" hx-swap="outerHTML" hx-confirm="エッジ {{.EdgeID}} のコンテナを再起動します。このテナントの AP の接続がいったん切れます。"><button class="btn btn-xs">再起動</button></form>
+              {{- end}}
+              {{- if $.CanConfig}}
+              {{- if .Replaces}}
+              <form hx-post="/tenants/{{$.Tenant.ID}}/radsec/placements/{{.ID}}/move-finish" hx-target="#tenant-radsec" hx-swap="outerHTML" hx-confirm="DNS を書き換え、AP が移り終わりましたか？古いエッジからテナントを消します。"><button class="btn btn-xs btn-primary">移動を完了</button></form>
+              <form hx-post="/tenants/{{$.Tenant.ID}}/radsec/placements/{{.ID}}/move-cancel" hx-target="#tenant-radsec" hx-swap="outerHTML" hx-confirm="移動をやめて、新しいエッジからテナントを消します。"><button class="btn btn-xs">移動をやめる</button></form>
+              {{- else if not .MovedBy}}
+              <form hx-post="/tenants/{{$.Tenant.ID}}/radsec/placements/{{.ID}}/remove" hx-target="#tenant-radsec" hx-swap="outerHTML" hx-confirm="スロット {{.Slot}} の配置を外し、エッジからテナントを消します。"><button class="btn btn-xs btn-error btn-outline">外す</button></form>
+              <form hx-post="/tenants/{{$.Tenant.ID}}/radsec/placements/{{.ID}}/move" hx-target="#tenant-radsec" hx-swap="outerHTML" class="join">
+                <select name="edge" class="select select-xs join-item" aria-label="移動先のエッジ">{{$cur := .EdgeID}}{{range $.Edges}}{{if ne .ID $cur}}<option value="{{.ID}}">{{.ID}}（{{.Placements}}/{{.Capacity}}）</option>{{end}}{{end}}</select>
+                <button class="btn btn-xs join-item">移動</button>
+              </form>
+              {{- end}}
+              {{- end}}
+              {{- end}}
+            </td>
+            {{- end}}
+          </tr>
+          {{- else}}
+          <tr><td colspan="5">配置はまだありません。</td></tr>
+          {{- end}}
+        </tbody>
+      </table>
+      {{- if and .CanConfig .FreeSlots}}
+      <form hx-post="/tenants/{{.Tenant.ID}}/radsec/placements" hx-target="#tenant-radsec" hx-swap="outerHTML" class="flex flex-wrap items-end gap-2 mt-2">
+        <fieldset class="fieldset"><legend class="fieldset-legend">スロット</legend>
+          <select name="slot" class="select">{{range .FreeSlots}}<option value="{{.}}">{{.}}</option>{{end}}</select></fieldset>
+        <fieldset class="fieldset"><legend class="fieldset-legend">エッジ</legend>
+          <select name="edge" class="select">{{range .Edges}}<option value="{{.ID}}">{{.ID}}（{{.Placements}}/{{.Capacity}}）</option>{{else}}<option value="" disabled selected>エッジがありません</option>{{end}}</select></fieldset>
+        <button type="submit" class="btn btn-primary mb-1">配置を足す</button>
+      </form>
+      {{- end}}
+    </div>
+  </div>
+
+  {{- if .Records}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <h2 class="card-title">DNS に登録するレコード</h2>
+      <p class="text-sm text-base-content/60">登録は人が行います。AP はこの名前でエッジにつなぎます。エッジの名前の A レコードは<a class="link" href="/radsec">全テナントの画面</a>にあります。</p>
+      <table class="table table-sm font-mono">
+        <thead><tr><th>名前</th><th>種類</th><th>値</th><th></th></tr></thead>
+        <tbody>{{range .Records}}<tr><td>{{.Name}}</td><td>{{.Type}}</td><td>{{.Value}}</td><td class="font-sans text-sm">{{.Note}}</td></tr>{{end}}</tbody>
+      </table>
+    </div>
+  </div>
+  {{- end}}
+
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">送信元の範囲</h2>
+      {{- if .CanConfig}}
+      <form hx-post="/tenants/{{.Tenant.ID}}/radsec/sources" hx-target="#tenant-radsec" hx-swap="outerHTML" autocomplete="off">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">許す送信元（1 行に 1 つ。空なら制限なし）</legend>
+          <textarea name="sources" rows="3" class="textarea font-mono w-full{{if .SourcesError}} textarea-error{{end}}">{{.Sources}}</textarea>
+          {{- if .SourcesError}}{{template "field-error" .SourcesError}}{{else}}<p class="label">拠点の IP が固定の顧客に勧めます。変えるとすぐ各エッジに順に反映します（接続がいったん切れます）。</p>{{end}}
+        </fieldset>
+        <button type="submit" class="btn btn-primary btn-sm mt-2">変更する</button>
+      </form>
+      {{- else}}
+      <p class="font-mono">{{if .Radsec.SourceCIDRs}}{{joinStrings .Radsec.SourceCIDRs}}{{else}}制限なし{{end}}</p>
+      {{- end}}
+    </div>
+  </div>
+  {{- end}}
+</div>
+{{- end}}

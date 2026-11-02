@@ -243,8 +243,8 @@ func (h *Handler) tenantDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, db.ErrInUse):
 		h.renderTenant(w, r, id, http.StatusConflict, func(d *tenantData) {
-			d.Error = fmt.Sprintf("このテナントには加入者 %d 件、アカウント %d 件が属しています。"+
-				"先に加入者を物理削除するか付け替え、アカウントを移すか削除してから削除してください。", d.Tenant.Subscribers, d.Tenant.Accounts)
+			d.Error = fmt.Sprintf("このテナントには加入者 %d 件、アカウント %d 件が属しています（RadSec の AP・グループ、配置、持ち込みの CA が残っている場合も削除できません）。"+
+				"先に加入者を物理削除するか付け替え、アカウントを移すか削除し、RadSec のものを外してから削除してください。", d.Tenant.Subscribers, d.Tenant.Accounts)
 		})
 		return
 	case err != nil:
@@ -252,5 +252,6 @@ func (h *Handler) tenantDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.record(r, auditTenantDelete, t.Name, id, map[string]any{"name": t.Name})
+	h.disableReleasedCA(r, id)
 	seeOther(w, r, "/tenants?deleted=1")
 }

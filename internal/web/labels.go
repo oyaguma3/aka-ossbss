@@ -106,6 +106,29 @@ var auditActions = []struct{ Action, Label string }{
 	{audit.ActionChargingKey, "PGP の公開鍵の登録"},
 	{audit.ActionTenantExternal, "テナントの外部の顧客番号の変更"},
 	{audit.ActionLineExternal, "回線の外部の番号の変更"},
+	{audit.ActionEdgeCreate, "エッジの登録"},
+	{audit.ActionEdgeUpdate, "エッジの変更"},
+	{audit.ActionEdgeDelete, "エッジの削除"},
+	{audit.ActionEdgeRestart, "エッジのコンテナの再起動"},
+	{audit.ActionRadsecEnable, "RadSec の有効化"},
+	{audit.ActionRadsecSources, "送信元の範囲の変更"},
+	{audit.ActionRadsecMatch, "共通のブロックの照合の形の変更"},
+	{audit.ActionRadsecApply, "RadSec の反映の要求"},
+	{audit.ActionRadsecCADisable, "テナントの CA の停止"},
+	{audit.ActionPlacementAdd, "配置の追加"},
+	{audit.ActionPlacementRemove, "配置を外す"},
+	{audit.ActionPlacementMove, "スロットの移動の開始"},
+	{audit.ActionPlacementMoveDone, "スロットの移動の完了"},
+	{audit.ActionPlacementMoveStop, "スロットの移動の取り消し"},
+	{audit.ActionAPCreate, "AP・グループの登録"},
+	{audit.ActionAPRenew, "AP・グループの証明書の更新"},
+	{audit.ActionAPRevoke, "AP・グループの証明書の失効"},
+	{audit.ActionAPDelete, "AP・グループの削除"},
+	{audit.ActionBroughtCreate, "持ち込みの CA の登録"},
+	{audit.ActionBroughtSource, "CRL の取得先の変更"},
+	{audit.ActionBroughtUploadCRL, "CRL のアップロード"},
+	{audit.ActionBroughtRefreshCRL, "CRL の取り直し"},
+	{audit.ActionBroughtRemove, "持ち込みの CA を外す"},
 }
 
 // otherActionLabels は、aka-provisioner と下流の監査ログにだけ出る操作の名前。
@@ -140,7 +163,9 @@ func actionLabel(action string) string {
 
 // externalIDActions は外部の番号の変更の操作。外部の番号は運用担当とシステム管理者だけの項目で（段階 3-4 の Z15）、監査ログの内容に
 // 値が入るので、テナント管理者の監査ログには出さない。
-var externalIDActions = []string{audit.ActionTenantExternal, audit.ActionLineExternal}
+var externalIDActions = []string{audit.ActionTenantExternal, audit.ActionLineExternal,
+	// エッジの ID を含むので、A・B には見せない（OB16）。
+	audit.ActionPlacementAdd, audit.ActionPlacementRemove, audit.ActionPlacementMove, audit.ActionPlacementMoveDone, audit.ActionPlacementMoveStop, audit.ActionEdgeRestart}
 
 // tenantAuditActions は、テナント管理者の操作の種類の絞り込みの選択肢（テナントに結び付かない突き合わせの実行と課金レコードの操作、
 // 外部の番号の変更を除く）。

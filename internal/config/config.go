@@ -28,6 +28,8 @@ type Config struct {
 	DB DB
 	// Provisioner は aka-provisioner への接続。
 	Provisioner Provisioner
+	// EdgeCapacityDefault はエッジの容量の既定（OB22）。
+	EdgeCapacityDefault int
 
 	// AccessTeamDomain は Cloudflare Access のチームのドメイン（例 example.cloudflareaccess.com）。
 	// AccessAUDs は Access のアプリの AUD タグ（カンマ区切りで複数）。両方を与えると Access の JWT で利用者を識別する。
@@ -167,6 +169,14 @@ func Load() (Config, error) {
 			errs = append(errs, errors.New("OSSBSS_PROVISIONER_RADSEC_TIMEOUT: must be a duration between 1s and 5m (e.g. 35s)"))
 		}
 		c.Provisioner.RadsecTimeout = d
+	}
+	c.EdgeCapacityDefault = 150
+	if v := os.Getenv("OSSBSS_EDGE_CAPACITY_DEFAULT"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 2000 {
+			errs = append(errs, errors.New("OSSBSS_EDGE_CAPACITY_DEFAULT: must be a number between 1 and 2000"))
+		}
+		c.EdgeCapacityDefault = n
 	}
 	if c.DB.Password == "" {
 		errs = append(errs, errors.New("OSSBSS_DB_PASSWORD is not set"))

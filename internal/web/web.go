@@ -7,6 +7,7 @@
 package web
 
 import (
+	"cmp"
 	"context"
 	"embed"
 	"fmt"
@@ -125,7 +126,25 @@ type Provisioner interface {
 	Reinstate(ctx context.Context, d provisioner.Downstream, imsi, reason, idempotencyKey string) (string, error)
 	DeleteSubscriber(ctx context.Context, d provisioner.Downstream, imsi, idempotencyKey string) error
 	AuditLogs(ctx context.Context, src provisioner.AuditSource, p provisioner.AuditLogParams) (provisioner.AuditLogList, error)
+	// radsec-ca とエッジ（段階 4-3）。エッジの変更はループの役目なので、画面が呼ぶのは読み出しと再起動だけ（OB3）。
+	CreateTenantCA(ctx context.Context, slug, idempotencyKey string) (provisioner.CA, error)
+	CreateBroughtCA(ctx context.Context, b provisioner.BroughtCACreate, idempotencyKey string) (provisioner.CA, error)
+	GetCA(ctx context.Context, id string) (provisioner.CA, error)
+	TenantCAs(ctx context.Context, slug string) ([]provisioner.CA, error)
+	DisableCA(ctx context.Context, id, idempotencyKey string) (provisioner.CA, error)
+	UploadCRL(ctx context.Context, id, pem, idempotencyKey string) (provisioner.CA, error)
+	RefreshCACRL(ctx context.Context, id, idempotencyKey string) (provisioner.CA, error)
+	ChangeCRLSource(ctx context.Context, id string, ch provisioner.CRLSourceChange, idempotencyKey string) (provisioner.CA, error)
+	IssueCert(ctx context.Context, i provisioner.CertIssue, idempotencyKey string) (provisioner.Cert, error)
+	GetCert(ctx context.Context, serial string) (provisioner.Cert, error)
+	RevokeCert(ctx context.Context, serial, reason, idempotencyKey string) (provisioner.Cert, error)
+	RestartEdgeTenant(ctx context.Context, edge string, tenant int64, idempotencyKey string) error
+	EdgeTenantLogs(ctx context.Context, edge string, tenant int64, lines int) (string, error)
+	EdgeTenantLastSeen(ctx context.Context, edge string, tenant int64) (provisioner.EdgeLastSeen, error)
 }
+
+// defaultEdgeCapacity はエッジの容量の既定（4 GB のエッジで 150。概要の決定事項 25）。
+const defaultEdgeCapacity = 150
 
 // Handler は画面のハンドラー。
 type Handler struct {
@@ -144,6 +163,9 @@ type Handler struct {
 	reconciler Reconciler
 	// charging は課金レコードの実行。
 	charging ChargingRunner
+	// radsec は RadSec の受け口の DB の操作、edgeCapacity はエッジの容量の既定。
+	radsec       RadsecStore
+	edgeCapacity int
 	// initialAdmin は最初のシステム管理者のメールアドレス（画面からの削除・降格・無効化を断る）。
 	initialAdmin string
 	pages        pages
@@ -172,6 +194,9 @@ type Options struct {
 	Reconciler Reconciler
 	// Charging は課金レコードの実行。
 	Charging ChargingRunner
+	// Radsec は RadSec の受け口の DB の操作（*db.DB）。EdgeCapacity はエッジの容量の既定（OSSBSS_EDGE_CAPACITY_DEFAULT）。
+	Radsec       RadsecStore
+	EdgeCapacity int
 }
 
 // New は Handler を作る。テンプレートと静的ファイルはここで読み込む。
@@ -181,7 +206,7 @@ func New(opts Options) (*Handler, error) {
 	}
 	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner,
 		ops: &ledger.Ops{DB: opts.DB, PV: opts.Provisioner, Log: opts.Log}, rec: &audit.Recorder{DB: opts.DB, Files: opts.AuditFiles, Log: opts.Log},
-		kek: opts.KEK, jobs: opts.Jobs, reconciler: opts.Reconciler, charging: opts.Charging, initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
+		kek: opts.KEK, jobs: opts.Jobs, reconciler: opts.Reconciler, charging: opts.Charging, radsec: opts.Radsec, edgeCapacity: cmp.Or(opts.EdgeCapacity, defaultEdgeCapacity), initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
 	var err error
 	if h.pages, err = parsePages(); err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -264,6 +289,25 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /accounts/{id}/delete", h.accountDelete)
 
 	// 監査ログ（設計概要 §14。W10・W11）。
+	// RadSec の受け口（段階 4-3）。
+	mux.HandleFunc("GET /edges", h.edgeList)
+	mux.HandleFunc("POST /edges", h.edgeCreate)
+	mux.HandleFunc("GET /edges/{id}", h.edge)
+	mux.HandleFunc("POST /edges/{id}/update", h.edgeUpdate)
+	mux.HandleFunc("POST /edges/{id}/delete", h.edgeDelete)
+	mux.HandleFunc("GET /radsec", h.radsecList)
+	mux.HandleFunc("GET /tenants/{id}/radsec", h.tenantRadsec)
+	mux.HandleFunc("POST /tenants/{id}/radsec/enable", h.radsecEnable)
+	mux.HandleFunc("POST /tenants/{id}/radsec/sources", h.radsecSources)
+	mux.HandleFunc("POST /tenants/{id}/radsec/apply", h.radsecApply)
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements", h.radsecPlacementAdd)
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/remove", h.radsecPlacementRemove)
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move", h.radsecMoveStart)
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move-finish", h.radsecMoveFinish)
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move-cancel", h.radsecMoveCancel)
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/restart", h.radsecRestart)
+	mux.HandleFunc("GET /tenants/{id}/radsec/placements/{pid}/logs", h.radsecLogs)
+
 	mux.HandleFunc("GET /audit", h.auditList)
 	mux.HandleFunc("GET /audit/{source}", h.downstreamAudit)
 	mux.HandleFunc("/", h.notFound)

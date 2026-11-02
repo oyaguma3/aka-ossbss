@@ -1,0 +1,87 @@
+{{define "content" -}}
+<div class="breadcrumbs text-sm mb-2"><ul><li><a href="/edges">エッジ</a></li><li>{{.Data.Edge.ID}}</li></ul></div>
+{{template "edge-detail" .Data}}
+{{- end}}
+
+{{define "edge-form-fields" -}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">名前</legend>
+  <input name="name" value="{{.Name}}" required maxlength="100" class="input w-full{{if index .Errors "name"}} input-error{{end}}">
+  {{template "field-error" (index .Errors "name")}}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">容量（テナントの数の上限）</legend>
+  <input name="capacity" value="{{.Capacity}}" required inputmode="numeric" class="input w-full{{if index .Errors "capacity"}} input-error{{end}}">
+  {{template "field-error" (index .Errors "capacity")}}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">公開のアドレス（DNS の A レコードの値）</legend>
+  <input name="publicAddr" value="{{.PublicAddr}}" required class="input w-full{{if index .Errors "publicAddr"}} input-error{{end}}">
+  {{template "field-error" (index .Errors "publicAddr")}}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">上流の認証（IP アドレス:ポート）</legend>
+  <input name="authUpstream" value="{{.AuthUpstream}}" required class="input w-full{{if index .Errors "authUpstream"}} input-error{{end}}">
+  {{template "field-error" (index .Errors "authUpstream")}}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">上流の課金（IP アドレス:ポート）</legend>
+  <input name="acctUpstream" value="{{.AcctUpstream}}" required class="input w-full{{if index .Errors "acctUpstream"}} input-error{{end}}">
+  {{- if index .Errors "acctUpstream"}}{{template "field-error" (index .Errors "acctUpstream")}}{{else}}<p class="label">上流を変えると、このエッジに置いたテナントに自動で反映します（接続がいったん切れます）。</p>{{end}}
+</fieldset>
+{{- end}}
+
+{{define "edge-detail" -}}
+<div id="edge">
+  <h1 class="text-2xl font-bold mb-4">エッジ {{.Edge.ID}}</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <table class="table table-sm">
+        <tbody>
+          <tr><th class="w-48">名前</th><td>{{.Edge.Name}}</td></tr>
+          <tr><th>配置 / 容量</th><td>{{.Edge.Placements}} / {{.Edge.Capacity}}</td></tr>
+          <tr><th>接続</th><td>
+            {{- if not .Registered}}<span class="badge badge-warning">不明</span> aka-provisioner の登録簿にないか、aka-provisioner に接続できません。
+            {{- else if .Status.Reachable}}<span class="badge badge-success">接続中</span>
+            {{- else}}<span class="badge badge-error">切断</span> {{or .Status.Hint .Status.Error}}{{end}}</td></tr>
+          {{- if .Registered}}<tr><th>管理API</th><td class="font-mono">{{.Status.URL}}</td></tr>
+          <tr><th>サーバー証明書の期限</th><td>{{datetime .Status.ServerCertificate.NotAfter}}</td></tr>{{end}}
+          <tr><th>DNS の A レコード</th><td class="font-mono">{{if .Domain}}{{.Edge.ID}}.{{.Domain}} → {{.Edge.PublicAddr}}{{else}}radsec-ca に届かないので、名前を出せません（公開のアドレス {{.Edge.PublicAddr}}）。{{end}}</td></tr>
+          <tr><th>台帳に足した日時</th><td>{{datetime .Edge.CreatedAt}}（{{.Edge.CreatedBy}}）</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <h2 class="card-title">置いているテナント</h2>
+      <table class="table table-sm">
+        <thead><tr><th>テナント</th><th>スロット</th><th>状態</th></tr></thead>
+        <tbody>
+          {{- range .Tenants}}
+          <tr><td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td><td>{{.Slot}}</td><td>{{if .Removing}}エッジから消しています{{else if .Replaces}}移動の途中{{else}}配置中{{end}}</td></tr>
+          {{- else}}
+          <tr><td colspan="3">ありません。</td></tr>
+          {{- end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {{- if .CanManage}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">設定の変更</h2>
+      <form hx-post="/edges/{{.Edge.ID}}/update" hx-target="#edge" hx-swap="outerHTML" autocomplete="off" class="grid md:grid-cols-2 gap-x-4">
+        {{template "edge-form-fields" .Form}}
+        <div class="md:col-span-2"><button type="submit" class="btn btn-primary mt-2">変更する</button></div>
+      </form>
+    </div>
+  </div>
+  <form id="edge-delete" hx-post="/edges/{{.Edge.ID}}/delete" hx-target="#edge" hx-swap="outerHTML"></form>
+  <button type="button" class="btn btn-error btn-outline" command="show-modal" commandfor="dialog-edge-delete">台帳から消す</button>
+  {{template "confirm" (dict "ID" "dialog-edge-delete" "Title" "エッジを台帳から消す" "Form" "edge-delete" "Label" "消す" "Class" "btn-error"
+    "Message" (printf "エッジ %s を台帳から消します。同じ ID で登録し直せます。よろしいですか？" .Edge.ID))}}
+  {{- end}}
+</div>
+{{- end}}

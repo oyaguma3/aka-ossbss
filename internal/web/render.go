@@ -26,6 +26,17 @@ var funcs = template.FuncMap{
 	"stateLabel":      stateLabel,
 	"sideLabel":       sideLabel,
 	"downstreamLabel": downstreamLabel,
+	// fieldError は誤りの表（nil でもよい）から項目の文を返す。
+	"fieldError": func(errs any, name string) string {
+		if m, ok := errs.(fieldErrors); ok {
+			return m[name]
+		}
+		return ""
+	},
+	// hasSubscribers は加入者の数を持つ下流（aka-vecgen・aka-radius）か。
+	"hasSubscribers": func(name string) bool {
+		return name == string(provisioner.Vecgen) || name == string(provisioner.Radius)
+	},
 	// octets は通信量を単位つきで表示する。datetime は日時を表示する。
 	"octets":   formatOctets,
 	"datetime": datetime,
@@ -144,6 +155,15 @@ func navItems(a authz.Actor) []navItem {
 	}
 	if authz.Allowed(a, authz.ChargingView, target) {
 		items = append(items, navItem{"課金レコード", "/charging", []string{"charging"}})
+	}
+	switch {
+	case authz.Allowed(a, authz.RadsecConfig, target):
+		items = append(items, navItem{"RadSec", "/radsec", []string{"radsec"}})
+	case a.Role.TenantScoped() && authz.Allowed(a, authz.RadsecView, target):
+		items = append(items, navItem{"RadSec", "/tenants/" + strconv.FormatInt(a.TenantID, 10) + "/radsec", []string{"tenants"}})
+	}
+	if authz.Allowed(a, authz.EdgeView, target) {
+		items = append(items, navItem{"エッジ", "/edges", []string{"edges"}})
 	}
 	if authz.Allowed(a, authz.TenantManage, target) || authz.Allowed(a, authz.ExternalIDUpdate, target) {
 		items = append(items, navItem{"テナント", "/tenants", []string{"tenants"}})

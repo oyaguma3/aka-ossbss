@@ -91,7 +91,7 @@
           {{- range .Downstreams}}
           <tr><th>{{downstreamLabel (printf "%s" .Name)}}</th><td>
             {{- if .Reachable}}<span class="badge badge-success">接続中</span>
-              {{- with node .}} バージョン {{.Version}}（加入者 {{.SubscriberCount}}{{with .SessionCount}}、セッション {{.}}{{end}}）{{end}}
+              {{- $sub := hasSubscribers (printf "%s" .Name)}}{{with node .}} バージョン {{.Version}}{{if $sub}}（加入者 {{.SubscriberCount}}{{with .SessionCount}}、セッション {{.}}{{end}}）{{end}}{{end}}
             {{- else}}<span class="badge badge-error">切断</span> {{or .Hint .Error "aka-provisioner から接続できません。"}}{{end}}
             <span class="text-sm text-base-content/60">（{{if .CheckedAt.IsZero}}まだ確かめていません{{else}}{{datetime .CheckedAt}} に確かめた結果{{end}}）</span>
           </td></tr>

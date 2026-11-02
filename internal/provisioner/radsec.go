@@ -69,6 +69,9 @@ const (
 	CRLSourceNone   = "none"
 )
 
+// DownstreamCA は radsec-ca の下流の名前。
+const DownstreamCA Downstream = "ca"
+
 // EdgeDownstream はエッジの下流の名前（/status の downstreams[].name と ProblemDetails の downstream）を返す。
 func EdgeDownstream(id string) Downstream { return Downstream("edge:" + id) }
 

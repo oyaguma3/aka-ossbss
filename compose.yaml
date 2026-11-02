@@ -32,6 +32,7 @@ services:
       OSSBSS_PROVISIONER_SERVER_CERT: /certs/provisioner-server.pem
       OSSBSS_PROVISIONER_TIMEOUT: ${OSSBSS_PROVISIONER_TIMEOUT:-15s}
       OSSBSS_PROVISIONER_RADSEC_TIMEOUT: ${OSSBSS_PROVISIONER_RADSEC_TIMEOUT:-35s}
+      OSSBSS_EDGE_CAPACITY_DEFAULT: ${OSSBSS_EDGE_CAPACITY_DEFAULT:-150}
       # 監査ログの日ごとのファイル（JSONL。設計概要 §14）。監視用の PC が取りに行く。
       OSSBSS_AUDIT_DIR: /data/audit
       # 一括投入の待ちのファイルを暗号化する KEK（設計概要 §10.1）。ファイルがなければ起動しない。

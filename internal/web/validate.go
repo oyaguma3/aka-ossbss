@@ -116,6 +116,11 @@ func downstreamLabel(name string) string {
 		return "aka-vecgen"
 	case string(provisioner.Radius):
 		return "aka-radius"
+	case string(provisioner.DownstreamCA):
+		return "radsec-ca"
+	}
+	if id, ok := strings.CutPrefix(name, "edge:"); ok {
+		return "エッジ " + id
 	}
 	return cmp.Or(name, "下流")
 }
@@ -176,6 +181,12 @@ func apiErrorFor(err error, side db.Side, staff bool) apiFailure {
 		return apiFailure{http.StatusBadGateway, where + " が不正な応答を返しました（" + strconv.Itoa(p.DownstreamStatus) + "）。"}
 	case provisioner.CauseRouteNotAllowed:
 		return apiFailure{http.StatusBadGateway, "aka-provisioner がこの口を通しませんでした（aka-provisioner の版を確かめてください）。"}
+	case provisioner.CauseEdgeNotFound:
+		return apiFailure{http.StatusBadGateway, "aka-provisioner の登録簿にこのエッジがありません。"}
+	case provisioner.CauseTenantBusy:
+		return apiFailure{http.StatusServiceUnavailable, where + " で反映などが動いています。少し待ってから、もう一度操作してください。"}
+	case provisioner.CauseTenantNotFound:
+		return apiFailure{http.StatusNotFound, where + " にこのテナントがまだありません（反映を待ってください）。"}
 	}
 	if apiErr.Status == http.StatusBadRequest && len(p.InvalidParams) > 0 {
 		var names []string

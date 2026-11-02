@@ -1,0 +1,82 @@
+{{define "content" -}}
+{{template "edges-section" .Data}}
+{{- end}}
+
+{{define "edge-form-fields" -}}
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">名前</legend>
+  <input name="name" value="{{.Name}}" required maxlength="100" class="input w-full{{if index .Errors "name"}} input-error{{end}}">
+  {{template "field-error" (index .Errors "name")}}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">容量（テナントの数の上限）</legend>
+  <input name="capacity" value="{{.Capacity}}" required inputmode="numeric" class="input w-full{{if index .Errors "capacity"}} input-error{{end}}">
+  {{- if index .Errors "capacity"}}{{template "field-error" (index .Errors "capacity")}}{{else}}<p class="label">4 GB のエッジで 150、2 GB で 60 が目安です。</p>{{end}}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">公開のアドレス</legend>
+  <input name="publicAddr" value="{{.PublicAddr}}" required class="input w-full{{if index .Errors "publicAddr"}} input-error{{end}}">
+  {{- if index .Errors "publicAddr"}}{{template "field-error" (index .Errors "publicAddr")}}{{else}}<p class="label">AP がつなぐアドレス。DNS の A レコードの値で、画面に出すだけです。</p>{{end}}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">上流の認証（IP アドレス:ポート）</legend>
+  <input name="authUpstream" value="{{.AuthUpstream}}" required class="input w-full{{if index .Errors "authUpstream"}} input-error{{end}}">
+  {{template "field-error" (index .Errors "authUpstream")}}
+</fieldset>
+<fieldset class="fieldset">
+  <legend class="fieldset-legend">上流の課金（IP アドレス:ポート）</legend>
+  <input name="acctUpstream" value="{{.AcctUpstream}}" required class="input w-full{{if index .Errors "acctUpstream"}} input-error{{end}}">
+  {{- if index .Errors "acctUpstream"}}{{template "field-error" (index .Errors "acctUpstream")}}{{else}}<p class="label">aka-radius のサービス用の WireGuard のアドレスです。</p>{{end}}
+</fieldset>
+{{- end}}
+
+{{define "edges-section" -}}
+<div id="edges">
+  <h1 class="text-2xl font-bold mb-4">エッジ</h1>
+  {{template "alerts" (dict "Message" .Message "Error" .Error)}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <table class="table table-sm">
+        <thead><tr><th>ID</th><th>名前</th><th>配置 / 容量</th><th>公開のアドレス</th><th>接続</th></tr></thead>
+        <tbody>
+          {{- range .Edges}}
+          <tr>
+            <td class="font-mono"><a class="link" href="/edges/{{.ID}}">{{.ID}}</a></td>
+            <td>{{.Name}}</td>
+            <td>{{.Placements}} / {{.Capacity}}</td>
+            <td class="font-mono">{{.PublicAddr}}</td>
+            <td>{{with index $.Status .ID}}{{if .Reachable}}<span class="badge badge-success badge-sm">接続中</span>{{else}}<span class="badge badge-error badge-sm">切断</span> {{or .Hint .Error}}{{end}}{{else}}<span class="badge badge-warning badge-sm">不明</span>{{end}}</td>
+          </tr>
+          {{- else}}
+          <tr><td colspan="5">エッジはまだ登録していません。</td></tr>
+          {{- end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {{- if .CanManage}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body">
+      <h2 class="card-title">エッジを足す</h2>
+      <p class="text-sm">台帳に足す前に、次を済ませます（順に）。</p>
+      <ol class="list-decimal list-inside text-sm mb-2">
+        <li>ホストを用意し、WireGuard のピアを中央のハブに登録する。</li>
+        <li>エッジを導入し、aka-provisioner のクライアント証明書をエッジのピンのファイルに書く（radsec-edge の運用ガイド 10 章）。</li>
+        <li>aka-provisioner の登録簿にエッジを足して SIGHUP を送る（aka-provisioner の運用ガイド 3.6）。</li>
+        <li>データ面のノードで、エッジのトンネルのアドレスを aka-radius の RADIUS クライアントとして、刻印を信頼する印をつけて登録する（aka-radius の運用ガイド。共有シークレットはエッジの環境変数と同じ値）。</li>
+        <li>DNS にエッジの名前の A レコード（<code>&lt;ID&gt;.{{or .Domain "&lt;ドメイン&gt;"}}</code> → 公開のアドレス）を登録する。</li>
+      </ol>
+      <form hx-post="/edges" hx-target="#edges" hx-swap="outerHTML" autocomplete="off" class="grid md:grid-cols-2 gap-x-4">
+        <fieldset class="fieldset">
+          <legend class="fieldset-legend">ID（aka-provisioner の登録簿と同じ）</legend>
+          <input name="id" value="{{.Form.ID}}" required maxlength="32" class="input w-full font-mono{{if index .Form.Errors "id"}} input-error{{end}}">
+          {{template "field-error" (index .Form.Errors "id")}}
+        </fieldset>
+        {{template "edge-form-fields" .Form}}
+        <div class="md:col-span-2"><button type="submit" class="btn btn-primary mt-2">台帳に足す</button></div>
+      </form>
+    </div>
+  </div>
+  {{- end}}
+</div>
+{{- end}}

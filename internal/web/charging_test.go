@@ -142,7 +142,7 @@ func newChargingEnv() *chargingEnv {
 
 func (e *chargingEnv) handler(t *testing.T, email string) http.Handler {
 	t.Helper()
-	h, err := New(Options{Log: discard, Version: "test", DB: e.db, Identifier: auth.Dev(email), Provisioner: e.pv,
+	h, err := New(Options{Radsec: newFakeRadsec(), Log: discard, Version: "test", DB: e.db, Identifier: auth.Dev(email), Provisioner: e.pv,
 		AuditFiles: audit.NewFiles(t.TempDir(), 14), Charging: e.run})
 	if err != nil {
 		t.Fatal(err)

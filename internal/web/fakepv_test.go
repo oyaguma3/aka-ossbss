@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,9 @@ type fakePV struct {
 	lastVecgenUpdate provisioner.VecgenSubscriberUpdate
 	lastVecgenCreate provisioner.VecgenSubscriberCreate
 	batchCalls       int
+	// lastBrought は最後の持ち込みの CA の登録（API キーを含む。送ったことの確かめにだけ使う）。serial は発行の通し番号。
+	lastBrought provisioner.BroughtCACreate
+	serial      int
 }
 
 func newFakePV() *fakePV {
@@ -354,4 +358,82 @@ func (f *fakePV) AuditLogs(_ context.Context, src provisioner.AuditSource, _ pro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return provisioner.AuditLogList{Items: f.audit[src]}, f.errs["audit"]
+}
+
+// ---- radsec-ca とエッジ ----
+
+// radsecOp は書き込みを記録して、その口の誤りを返す。
+func (f *fakePV) radsecOp(ctx context.Context, op, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.record(ctx, op, key)
+}
+
+func (f *fakePV) CreateTenantCA(ctx context.Context, slug, key string) (provisioner.CA, error) {
+	if err := f.radsecOp(ctx, "ca.create", key); err != nil {
+		return provisioner.CA{}, err
+	}
+	return provisioner.CA{ID: "tenant." + slug, Certificate: "TENANT-CA-PEM", HasCRL: true}, nil
+}
+
+func (f *fakePV) CreateBroughtCA(ctx context.Context, b provisioner.BroughtCACreate, key string) (provisioner.CA, error) {
+	f.mu.Lock()
+	f.lastBrought = b
+	f.mu.Unlock()
+	if err := f.radsecOp(ctx, "ca.brought", key); err != nil {
+		return provisioner.CA{}, err
+	}
+	return provisioner.CA{ID: "brought." + b.Tenant + "." + b.Name, Subject: "CN=vendor", HasCRL: b.CRL.Source != provisioner.CRLSourceNone, CRLSource: b.CRL.Source}, nil
+}
+
+func (f *fakePV) GetCA(_ context.Context, id string) (provisioner.CA, error) {
+	return provisioner.CA{ID: id, Certificate: "CA-PEM-" + id}, nil
+}
+
+func (f *fakePV) TenantCAs(context.Context, string) ([]provisioner.CA, error) { return nil, nil }
+
+func (f *fakePV) DisableCA(ctx context.Context, id, key string) (provisioner.CA, error) {
+	return provisioner.CA{ID: id}, f.radsecOp(ctx, "ca.disable", key)
+}
+
+func (f *fakePV) UploadCRL(ctx context.Context, id, _, key string) (provisioner.CA, error) {
+	return provisioner.CA{ID: id}, f.radsecOp(ctx, "ca.upload", key)
+}
+
+func (f *fakePV) RefreshCACRL(ctx context.Context, id, key string) (provisioner.CA, error) {
+	return provisioner.CA{ID: id}, f.radsecOp(ctx, "ca.refresh", key)
+}
+
+func (f *fakePV) ChangeCRLSource(ctx context.Context, id string, ch provisioner.CRLSourceChange, key string) (provisioner.CA, error) {
+	return provisioner.CA{ID: id, HasCRL: ch.CRL.Source != provisioner.CRLSourceNone}, f.radsecOp(ctx, "ca.source", key)
+}
+
+func (f *fakePV) IssueCert(ctx context.Context, i provisioner.CertIssue, key string) (provisioner.Cert, error) {
+	if err := f.radsecOp(ctx, "ca.issue."+i.Profile, key); err != nil {
+		return provisioner.Cert{}, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.serial++
+	return provisioner.Cert{Serial: "0a" + strconv.Itoa(f.serial), NotAfter: time.Now().Add(365 * 24 * time.Hour), Certificate: "CERT-PEM"}, nil
+}
+
+func (f *fakePV) GetCert(_ context.Context, serial string) (provisioner.Cert, error) {
+	return provisioner.Cert{Serial: serial, Certificate: "CERT-PEM-" + serial}, nil
+}
+
+func (f *fakePV) RevokeCert(ctx context.Context, serial, reason, key string) (provisioner.Cert, error) {
+	return provisioner.Cert{Serial: serial, Status: "revoked", RevokeReason: reason}, f.radsecOp(ctx, "ca.revoke."+reason, key)
+}
+
+func (f *fakePV) RestartEdgeTenant(ctx context.Context, edge string, _ int64, key string) error {
+	return f.radsecOp(ctx, "edge.restart."+edge, key)
+}
+
+func (f *fakePV) EdgeTenantLogs(context.Context, string, int64, int) (string, error) {
+	return "radsecproxy のログ", nil
+}
+
+func (f *fakePV) EdgeTenantLastSeen(context.Context, string, int64) (provisioner.EdgeLastSeen, error) {
+	return provisioner.EdgeLastSeen{APs: []provisioner.EdgeSeenAP{{Name: "ap-1", Kind: "ap", Connected: true, LastIP: "198.51.100.1"}}}, nil
 }
