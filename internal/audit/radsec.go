@@ -25,4 +25,16 @@ const (
 	ActionBroughtUploadCRL  = "radsec.brought.crl_upload"
 	ActionBroughtRefreshCRL = "radsec.brought.crl_refresh"
 	ActionBroughtRemove     = "radsec.brought.remove"
+	ActionRadsecRetry       = "radsec.apply.retry"
+	ActionEdgeOrphanDelete  = "radsec.edge.orphan_delete"
+
+	// 中央の整合のループが書くもの（操作者は system。段階 4-4 の OB19）。
+	ActionLoopDeclare     = "radsec.declare"
+	ActionLoopApplyStart  = "radsec.apply.start"
+	ActionLoopApplyResult = "radsec.apply.result"
+	ActionLoopCertPlace   = "radsec.cert.place"
+	ActionLoopCertRevoke  = "radsec.cert.revoke"
+	ActionLoopCRLRefresh  = "radsec.crl.refresh"
+	ActionLoopRemoved     = "radsec.placement.removed"
+	ActionLoopBroughtOff  = "radsec.brought.disabled"
 )

@@ -22,7 +22,7 @@ import (
 )
 
 // RadSec の受け口の画面（設計概要 §13。段階 4-3 の OB11〜OB13、OB21）。画面は DB の望む状態を書いて版を上げるだけで、エッジには触らない（OB3）。
-// エッジへ送るのは中央の整合のループ（段階 4-4）の役目。例外は読み出し（ログ、最後の接続）と再起動。radsec-ca は発行の結果をすぐ渡すので同期で呼ぶ。
+// エッジへ送るのは中央の整合のループ（internal/radsec）の役目。例外は読み出し（ログ、最後の接続）と再起動。radsec-ca は発行の結果をすぐ渡すので同期で呼ぶ。
 
 // RadsecStore は RadSec の画面が使う DB の操作。*db.DB が満たす。
 type RadsecStore interface {
@@ -72,6 +72,16 @@ const (
 	// radsecStatusTimeout は aka-provisioner の状態を読む上限（DNS のドメインと接続の状態）。
 	radsecStatusTimeout = 10 * time.Second
 )
+
+// wakeAfter はハンドラーの後に中央の整合のループを起こす（断った要求でも起こすだけで害はない）。
+func (h *Handler) wakeAfter(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, r)
+		if h.radsecLoop != nil {
+			h.radsecLoop.Wake()
+		}
+	}
+}
 
 // radsecFailure は radsec-ca とエッジの呼び出しの誤りを画面の文にする。下流の 4xx の詳しい文（radsec-ca は日本語で返す）があれば、それを使う。
 func (h *Handler) radsecFailure(r *http.Request, err error) string {

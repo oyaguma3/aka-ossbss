@@ -128,6 +128,16 @@ var auditActions = []struct{ Action, Label string }{
 	{audit.ActionBroughtSource, "CRL の取得先の変更"},
 	{audit.ActionBroughtUploadCRL, "CRL のアップロード"},
 	{audit.ActionBroughtRefreshCRL, "CRL の取り直し"},
+	{audit.ActionRadsecRetry, "反映のやり直しの要求"},
+	{audit.ActionEdgeOrphanDelete, "エッジにしかないテナントの削除"},
+	{audit.ActionLoopDeclare, "エッジへの宣言の送信"},
+	{audit.ActionLoopApplyStart, "エッジの反映の開始"},
+	{audit.ActionLoopApplyResult, "エッジの反映の結果"},
+	{audit.ActionLoopCertPlace, "エッジの証明書の配置"},
+	{audit.ActionLoopCertRevoke, "古いエッジの証明書の失効"},
+	{audit.ActionLoopCRLRefresh, "エッジの CRL の取り直し"},
+	{audit.ActionLoopRemoved, "エッジからテナントを消した"},
+	{audit.ActionLoopBroughtOff, "外した持ち込みの CA の停止"},
 	{audit.ActionBroughtRemove, "持ち込みの CA を外す"},
 }
 
@@ -165,7 +175,9 @@ func actionLabel(action string) string {
 // 値が入るので、テナント管理者の監査ログには出さない。
 var externalIDActions = []string{audit.ActionTenantExternal, audit.ActionLineExternal,
 	// エッジの ID を含むので、A・B には見せない（OB16）。
-	audit.ActionPlacementAdd, audit.ActionPlacementRemove, audit.ActionPlacementMove, audit.ActionPlacementMoveDone, audit.ActionPlacementMoveStop, audit.ActionEdgeRestart}
+	audit.ActionPlacementAdd, audit.ActionPlacementRemove, audit.ActionPlacementMove, audit.ActionPlacementMoveDone, audit.ActionPlacementMoveStop, audit.ActionEdgeRestart,
+	audit.ActionRadsecRetry, audit.ActionLoopDeclare, audit.ActionLoopApplyStart, audit.ActionLoopApplyResult, audit.ActionLoopCertPlace, audit.ActionLoopCertRevoke,
+	audit.ActionLoopCRLRefresh, audit.ActionLoopRemoved}
 
 // tenantAuditActions は、テナント管理者の操作の種類の絞り込みの選択肢（テナントに結び付かない突き合わせの実行と課金レコードの操作、
 // 外部の番号の変更を除く）。

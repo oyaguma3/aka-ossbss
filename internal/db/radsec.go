@@ -393,18 +393,28 @@ type Placement struct {
 	ApplyResult     string
 	ApplyError      string
 	CheckedAt       time.Time
+	// 以下は中央の整合のループが使う（段階 4-4。移行 0006）。証明書の控え、発行の世代、更新と反映とやり直しの印、失効を待つ古い証明書、反映に失敗した版。
+	ServerSerial, ProbeSerial       string
+	ServerNotAfter, ProbeNotAfter   time.Time
+	CertGeneration                  int64
+	RenewRequested, CertApplyNeeded bool
+	RetryRequested                  bool
+	SupersededSerials               []string
+	FailedRevision                  int64
 }
 
 // Removing はエッジから消している途中か。
 func (p Placement) Removing() bool { return !p.DeletedAt.IsZero() }
 
-const placementColumns = `id, tenant_id, edge_id, slot, replaces, created_at, created_by, deleted_at, applied_revision, apply_result, apply_error, checked_at`
+const placementColumns = `id, tenant_id, edge_id, slot, replaces, created_at, created_by, deleted_at, applied_revision, apply_result, apply_error, checked_at,
+	server_serial, server_not_after, probe_serial, probe_not_after, cert_generation, renew_requested, cert_apply_needed, retry_requested, superseded_serials, failed_revision`
 
 func scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
 	var replaces *int64
-	var deleted, checked *time.Time
-	err := row.Scan(&p.ID, &p.TenantID, &p.EdgeID, &p.Slot, &replaces, &p.CreatedAt, &p.CreatedBy, &deleted, &p.AppliedRevision, &p.ApplyResult, &p.ApplyError, &checked)
+	var deleted, checked, server, probe *time.Time
+	err := row.Scan(&p.ID, &p.TenantID, &p.EdgeID, &p.Slot, &replaces, &p.CreatedAt, &p.CreatedBy, &deleted, &p.AppliedRevision, &p.ApplyResult, &p.ApplyError, &checked,
+		&p.ServerSerial, &server, &p.ProbeSerial, &probe, &p.CertGeneration, &p.RenewRequested, &p.CertApplyNeeded, &p.RetryRequested, &p.SupersededSerials, &p.FailedRevision)
 	if replaces != nil {
 		p.Replaces = *replaces
 	}
@@ -413,6 +423,12 @@ func scanPlacement(row pgx.Row) (Placement, error) {
 	}
 	if checked != nil {
 		p.CheckedAt = *checked
+	}
+	if server != nil {
+		p.ServerNotAfter = *server
+	}
+	if probe != nil {
+		p.ProbeNotAfter = *probe
 	}
 	return p, err
 }

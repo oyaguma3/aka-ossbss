@@ -108,6 +108,11 @@ type ChargingRunner interface {
 	RegisterKey(ctx context.Context, armored, by string) (db.PGPKey, error)
 }
 
+// RadsecLoop は中央の整合のループ（internal/radsec の Runner が満たす）。画面は DB に書いてループを起こすだけ（OB3）。
+type RadsecLoop interface {
+	Wake()
+}
+
 // Provisioner は画面が使う aka-provisioner の口。*provisioner.Client が満たす。
 type Provisioner interface {
 	Status(ctx context.Context) (provisioner.Status, error)
@@ -165,6 +170,7 @@ type Handler struct {
 	charging ChargingRunner
 	// radsec は RadSec の受け口の DB の操作、edgeCapacity はエッジの容量の既定。
 	radsec       RadsecStore
+	radsecLoop   RadsecLoop
 	edgeCapacity int
 	// initialAdmin は最初のシステム管理者のメールアドレス（画面からの削除・降格・無効化を断る）。
 	initialAdmin string
@@ -195,7 +201,9 @@ type Options struct {
 	// Charging は課金レコードの実行。
 	Charging ChargingRunner
 	// Radsec は RadSec の受け口の DB の操作（*db.DB）。EdgeCapacity はエッジの容量の既定（OSSBSS_EDGE_CAPACITY_DEFAULT）。
-	Radsec       RadsecStore
+	Radsec RadsecStore
+	// RadsecLoop は中央の整合のループ（nil なら起こさない）。
+	RadsecLoop   RadsecLoop
 	EdgeCapacity int
 }
 
@@ -206,7 +214,7 @@ func New(opts Options) (*Handler, error) {
 	}
 	h := &Handler{log: opts.Log, version: opts.Version, db: opts.DB, ident: opts.Identifier, pv: opts.Provisioner,
 		ops: &ledger.Ops{DB: opts.DB, PV: opts.Provisioner, Log: opts.Log}, rec: &audit.Recorder{DB: opts.DB, Files: opts.AuditFiles, Log: opts.Log},
-		kek: opts.KEK, jobs: opts.Jobs, reconciler: opts.Reconciler, charging: opts.Charging, radsec: opts.Radsec, edgeCapacity: cmp.Or(opts.EdgeCapacity, defaultEdgeCapacity), initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
+		kek: opts.KEK, jobs: opts.Jobs, reconciler: opts.Reconciler, charging: opts.Charging, radsec: opts.Radsec, radsecLoop: opts.RadsecLoop, edgeCapacity: cmp.Or(opts.EdgeCapacity, defaultEdgeCapacity), initialAdmin: authz.NormalizeEmail(opts.InitialAdminEmail)}
 	var err error
 	if h.pages, err = parsePages(); err != nil {
 		return nil, fmt.Errorf("parse templates: %w", err)
@@ -289,40 +297,40 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /accounts/{id}/delete", h.accountDelete)
 
 	// 監査ログ（設計概要 §14。W10・W11）。
-	// RadSec の受け口（段階 4-3）。
+	// RadSec の受け口（段階 4-3）。書き込みの後は、次の周回を待たずにループを起こす（OB18）。
 	mux.HandleFunc("GET /edges", h.edgeList)
-	mux.HandleFunc("POST /edges", h.edgeCreate)
+	mux.HandleFunc("POST /edges", h.wakeAfter(h.edgeCreate))
 	mux.HandleFunc("GET /edges/{id}", h.edge)
-	mux.HandleFunc("POST /edges/{id}/update", h.edgeUpdate)
-	mux.HandleFunc("POST /edges/{id}/delete", h.edgeDelete)
+	mux.HandleFunc("POST /edges/{id}/update", h.wakeAfter(h.edgeUpdate))
+	mux.HandleFunc("POST /edges/{id}/delete", h.wakeAfter(h.edgeDelete))
 	mux.HandleFunc("GET /radsec", h.radsecList)
 	mux.HandleFunc("GET /tenants/{id}/radsec", h.tenantRadsec)
-	mux.HandleFunc("POST /tenants/{id}/radsec/enable", h.radsecEnable)
-	mux.HandleFunc("POST /tenants/{id}/radsec/sources", h.radsecSources)
-	mux.HandleFunc("POST /tenants/{id}/radsec/apply", h.radsecApply)
-	mux.HandleFunc("POST /tenants/{id}/radsec/placements", h.radsecPlacementAdd)
-	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/remove", h.radsecPlacementRemove)
-	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move", h.radsecMoveStart)
-	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move-finish", h.radsecMoveFinish)
-	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move-cancel", h.radsecMoveCancel)
-	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/restart", h.radsecRestart)
+	mux.HandleFunc("POST /tenants/{id}/radsec/enable", h.wakeAfter(h.radsecEnable))
+	mux.HandleFunc("POST /tenants/{id}/radsec/sources", h.wakeAfter(h.radsecSources))
+	mux.HandleFunc("POST /tenants/{id}/radsec/apply", h.wakeAfter(h.radsecApply))
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements", h.wakeAfter(h.radsecPlacementAdd))
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/remove", h.wakeAfter(h.radsecPlacementRemove))
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move", h.wakeAfter(h.radsecMoveStart))
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move-finish", h.wakeAfter(h.radsecMoveFinish))
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/move-cancel", h.wakeAfter(h.radsecMoveCancel))
+	mux.HandleFunc("POST /tenants/{id}/radsec/placements/{pid}/restart", h.wakeAfter(h.radsecRestart))
 	mux.HandleFunc("GET /tenants/{id}/radsec/placements/{pid}/logs", h.radsecLogs)
 	mux.HandleFunc("GET /tenants/{id}/radsec/server-ca.pem", h.radsecServerCA)
 	mux.HandleFunc("GET /tenants/{id}/aps", h.apList)
-	mux.HandleFunc("POST /tenants/{id}/aps", h.apCreate)
+	mux.HandleFunc("POST /tenants/{id}/aps", h.wakeAfter(h.apCreate))
 	mux.HandleFunc("GET /tenants/{id}/aps/seen", h.apSeen)
 	mux.HandleFunc("GET /tenants/{id}/aps/{ap}", h.ap)
-	mux.HandleFunc("POST /tenants/{id}/aps/{ap}/renew", h.apRenew)
-	mux.HandleFunc("POST /tenants/{id}/aps/{ap}/delete", h.apDelete)
-	mux.HandleFunc("POST /tenants/{id}/aps/{ap}/certs/{serial}/revoke", h.apRevoke)
+	mux.HandleFunc("POST /tenants/{id}/aps/{ap}/renew", h.wakeAfter(h.apRenew))
+	mux.HandleFunc("POST /tenants/{id}/aps/{ap}/delete", h.wakeAfter(h.apDelete))
+	mux.HandleFunc("POST /tenants/{id}/aps/{ap}/certs/{serial}/revoke", h.wakeAfter(h.apRevoke))
 	mux.HandleFunc("GET /tenants/{id}/aps/{ap}/certs/{serial}/pem", h.apCertPEM)
 	mux.HandleFunc("GET /tenants/{id}/brought-cas", h.broughtList)
-	mux.HandleFunc("POST /tenants/{id}/brought-cas", h.broughtCreate)
-	mux.HandleFunc("POST /tenants/{id}/brought-cas/match", h.broughtMatch)
-	mux.HandleFunc("POST /tenants/{id}/brought-cas/{ca}/source", h.broughtSource)
-	mux.HandleFunc("POST /tenants/{id}/brought-cas/{ca}/crl", h.broughtUpload)
-	mux.HandleFunc("POST /tenants/{id}/brought-cas/{ca}/refresh", h.broughtRefresh)
-	mux.HandleFunc("POST /tenants/{id}/brought-cas/{ca}/remove", h.broughtRemove)
+	mux.HandleFunc("POST /tenants/{id}/brought-cas", h.wakeAfter(h.broughtCreate))
+	mux.HandleFunc("POST /tenants/{id}/brought-cas/match", h.wakeAfter(h.broughtMatch))
+	mux.HandleFunc("POST /tenants/{id}/brought-cas/{ca}/source", h.wakeAfter(h.broughtSource))
+	mux.HandleFunc("POST /tenants/{id}/brought-cas/{ca}/crl", h.wakeAfter(h.broughtUpload))
+	mux.HandleFunc("POST /tenants/{id}/brought-cas/{ca}/refresh", h.wakeAfter(h.broughtRefresh))
+	mux.HandleFunc("POST /tenants/{id}/brought-cas/{ca}/remove", h.wakeAfter(h.broughtRemove))
 
 	mux.HandleFunc("GET /audit", h.auditList)
 	mux.HandleFunc("GET /audit/{source}", h.downstreamAudit)

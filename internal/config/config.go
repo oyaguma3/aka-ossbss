@@ -30,6 +30,9 @@ type Config struct {
 	Provisioner Provisioner
 	// EdgeCapacityDefault はエッジの容量の既定（OB22）。
 	EdgeCapacityDefault int
+	// RadsecReconcileInterval は中央の整合のループの間隔、RadsecRenewAt はエッジの証明書の更新を確かめる毎日の時刻（日本時間の HH:MM。OB22）。
+	RadsecReconcileInterval time.Duration
+	RadsecRenewAt           string
 
 	// AccessTeamDomain は Cloudflare Access のチームのドメイン（例 example.cloudflareaccess.com）。
 	// AccessAUDs は Access のアプリの AUD タグ（カンマ区切りで複数）。両方を与えると Access の JWT で利用者を識別する。
@@ -104,6 +107,7 @@ func Load() (Config, error) {
 		ReconcileAt:       cmp.Or(os.Getenv("OSSBSS_RECONCILE_AT"), "04:00"),
 		ReconcileMaxFixes: 1000,
 		UsageImportAt:     cmp.Or(os.Getenv("OSSBSS_USAGE_IMPORT_AT"), "03:00"),
+		RadsecRenewAt:     cmp.Or(os.Getenv("OSSBSS_RADSEC_RENEW_AT"), "05:00"),
 		DB: DB{
 			Addr:     cmp.Or(os.Getenv("OSSBSS_DB_ADDR"), "postgres:5432"),
 			Name:     cmp.Or(os.Getenv("OSSBSS_DB_NAME"), "ossbss"),
@@ -177,6 +181,17 @@ func Load() (Config, error) {
 			errs = append(errs, errors.New("OSSBSS_EDGE_CAPACITY_DEFAULT: must be a number between 1 and 2000"))
 		}
 		c.EdgeCapacityDefault = n
+	}
+	c.RadsecReconcileInterval = time.Minute
+	if v := os.Getenv("OSSBSS_RADSEC_RECONCILE_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 10*time.Second || d > time.Hour {
+			errs = append(errs, errors.New("OSSBSS_RADSEC_RECONCILE_INTERVAL: must be a duration between 10s and 1h (e.g. 1m)"))
+		}
+		c.RadsecReconcileInterval = d
+	}
+	if _, err := time.Parse("15:04", c.RadsecRenewAt); err != nil {
+		errs = append(errs, errors.New("OSSBSS_RADSEC_RENEW_AT: must be HH:MM"))
 	}
 	if c.DB.Password == "" {
 		errs = append(errs, errors.New("OSSBSS_DB_PASSWORD is not set"))

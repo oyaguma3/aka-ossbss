@@ -26,6 +26,7 @@ import (
 	"github.com/oyaguma3/aka-ossbss/internal/config"
 	"github.com/oyaguma3/aka-ossbss/internal/db"
 	"github.com/oyaguma3/aka-ossbss/internal/kek"
+	"github.com/oyaguma3/aka-ossbss/internal/radsec"
 	"github.com/oyaguma3/aka-ossbss/internal/reconcile"
 	"github.com/oyaguma3/aka-ossbss/internal/scheduler"
 	"github.com/oyaguma3/aka-ossbss/internal/server"
@@ -191,7 +192,9 @@ func serve(ctx context.Context) error {
 	}
 	// 課金レコード（aka-mvpset の charging-records.md。Z1）。
 	bill := charging.New(charging.Options{Log: log, DB: d, PV: pv, Audit: &audit.Recorder{DB: d, Files: auditFiles, Log: log}, Base: bgCtx})
-	sched, err := newScheduler(cfg, log, d, jobs, rec, bill, auditFiles)
+	// 中央の整合のループ（設計概要 §13。段階 4-4）。
+	loop := radsec.New(radsec.Options{Log: log, DB: d, PV: pv, Audit: &audit.Recorder{DB: d, Files: auditFiles, Log: log}})
+	sched, err := newScheduler(cfg, log, d, jobs, rec, bill, loop, auditFiles)
 	if err != nil {
 		return err
 	}
@@ -201,6 +204,7 @@ func serve(ctx context.Context) error {
 	var background sync.WaitGroup
 	background.Go(func() { jobs.Run(bgCtx) })
 	background.Go(func() { sched.Run(bgCtx) })
+	background.Go(func() { loop.Run(bgCtx) })
 	defer func() {
 		// 処理中の行と実行を終えてから戻る。
 		stopBG()
@@ -210,7 +214,7 @@ func serve(ctx context.Context) error {
 	}()
 
 	h, err := web.New(web.Options{Log: log, Version: version, DB: d, Identifier: ident, Provisioner: pv,
-		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail, KEK: key, Jobs: jobs, Reconciler: rec, Charging: bill, Radsec: d, EdgeCapacity: cfg.EdgeCapacityDefault})
+		AuditFiles: auditFiles, InitialAdminEmail: cfg.InitialAdminEmail, KEK: key, Jobs: jobs, Reconciler: rec, Charging: bill, Radsec: d, RadsecLoop: loop, EdgeCapacity: cfg.EdgeCapacityDefault})
 	if err != nil {
 		return err
 	}
@@ -229,12 +233,14 @@ const retentionAt = "04:30"
 const chargingCloseAt = "06:00"
 
 // newScheduler は定期の処理を組み立てる（設計概要 §16）。
-func newScheduler(cfg config.Config, log *slog.Logger, d *db.DB, jobs *bulk.Runner, rec *reconcile.Runner, bill *charging.Runner, files *audit.Files) (*scheduler.Scheduler, error) {
+func newScheduler(cfg config.Config, log *slog.Logger, d *db.DB, jobs *bulk.Runner, rec *reconcile.Runner, bill *charging.Runner, loop *radsec.Runner, files *audit.Files) (*scheduler.Scheduler, error) {
 	return scheduler.New(scheduler.Options{Log: log, DB: d, Jobs: []scheduler.Job{
 		{Name: "reconcile", Daily: cfg.ReconcileAt, Run: rec.RunScheduled},
 		{Name: "check-needed", Every: 5 * time.Minute, Run: rec.CheckMarked},
 		{Name: charging.JobUsageImport, Daily: cfg.UsageImportAt, Run: bill.RunImport},
 		{Name: charging.JobClose, Daily: chargingCloseAt, Run: bill.RunClose},
+		{Name: "radsec-reconcile", Every: cfg.RadsecReconcileInterval, Run: loop.RunScheduled},
+		{Name: "radsec-renew", Daily: cfg.RadsecRenewAt, Run: loop.RunRenew},
 		{Name: "retention", Daily: retentionAt, Run: func(ctx context.Context) (string, error) {
 			c, err := d.PurgeOld(ctx, db.RetentionCutoff(time.Now()))
 			return fmt.Sprintf("消した行: 監査ログ %d、ジョブ %d、突き合わせ %d、定期の処理の記録 %d、状態の事実 %d、RadSec %d。課金レコードの月 %d、利用の集計の月 %d。",
