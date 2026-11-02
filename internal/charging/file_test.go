@@ -24,6 +24,10 @@ import (
 // newKey は試験の鍵（秘密鍵つき）と、公開鍵の ASCII 形式を返す。
 func newKey(t *testing.T, cfg *packet.Config) (*openpgp.Entity, string) {
 	t.Helper()
+	// 鍵の作成時刻を試験の時刻より前に固定する（実時刻で作ると、試験の「今」を実時刻が追い越した日から「まだ有効でない鍵」になる）。
+	if cfg.Time == nil {
+		cfg.Time = func() time.Time { return jst(10, 1, 0, 0) }
+	}
 	e, err := openpgp.NewEntity("課金", "", "charging@example.com", cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +259,7 @@ func TestParsePublicKey(t *testing.T) {
 	_, _, err = ParsePublicKey(a+"\n"+c, now)
 	keyErr(t, err, "1 つだけ")
 
-	// 期限つきの鍵は期限を読み、切れていたら断る。作った時刻は試験の時刻（現在）なので、十分先の時刻で確かめる。
+	// 期限つきの鍵は期限を読み、切れていたら断る。作った時刻は試験の時刻なので、十分先の時刻で確かめる。
 	cfg := curveConfig()
 	cfg.KeyLifetimeSecs = 3600 * 24 * 365 * 3
 	cfg.Time = func() time.Time { return now }
