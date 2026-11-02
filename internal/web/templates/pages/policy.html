@@ -6,6 +6,7 @@
 {{/* 編集の操作（ルールの追加・削除・並べ替え）・保存のたびに、htmx でこの部分を差し替える。
      編集の操作はフォーム全体を /edit に送り、操作を施した内容を返してもらう（保存はしない）。 */}}
 {{define "policy-detail" -}}
+<datalist id="nas-candidates">{{range .NASCandidates}}<option value="{{.}}"></option>{{end}}</datalist>
 <div id="policy">
   <h1 class="text-2xl font-bold mb-4">認可ポリシー <span class="font-mono">{{.IMSI}}</span></h1>
   {{template "alerts" (dict "Message" .Message "Error" .Error)}}

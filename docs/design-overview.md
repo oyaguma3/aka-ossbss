@@ -1,7 +1,7 @@
 # aka-ossbss 設計概要（下書き）
 
 - 作成日: 2026-10-26
-- 状態: 下書き。§20 の確認事項は 2026-10-26 にすべて推奨案で合意した（§3.2 の決定事項 1〜11）。段階 3-1〜3-5 を終えた（2026-10-30・31。§19.2 の「段階 3-1 で決めたこと」〜「段階 3-5 で決めたこと」）。RadSec の受け口の管理は段階 4。
+- 状態: 下書き。§20 の確認事項は 2026-10-26 にすべて推奨案で合意した（§3.2 の決定事項 1〜11）。段階 3-1〜3-5 を終えた（2026-10-30・31。§19.2 の「段階 3-1 で決めたこと」〜「段階 3-5 で決めたこと」）。RadSec の受け口の管理は段階 4（4-3 を終えた。2026-11-02。§19.2 の「段階 4-3 で決めたこと」。中央の整合のループは 4-4）。
 - 置き場所: 2026-10-27（MVP セットの段階 1）に、aka-mvpset の `docs/nodes/aka-ossbss.md` から本リポジトリの `docs/design-overview.md` に移した。
 - 対象: 運用者とテナントの利用者が使う画面と、管理面の業務の処理を受け持つノード aka-ossbss（もとは eapaka-ossbss-sample。以下「もとの実装」）。
 - 関連:
@@ -257,10 +257,10 @@
 | テナントの RadSec の設定 | slug、ポート（全体で一意。§20 の F9）、送信元の範囲、配置（エッジとスロット `primary` / `secondary` / `tertiary`）、望む状態の版（revision） |
 | AP とグループ | 名前、種類（`ap` / `group`）、用途（グループ）、NAS-Identifier、SAN、証明書のシリアル番号と期限。CSR の提出と証明書の取り出し、用途ごとの手順書の案内（概要 §9.3） |
 | 持ち込みの CA | radsec-ca に登録した CA の ID と、テナント専用であることの確認の記録（D）、CRL の取得先、共通のブロックの照合の形 |
-| 中央の整合のループ | 1 分ごとに、配置ごとにエッジの版と反映の結果を読み、宣言が古ければ送り直し、反映が遅れていれば `apply` を呼ぶ（radsec-edge §15、§23.2 の 4） |
+| 中央の整合のループ | 1 分ごとに、エッジごとに `GET /tenants` を読み、宣言が古ければ送り直し、反映を求めた版に届いていなければ `apply` を呼ぶ（radsec-edge §15。段階 4-3 の OB1 で手動の反映を基本に改めた） |
 | 反映 | 配置したエッジに 1 台ずつ（1 台目のヘルスチェックが通ってから 2 台目。radsec-edge §11.4） |
 | 配置の検査 | エッジの容量（テナントの数の上限）を超える配置を断る（概要 §9.1） |
-| DNS の名前 | 登録すべき名前と向け先を画面に出す（登録は人。radsec-edge §8.3） |
+| DNS の名前 | 登録すべき名前と向け先を画面に出す（登録は人。radsec-edge §8.3）。エッジの名前 `<エッジの ID>.<ドメイン>` に A レコードを 1 つ持ち、スロットの名前 `<スロット>.<slug>.<ドメイン>` はそこへの CNAME にする（段階 4-3 で合意） |
 
 - エッジを足すときの手順（WireGuard のピア、aka-radius の RADIUS クライアントのコマンド、aka-provisioner の登録簿）は、画面にチェックリストとして出す。aka-ossbss から RADIUS クライアントは登録しない（aka-provisioner の決定事項 8）。
 
@@ -268,14 +268,15 @@
 
 | テーブル | 主な列 | もとの実装からの変更 |
 |---|---|---|
-| `tenants` | `id`、`name`、`slug`、`external_customer_id`、`deleted_at`、RadSec の設定（ポート、送信元の範囲、revision） | slug・外部の番号・RadSec・削除済みを足す |
+| `tenants` | `id`、`name`、`external_customer_id`、`deleted_at` | 外部の番号・削除済みを足す |
+| `tenant_radsec` | テナントの RadSec の設定（slug、ポート、テナントの CA の証明書、送信元の範囲、照合の形、`revision`、`requested_revision`） | 新しく足す（段階 4-3） |
 | `accounts` | もとのまま | — |
 | `subscribers` | §7.1 | `subscriber_tenants` を置き換える |
 | `reconcile_runs`、`reconcile_findings` | 突き合わせの実行と見つけたずれ | 新しく足す |
 | `scheduled_runs` | 定期の処理の実行の記録 | 新しく足す |
 | `bulk_jobs`、`bulk_job_rows` | ジョブ（種類、対象、一律の設定、暗号化したファイル、状態、件数、作成者、中断の理由）と、失敗した行・未処理の行 | 新しく足す |
 | 課金レコードの表 | `charging_events`、利用の集計、月次の値、ファイル、PGP の公開鍵（`charging-records.md` §8） | 新しく足す |
-| `edges`、`placements`、`aps`、`brought_cas` | RadSec の受け口（radsec-edge §7.4） | 新しく足す（段階 4） |
+| `edges`、`placements`、`aps`、`ap_certs`、`brought_cas` | RadSec の受け口（段階 4-3 の OB10） | 新しく足す（段階 4-3） |
 | `audit_log` | もとのまま（`job_id` を足す） | — |
 
 - `client_tenants`（RADIUS クライアントの所属）はなくす（RADIUS クライアントはエッジだけになり、テナントに属さない）。
@@ -447,6 +448,26 @@
 - 画面仕様を書くときに見つけたことの直し（確認事項 V1〜V9。2026-10-31 にすべて推奨案で合意）: V1 エラーの画面に案内のリンクを出す。V2 失敗・中断した突き合わせに「ずれはありません」と出さない。V3 加入者の詳細の操作は、aka-provisioner が 4xx を返したら新しいキーにする（登録・認可ポリシーと同じ）。V5 テナント管理者の監査ログに外部の番号の変更（`subscriber.external`・`tenant.external`）を出さず、操作の絞り込みもテナントに結び付く操作に絞る（Z15。`db.AuditQuery.ExcludeActions`）。V7 テナントの選択の案内を個別の登録だけに出す。V8 確認ダイアログを「止める」「両方を止める」「投入する」「今すぐ締める」「作り直す」に足す。そのままにしたもの: V4 無効のアカウントの文（案内はどちらも管理者への依頼）、V6 突き合わせの失敗の文の生の誤り（見るのは C・D）、V9 候補のテナントが存在しないときの文（テナントを選べば通る）。
 - 検証機の通し（Q8）で見つけたことの直し（確認事項 W1。2026-10-31 に推奨案で合意）: 実行中の自動の中断と手動の中断、待ちのジョブの中断でも、ログに `JOB_INTERRUPTED`（WARN）を出す。もとは `job finished` の INFO だけで、運用ガイドの記述と合わず、監視で拾えなかった。
 - **確認事項にない小さな変更**: `gen-client-cert` の案内が PoC の `PROVISIONER_ADMIN_CLIENTS` のままだったので、aka-provisioner のピンのファイルに書く 1 行（`識別名=フィンガープリント`）に改めた（手順を通して分かった）。
+
+段階 4-3 で決めたこと（2026-11-02。aka-mvpset の確認事項 OB1〜OB24 はすべて推奨案で合意。DNS は手動の登録で、CNAME の形にすることを合意）:
+
+- OB1: 反映は手動を基本にする。望む版 `revision` と反映を求めた版 `requested_revision` を分ける。宣言はいつも送り（`pending` になるだけで接続は切れない）、`apply` は求めた版に届いていないときだけ呼ぶ。B・C・D の「反映」で求める。自動で求めるのは、持ち込みの CA を外す、CRL のないテナントの AP の削除、送信元の範囲の変更、取得先の CRL の有無の変更、エッジの上流の変更（新しい配置の最初の反映と証明書の更新は 4-4 のループが行う）。radsec-edge の EA3 と §15 の規則を改めた。
+- OB3: 画面は DB に書いて版を上げるだけで、エッジには触らない。radsec-ca は発行の結果をすぐ渡すので同期で呼ぶ。エッジを同期で呼ぶのは読み出し（ログ、最後の接続）と再起動だけ。
+- OB5: CRL のないテナントでは、AP の削除ですぐ反映を求め、削除した名前の使い回しを断り（`ErrNameRetired`）、失効が TLS で効かないことを画面に出す。
+- OB6: 持ち込みの CA を外すと `removing_at` と `removing_revision` を記録して反映を求める。全配置がその版を反映した後に radsec-ca で止めるのは 4-4 のループ。強制の口は作らない。
+- OB7: スロットの移動は 2 段（`placements.replaces`）。新しい配置が反映するまで完了できない（`ErrNotReady`）。移動中は両方を課金の数量に数える。
+- OB8: NAS-Identifier `<slug>-<名前>` が全体で重なる登録を断る（`aps_nas_id`。slug に `-` があるので起きる）。
+- OB10: 移行 `0005_radsec.sql`。slug は永久に一意、ポートはテナントの削除で空く（`released_at`）。テナントの CA の証明書を `tenant_radsec` に持つ（CA が止まっていても宣言を作れる）。容量は `removed_at` まで、課金の数量は `deleted_at` まで数える。
+- OB11: エッジの ID は aka-provisioner の登録簿にある値だけを受ける（読めないときも断る）。上流はエッジごとに持ち、変えたら置いている全テナントの版を上げて反映を求める。公開のアドレスは画面に出すだけ。
+- OB12: 有効化は slug を入力し、ポートは一番小さい空きを割り当てる（変えられない）。テナントの CA を作り、`CA_EXISTS` なら読み直してから DB に書く（途中で止まってもやり直せる）。テナントの削除はポートを空け、その後で CA を止める（届かなければ 4-4 のループがやり直す。`ca_disabled_at`）。
+- OB13: 配置の検査はエッジの行をロックして行う。名前のドメインは aka-provisioner の `/status` の radsec-ca の `dnsDomain` から読み、設定を持たない。
+- OB14: AP とグループは CSR の貼り付けで発行する。`Idempotency-Key` はフォームに持たせ、結果が分からないときは同じキーを残し、4xx の後は新しいキーにする。`ap_certs` で 1 つの AP に複数の有効な証明書を持つ。古い証明書の失効は人が押す。削除は全部を失効させてから台帳を消す（途中で失敗しても押し直せる）。証明書の本体は radsec-ca から読む。接続の状態は遅れて読み込む部品で各エッジから読み、10 秒で打ち切る。
+- OB15: 持ち込みの CA の登録は D。Meraki の API キーは radsec-ca に渡すだけで、DB・ログ・監査ログ・画面の再表示に残さない（試験で確かめる）。同じ Subject の CA を画面で断る。CRL の状態は radsec-ca から読む。`none` は了承と照合の形が必須。
+- OB16: 権限は `RadsecView`・`RadsecAPManage`・`RadsecApply`・`RadsecConfig`・`BroughtCAManage`・`EdgeView`・`EdgeOperate`・`EdgeManage`。A・B にはエッジの ID を見せず、スロットで出す。
+- OB17: `/ca`・`/edges` の呼び出しは全部 `OSSBSS_PROVISIONER_RADSEC_TIMEOUT`（35 秒）。CI の契約の試験は aka-provisioner `138ea60` に上げ、radsec-ca `934eaeb`・エッジ `6d5652d` の実物でクライアントの項目を確かめる（`TestIntegrationRadsec`）。
+- OB20: 課金の数量は締めのときに月末の時点の数を数える（`RadsecCountsAt`）。`charging-records.md` §5.3 を改めた。消した行は 13 か月で消す。
+- OB21: 画面は `/edges`、`/edges/{id}`、`/radsec`、`/tenants/{id}/radsec`、`/tenants/{id}/aps`、`/tenants/{id}/aps/{ap}`、`/tenants/{id}/brought-cas`。認可ポリシーの NAS-Identifier に登録した AP の候補を出す。ダッシュボードの欄は 4-4。
+- 確認事項にない小さな判断: 新しいエッジのフォームの上流の初期値は今あるエッジの値にする。エッジの詳細に管理API とサーバー証明書の期限を出す。
 
 ## 20. 確認事項（2026-10-26 にすべて推奨案で合意。§3.2 の決定事項 1〜11）
 

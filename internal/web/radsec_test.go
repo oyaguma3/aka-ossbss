@@ -814,3 +814,15 @@ func TestRadsecBroughtCA(t *testing.T) {
 		t.Errorf("brought = %+v", e.rs.brought[0])
 	}
 }
+
+func TestRadsecPolicyCandidates(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "acme")
+	if _, err := e.rs.CreateAP(context.Background(), db.AP{TenantID: 10, Name: "ap-1", Kind: db.KindAP, NASID: "acme-ap-1"}, db.APCert{Serial: "01"}); err != nil {
+		t.Fatal(err)
+	}
+	e.db.put(db.Entry{IMSI: "440100123456789", TenantID: 10, RadiusPresent: true, RadiusState: "active"})
+	e.pv.addRadius("440100123456789", "active", 10)
+	body := get(e.as("b@example.com"), "/subscribers/440100123456789/policy").Body.String()
+	mustContain(t, body, `<option value="acme-ap-1">`, `list="nas-candidates"`)
+}

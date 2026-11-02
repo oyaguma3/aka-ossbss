@@ -87,7 +87,7 @@
 <div class="grid gap-x-6 md:grid-cols-3">
   <fieldset class="fieldset">
     <legend class="fieldset-legend">NAS-Identifier</legend>
-    <input name="nas_id" value="{{.NASID}}" maxlength="253" spellcheck="false" class="input w-full font-mono{{if .Errors.nasId}} input-error{{end}}">
+    <input name="nas_id" list="nas-candidates" value="{{.NASID}}" maxlength="253" spellcheck="false" class="input w-full font-mono{{if .Errors.nasId}} input-error{{end}}">
     {{- if .Errors.nasId}}{{template "field-error" .Errors.nasId}}{{else}}<p class="label">AP が名乗る値（* はすべての AP）</p>{{end}}
   </fieldset>
   <fieldset class="fieldset">

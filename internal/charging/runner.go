@@ -47,6 +47,7 @@ type Store interface {
 	UpsertUsage(ctx context.Context, date time.Time, rows []db.UsageRow) (int64, error)
 	RecordUsageImport(ctx context.Context, date time.Time, errText string, at time.Time) error
 	UsageImportedDays(ctx context.Context, start, end time.Time) ([]time.Time, error)
+	RadsecCountsAt(ctx context.Context, at time.Time) (map[int64]db.RadsecCount, error)
 	MonthUsage(ctx context.Context, start, end time.Time, afterIMSI string, afterTenant int64, limit int) ([]db.UsageRow, error)
 	MonthLineEvents(ctx context.Context, start, end time.Time, afterIMSI string, afterID int64, limit int) ([]db.ChargingEvent, error)
 	MonthTenantEvents(ctx context.Context, start, end time.Time) ([]db.ChargingEvent, error)
@@ -548,6 +549,11 @@ func (r *Runner) computeTenants(ctx context.Context, p Period, counter *TenantCo
 		byTenant[ev.TenantID] = append(byTenant[ev.TenantID], ev)
 	}
 	slices.Sort(ids)
+	// AP・グループ・持ち込みの CA・配置は、行の created_at と deleted_at から月末の時点の数を数える（1 日の 0 時〜6 時の変更が混ざらないように。S4-12）。
+	counts, err := r.opts.DB.RadsecCountsAt(ctx, p.End)
+	if err != nil {
+		return nil, err
+	}
 	var out []db.ChargingTenant
 	for _, id := range ids {
 		t, ok := ComputeTenant(p, id, starts[id], byTenant[id])
@@ -555,6 +561,8 @@ func (r *Runner) computeTenants(ctx context.Context, p Period, counter *TenantCo
 			continue
 		}
 		counter.Fill(&t)
+		c := counts[id]
+		t.APsEnd, t.GroupsEnd, t.BroughtCAsEnd, t.PlacementsEnd = c.APs, c.Groups, c.BroughtCAs, c.Placements
 		out = append(out, t)
 	}
 	return out, nil

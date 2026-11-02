@@ -98,6 +98,8 @@ type policyData struct {
 	Dirty, TenantDiffers bool
 	IdemKey              string
 	Message, Error       string
+	// NASCandidates は NAS-Identifier の候補（登録した AP・グループ。自由にも書ける。OB21）。
+	NASCandidates []string
 }
 
 // policyScope は URL の IMSI を読み、利用者が認可ポリシーを変更してよいかを確かめる（B・C・D。B は自分のテナントのものだけ）。
@@ -168,6 +170,13 @@ func (h *Handler) renderPolicy(w http.ResponseWriter, r *http.Request, status in
 	if d.IdemKey == "" {
 		d.IdemKey = newIdemKey()
 	}
+	ctx, cancel := dbContext(r)
+	nas, err := h.radsec.NASIDs(ctx, d.Tenant)
+	cancel()
+	if err != nil {
+		h.log.Warn("nas ids", "tenant", d.Tenant, "error", err)
+	}
+	d.NASCandidates = nas
 	h.renderPart(w, r, status, "policy", "policy-detail", "認可ポリシー "+d.IMSI, d)
 }
 
