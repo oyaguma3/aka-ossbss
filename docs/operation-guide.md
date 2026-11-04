@@ -587,7 +587,7 @@ AP をエッジで受けるための設定である。望む状態は aka-ossbss
 
 エッジは 2 台ずつ足し、`primary` と `secondary` を別のエッジに置く。「エッジ」の画面のチェックリストと同じ順で行う。
 
-1. ホストを用意し、WireGuard のピアを中央のハブに登録する。
+1. ホストを用意し、サービス用の WireGuard（`wg-svc`）のピアをデータ面と管理面のそれぞれに、運用用の WireGuard（`wg-ops`）のピアを監視ノードに登録する（サービス用はハブを置かず、エッジから直接つなぐ。radsec-edge の設計概要の決定事項 22）。
 2. エッジを導入し、aka-provisioner のクライアント証明書をエッジのピンのファイルに書く（radsec-edge の運用ガイド 10 章）。
 3. aka-provisioner の登録簿にエッジを足して `SIGHUP` を送る（aka-provisioner の運用ガイド 3.6）。
 4. データ面のノードで、エッジのトンネルのアドレスを aka-radius の RADIUS クライアントとして、刻印を信頼する印をつけて登録する（aka-radius の運用ガイド 4 章。`aka-ossbss` からは登録しない）。

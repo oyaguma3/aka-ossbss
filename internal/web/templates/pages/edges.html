@@ -60,7 +60,7 @@
       <h2 class="card-title">エッジを足す</h2>
       <p class="text-sm">台帳に足す前に、次を済ませます（順に）。</p>
       <ol class="list-decimal list-inside text-sm mb-2">
-        <li>ホストを用意し、WireGuard のピアを中央のハブに登録する。</li>
+        <li>ホストを用意し、サービス用の WireGuard のピアをデータ面と管理面のそれぞれに、運用用の WireGuard のピアを監視ノードに登録する。</li>
         <li>エッジを導入し、aka-provisioner のクライアント証明書をエッジのピンのファイルに書く（radsec-edge の運用ガイド 10 章）。</li>
         <li>aka-provisioner の登録簿にエッジを足して SIGHUP を送る（aka-provisioner の運用ガイド 3.6）。</li>
         <li>データ面のノードで、エッジのトンネルのアドレスを aka-radius の RADIUS クライアントとして、刻印を信頼する印をつけて登録する（aka-radius の運用ガイド。共有シークレットはエッジの環境変数と同じ値）。</li>
