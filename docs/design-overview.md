@@ -73,7 +73,7 @@
 
 ## 4. 技術方針
 
-- もとの実装の方針を引き継ぐ。Go 1.27.3、標準ライブラリを優先、外部依存は `github.com/jackc/pgx/v5`。画面は Go + htmx + daisyUI（JavaScript は書かない）。
+- もとの実装の方針を引き継ぐ。Go 1.27.4、標準ライブラリを優先、外部依存は `github.com/jackc/pgx/v5`。画面は Go + htmx + daisyUI（JavaScript は書かない）。
 - 課金レコードの PGP の暗号化のために `github.com/ProtonMail/go-crypto` を足す（`charging-records.md` §8.3）。
 - module パスは `github.com/oyaguma3/aka-ossbss`、コマンド名は `aka-ossbss`、環境変数の接頭辞はもとの `OSSBSS_` のまま（§20 の F1）。
 - 認証はもとの実装のまま（Cloudflare Access の JWT の検証、メールアドレスでアカウントを引く、最初のシステム管理者、開発用の設定）。
