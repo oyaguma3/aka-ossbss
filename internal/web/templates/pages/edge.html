@@ -68,19 +68,26 @@
       </table>
     </div>
   </div>
-  {{- /* コンテナのひな形と設定の書き方（段階 6-0 の U6-7・U6-8）。エッジを上げた後に、古いテナントを選んで少しずつ反映し直す。 */}}
+  {{- /* コンテナのひな形と設定の書き方（段階 6-0 の U6-7・U6-8）。エッジを上げた後に、古いテナントを選んで少しずつ反映し直す。
+         反映し直した後に前の形へ戻せるように、今の形で前の形に戻せるテナントも古いテナントの後に出す（U6-14）。 */}}
   {{- $active := false}}{{range .Rollouts}}{{if .Active}}{{$active = true}}{{end}}{{end}}
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body overflow-x-auto">
       <h2 class="card-title">コンテナのひな形と設定の書き方{{with .Stale}} <span class="badge badge-warning">古いテナント {{len .}}</span>{{end}}</h2>
+      {{- if .Choices}}
       {{- if .Stale}}
       <p class="text-sm text-base-content/60">エッジを上げると、radsecproxy のイメージ・コンテナのひな形・設定の書き方が古いテナントが出ます。エッジは動いているコンテナを自動では作り直しません。
-        まず試しのテナントを 1 つ反映し直して確かめ、次に少しずつ選んでください。反映し直すと、そのテナントの AP の接続がいったん切れます（予備のエッジにつなぎ直します）。1 件ずつ進め、1 件でも失敗したら残りには送りません。</p>
+        まず試しのテナントを 1 つ反映し直して確かめ、次に少しずつ選んでください。反映し直すと、そのテナントの AP の接続がいったん切れます（予備のエッジにつなぎ直します）。1 件ずつ進め、1 件でも失敗したら残りには送りません。
+        反映し直した後に問題が分かったら、「戻せる」テナントを選んで前の形に戻します。</p>
+      {{- else}}
+      <p class="text-sm text-base-content/60">古いテナントはありません（エッジに届かないときは分かりません）。反映し直した後に問題が分かったら、前の形に戻せるテナントを選んで前の形に戻します。
+        戻すと、そのテナントの AP の接続がいったん切れます（予備のエッジにつなぎ直します）。1 件ずつ進め、1 件でも失敗したら残りには送りません。</p>
+      {{- end}}
       <form id="edge-rollout" hx-post="/edges/{{.Edge.ID}}/rollouts" hx-target="#edge" hx-swap="outerHTML">
       <table class="table table-sm">
         <thead><tr>{{if and .CanOperate (not $active)}}<th></th>{{end}}<th>テナント</th><th>スロット</th><th>ひな形</th><th>設定の書き方</th><th>前の形</th></tr></thead>
         <tbody>
-          {{- range .Stale}}
+          {{- range .Choices}}
           <tr>{{if and $.CanOperate (not $active)}}<td><input type="checkbox" name="placement" value="{{.ID}}" class="checkbox checkbox-sm"></td>{{end}}
             <td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td><td>{{.Slot}}</td>
             <td>{{if not .TemplateCurrent}}—{{else if deref .TemplateCurrent}}今の形{{else}}<span class="badge badge-warning badge-sm">古い</span>{{end}}{{with .TemplateImage}} <code class="text-xs">{{.}}</code>{{end}}</td>
@@ -91,13 +98,15 @@
       </table>
       {{- if and .CanOperate (not $active)}}
       <div class="card-actions">
+        {{- if .Stale}}
         <button type="submit" name="mode" value="latest" class="btn btn-primary btn-sm">選んだテナントを今の形で反映し直す</button>
+        {{- end}}
         <button type="submit" name="mode" value="previous" class="btn btn-sm">選んだテナントを前の形に戻す</button>
       </div>
       {{- else if $active}}<p class="text-sm text-base-content/60">反映し直しが動いているか止まっている間は、新しく始められません。</p>{{end}}
       </form>
       {{- else}}
-      <p class="text-sm text-base-content/60">古いテナントはありません（エッジに届かないときは分かりません）。前の形に戻すときは、テナントの「RadSec」の画面で状態を確かめてから、ここで選びます。</p>
+      <p class="text-sm text-base-content/60">古いテナントも、前の形に戻せるテナントもありません（エッジに届かないときは分かりません。前のイメージをエッジで消すと戻せません）。</p>
       {{- end}}
       {{- range .Rollouts}}
       <div class="border border-base-300 rounded p-3 mt-3">

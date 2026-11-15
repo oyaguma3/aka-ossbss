@@ -311,9 +311,11 @@ type edgeData struct {
 	Error      string
 	CanManage  bool
 	// CanOperate は反映し直しを使えるか（運用担当・システム管理者）。Stale はひな形か設定の書き方が古いテナント（段階 6-0 の U6-7）。
+	// Choices は反映し直しで選べる行（古いテナントと、その後に今の形で前の形に戻せるテナント。反映し直した後に前の形へ戻せるように。U6-14）。
 	// Rollouts はこのエッジの反映し直し（動いている・止まっているものが先頭）。
 	CanOperate bool
 	Stale      []edgeTenantRow
+	Choices    []edgeTenantRow
 	Rollouts   []rolloutView
 }
 
@@ -397,13 +399,19 @@ func (h *Handler) renderEdge(w http.ResponseWriter, r *http.Request, id string, 
 		return
 	}
 	d := edgeData{Edge: e, Form: formOfEdge(e), CanManage: can(r, authz.EdgeManage), CanOperate: can(r, authz.EdgeOperate)}
+	var back []edgeTenantRow
 	for _, p := range ps {
 		row := edgeTenantRow{Placement: p, TenantName: t.Name(p.TenantID), Failed: applyFailed(p.ApplyResult)}
 		d.Tenants = append(d.Tenants, row)
-		if !p.Removing() && p.TemplateStale() {
+		switch {
+		case p.Removing():
+		case p.TemplateStale():
 			d.Stale = append(d.Stale, row)
+		case p.CanRollback:
+			back = append(back, row)
 		}
 	}
+	d.Choices = slices.Concat(d.Stale, back)
 	rs, err := h.radsec.EdgeRollouts(ctx, id, rolloutLimit)
 	if err != nil {
 		h.dbUnavailable(w, r, err)
@@ -629,7 +637,7 @@ func (h *Handler) edgeRolloutCreate(w http.ResponseWriter, r *http.Request) {
 		h.dbUnavailable(w, r, err)
 		return
 	}
-	// 選んだ順（画面の表の順）に並べる。外している配置と、前の形に戻せない配置は選べない。
+	// 選んだ順（画面の表の順）に並べる。外している配置は除き、前の形に戻せない配置を前の形に、今の形の配置を今の形に選ぶと断る。
 	var items []db.Placement
 	var tenants []int64
 	for _, v := range r.PostForm["placement"] {
@@ -644,6 +652,13 @@ func (h *Handler) edgeRolloutCreate(w http.ResponseWriter, r *http.Request) {
 		if mode == provisioner.TemplatePrevious && !ps[i].CanRollback {
 			h.renderEdge(w, r, edge, http.StatusUnprocessableEntity, func(d *edgeData) {
 				d.Error = "前の形に戻せないテナントが入っています（" + formatID(ps[i].TenantID) + "）。前の形に戻せるテナントだけを選んでください。"
+			})
+			return
+		}
+		// 今の形のテナントに今の形を送っても、エッジは作り直さず普段の反映になるだけなので、意味のない反映を並べないよう断る（U6-14）。
+		if mode == provisioner.TemplateLatest && !ps[i].TemplateStale() {
+			h.renderEdge(w, r, edge, http.StatusUnprocessableEntity, func(d *edgeData) {
+				d.Error = "今の形のテナントが入っています（" + formatID(ps[i].TenantID) + "）。今の形で反映し直すときは、古いテナントだけを選んでください。"
 			})
 			return
 		}

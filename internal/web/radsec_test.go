@@ -1081,6 +1081,7 @@ func TestEdgeRollout(t *testing.T) {
 	e.addEdge("edge-01", 5)
 	no, yes := new(false), new(true)
 	e.rs.places = []db.Placement{
+		{ID: 4, TenantID: 40, EdgeID: "edge-01", Slot: "primary", TemplateCurrent: yes, ConfigCurrent: yes, CanRollback: true, TemplateImage: "dddddddddddd"},
 		{ID: 1, TenantID: 10, EdgeID: "edge-01", Slot: "primary", TemplateCurrent: no, ConfigCurrent: yes, CanRollback: false, TemplateImage: "aaaaaaaaaaaa"},
 		{ID: 2, TenantID: 20, EdgeID: "edge-01", Slot: "primary", TemplateCurrent: no, CanRollback: true},
 		{ID: 3, TenantID: 30, EdgeID: "edge-01", Slot: "secondary", TemplateCurrent: yes, ConfigCurrent: yes},
@@ -1089,11 +1090,21 @@ func TestEdgeRollout(t *testing.T) {
 	body := get(c, "/edges/edge-01").Body.String()
 	mustContain(t, body, "古いテナント 2", `name="placement" value="1"`, `name="placement" value="2"`, "選んだテナントを今の形で反映し直す")
 	mustNotContain(t, body, `name="placement" value="3"`)
+	// 今の形で前の形に戻せるテナントも、古いテナントの後に出す（U6-14）。数えるのは古いテナントだけ。
+	if i, j := strings.Index(body, `name="placement" value="2"`), strings.Index(body, `name="placement" value="4"`); j < 0 || j < i {
+		t.Errorf("rollback-only tenant: stale at %d, current at %d", i, j)
+	}
 	// 前の形に戻せないテナントは、前の形に戻すに選べない。
 	w := post(c, "/edges/edge-01/rollouts", url.Values{"mode": {"previous"}, "placement": {"1", "2"}})
 	if w.Code != 422 || len(e.rs.rollouts) != 0 {
 		t.Fatalf("previous with a tenant that cannot go back: %d %d", w.Code, len(e.rs.rollouts))
 	}
+	// 今の形のテナントは、今の形で反映し直すに選べない（U6-14）。
+	w = post(c, "/edges/edge-01/rollouts", url.Values{"mode": {"latest"}, "placement": {"2", "4"}})
+	if w.Code != 422 || len(e.rs.rollouts) != 0 {
+		t.Fatalf("latest with a current tenant: %d %d", w.Code, len(e.rs.rollouts))
+	}
+	mustContain(t, w.Body.String(), "今の形のテナントが入っています（40）")
 	// 選んだ順で作る（外の配置・重なりは除く）。
 	w = post(c, "/edges/edge-01/rollouts", url.Values{"mode": {"latest"}, "placement": {"2", "1", "2", "99"}})
 	if w.Code != 200 || len(e.rs.rollouts) != 1 {
@@ -1132,4 +1143,38 @@ func TestEdgeRollout(t *testing.T) {
 	if !slices.Equal(actions, []string{"radsec.rollout.start", "radsec.rollout.resume", "radsec.rollout.cancel"}) {
 		t.Errorf("audit = %v", actions)
 	}
+}
+
+// 今の形に反映し直した後（古いテナントがない）も、前の形に戻せるテナントを選んで前の形に戻せる（U6-14）。
+func TestEdgeRollback(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "aaa")
+	e.enable(20, "bbb")
+	e.addEdge("edge-01", 5)
+	yes := new(true)
+	e.rs.places = []db.Placement{
+		{ID: 1, TenantID: 10, EdgeID: "edge-01", Slot: "primary", TemplateCurrent: yes, ConfigCurrent: yes, CanRollback: true, TemplateImage: "bbbbbbbbbbbb"},
+		{ID: 2, TenantID: 20, EdgeID: "edge-01", Slot: "primary", TemplateCurrent: yes, ConfigCurrent: yes},
+		{ID: 3, TenantID: 10, EdgeID: "edge-01", Slot: "secondary", TemplateCurrent: yes, CanRollback: true, DeletedAt: time.Now()},
+	}
+	c := e.as("c@example.com")
+	body := get(c, "/edges/edge-01").Body.String()
+	mustContain(t, body, "古いテナントはありません", `name="placement" value="1"`, "戻せる", "選んだテナントを前の形に戻す")
+	// 戻せないテナント・外している配置は出さず、古いテナントがなければ今の形のボタンも出さない。
+	mustNotContain(t, body, "古いテナント 1", `name="placement" value="2"`, `name="placement" value="3"`, "選んだテナントを今の形で反映し直す")
+	w := post(c, "/edges/edge-01/rollouts", url.Values{"mode": {"previous"}, "placement": {"1"}})
+	if w.Code != 200 || len(e.rs.rollouts) != 1 || e.rs.rollouts[0].Mode != "previous" || len(e.rs.rollouts[0].Items) != 1 {
+		t.Fatalf("previous: %d %+v", w.Code, e.rs.rollouts)
+	}
+	mustContain(t, w.Body.String(), "反映し直しを始めました（1 件")
+	// テナント管理者（B）は反映し直しを使えない。
+	if w := post(e.as("b@example.com"), "/edges/edge-01/rollouts", url.Values{"mode": {"previous"}, "placement": {"1"}}); w.Code != 403 {
+		t.Errorf("role B: %d", w.Code)
+	}
+	// 戻せるテナントもなければ、表を出さない。
+	e.rs.places[0].CanRollback = false
+	e.rs.rollouts = nil
+	body = get(c, "/edges/edge-01").Body.String()
+	mustContain(t, body, "古いテナントも、前の形に戻せるテナントもありません")
+	mustNotContain(t, body, `name="placement"`)
 }
