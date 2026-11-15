@@ -209,6 +209,12 @@
     {{- if .Clean}}
     <p>エッジの切断、反映の失敗、証明書と CRL の期限の警告はありません。</p>
     {{- end}}
+    {{- if .StoppedRollouts}}
+    <div role="alert" class="alert alert-error mb-2"><span>反映し直しが止まったエッジがあります: {{range $i, $e := .StoppedRollouts}}{{if $i}}、{{end}}<a class="link font-mono" href="/edges/{{$e}}">{{$e}}</a>{{end}}。失敗した理由を確かめて、続けるか取り消してください。</span></div>
+    {{- end}}
+    {{- if .Stale}}
+    <div role="alert" class="alert alert-warning mb-2"><span>コンテナのひな形か設定の書き方が古いテナントのあるエッジ: {{range $i, $e := .Stale}}{{if $i}}、{{end}}<a class="link font-mono" href="/edges/{{$e.EdgeID}}">{{$e.EdgeID}}</a>（{{$e.Count}}）{{end}}。エッジの画面で少しずつ反映し直してください。</span></div>
+    {{- end}}
     {{- if .Disconnected}}
     <div role="alert" class="alert alert-error mb-2"><span>届かないエッジがあります: {{range $i, $e := .Disconnected}}{{if $i}}、{{end}}<a class="link font-mono" href="/edges/{{$e}}">{{$e}}</a>{{end}}。反映はこのエッジを飛ばして続けます。</span></div>
     {{- end}}

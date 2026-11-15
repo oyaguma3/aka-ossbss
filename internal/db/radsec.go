@@ -401,20 +401,31 @@ type Placement struct {
 	RetryRequested                  bool
 	SupersededSerials               []string
 	FailedRevision                  int64
+	// 以下はエッジのコンテナのひな形の状態の写し（段階 6-0。移行 0007）。TemplateCurrent・ConfigCurrent は分からなければ nil。
+	TemplateCurrent, ConfigCurrent *bool
+	CanRollback                    bool
+	TemplateImage                  string
+}
+
+// TemplateStale はひな形か設定の書き方が古いと分かっているか。
+func (p Placement) TemplateStale() bool {
+	return (p.TemplateCurrent != nil && !*p.TemplateCurrent) || (p.ConfigCurrent != nil && !*p.ConfigCurrent)
 }
 
 // Removing はエッジから消している途中か。
 func (p Placement) Removing() bool { return !p.DeletedAt.IsZero() }
 
 const placementColumns = `id, tenant_id, edge_id, slot, replaces, created_at, created_by, deleted_at, applied_revision, apply_result, apply_error, checked_at,
-	server_serial, server_not_after, probe_serial, probe_not_after, cert_generation, renew_requested, cert_apply_needed, retry_requested, superseded_serials, failed_revision`
+	server_serial, server_not_after, probe_serial, probe_not_after, cert_generation, renew_requested, cert_apply_needed, retry_requested, superseded_serials, failed_revision,
+	template_current, config_current, can_rollback, template_image`
 
 func scanPlacement(row pgx.Row) (Placement, error) {
 	var p Placement
 	var replaces *int64
 	var deleted, checked, server, probe *time.Time
 	err := row.Scan(&p.ID, &p.TenantID, &p.EdgeID, &p.Slot, &replaces, &p.CreatedAt, &p.CreatedBy, &deleted, &p.AppliedRevision, &p.ApplyResult, &p.ApplyError, &checked,
-		&p.ServerSerial, &server, &p.ProbeSerial, &probe, &p.CertGeneration, &p.RenewRequested, &p.CertApplyNeeded, &p.RetryRequested, &p.SupersededSerials, &p.FailedRevision)
+		&p.ServerSerial, &server, &p.ProbeSerial, &probe, &p.CertGeneration, &p.RenewRequested, &p.CertApplyNeeded, &p.RetryRequested, &p.SupersededSerials, &p.FailedRevision,
+		&p.TemplateCurrent, &p.ConfigCurrent, &p.CanRollback, &p.TemplateImage)
 	if replaces != nil {
 		p.Replaces = *replaces
 	}

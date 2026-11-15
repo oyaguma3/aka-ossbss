@@ -62,6 +62,11 @@ type RadsecStore interface {
 	StartRemoveBrought(ctx context.Context, tenant int64, caID string) error
 	RequestRetry(ctx context.Context, tenant, id int64) error
 	ExpiringAPCerts(ctx context.Context, before time.Time) ([]db.ExpiringAPCert, error)
+	// 以下はコンテナのひな形を段階的に届ける反映し直し（段階 6-0 の U6-8）。
+	EdgeRollouts(ctx context.Context, edge string, limit int) ([]db.Rollout, error)
+	CreateRollout(ctx context.Context, edge, mode, by string, items []db.Placement) (db.Rollout, error)
+	ResumeRollout(ctx context.Context, edge string, rollout int64) error
+	CancelRollout(ctx context.Context, edge string, rollout int64) error
 }
 
 // slugPattern はテナントの slug・エッジの ID・AP の名前の形（radsec-edge §8.1）。
@@ -305,6 +310,11 @@ type edgeData struct {
 	Message    string
 	Error      string
 	CanManage  bool
+	// CanOperate は反映し直しを使えるか（運用担当・システム管理者）。Stale はひな形か設定の書き方が古いテナント（段階 6-0 の U6-7）。
+	// Rollouts はこのエッジの反映し直し（動いている・止まっているものが先頭）。
+	CanOperate bool
+	Stale      []edgeTenantRow
+	Rollouts   []rolloutView
 }
 
 // edgeTenantRow はエッジに置いたテナントの 1 行。
@@ -314,6 +324,55 @@ type edgeTenantRow struct {
 	// Failed は反映に失敗したか、宣言や証明書を送れていないか。
 	Failed bool
 }
+
+// rolloutView は反映し直しの表示（1 件ずつにテナントの名前を付ける）。
+type rolloutView struct {
+	db.Rollout
+	Names map[int64]string
+}
+
+// ModeLabel は反映し直しの種類の表示。
+func (r rolloutView) ModeLabel() string {
+	if r.Mode == provisioner.TemplatePrevious {
+		return "前の形に戻す"
+	}
+	return "今の形で反映し直す"
+}
+
+// StateLabel は反映し直しの状態の表示。
+func (r rolloutView) StateLabel() string {
+	switch r.State {
+	case db.RolloutRunning:
+		return "進めています"
+	case db.RolloutStopped:
+		return "止まりました"
+	case db.RolloutDone:
+		return "終わりました"
+	case db.RolloutCanceled:
+		return "取り消しました"
+	}
+	return r.State
+}
+
+// rolloutItemLabel は 1 件の状態の表示。
+func rolloutItemLabel(state string) string {
+	switch state {
+	case db.RolloutItemWaiting:
+		return "待ち"
+	case db.RolloutItemApplying:
+		return "反映中"
+	case db.RolloutItemOK:
+		return "成功"
+	case db.RolloutItemFailed:
+		return "失敗"
+	case db.RolloutItemSkipped:
+		return "飛ばした"
+	}
+	return state
+}
+
+// rolloutLimit はエッジの詳細に出す反映し直しの数。
+const rolloutLimit = 5
 
 func (h *Handler) renderEdge(w http.ResponseWriter, r *http.Request, id string, status int, mutate func(*edgeData)) {
 	ctx, cancel := dbContext(r)
@@ -337,9 +396,25 @@ func (h *Handler) renderEdge(w http.ResponseWriter, r *http.Request, id string, 
 		h.dbUnavailable(w, r, err)
 		return
 	}
-	d := edgeData{Edge: e, Form: formOfEdge(e), CanManage: can(r, authz.EdgeManage)}
+	d := edgeData{Edge: e, Form: formOfEdge(e), CanManage: can(r, authz.EdgeManage), CanOperate: can(r, authz.EdgeOperate)}
 	for _, p := range ps {
-		d.Tenants = append(d.Tenants, edgeTenantRow{Placement: p, TenantName: t.Name(p.TenantID), Failed: applyFailed(p.ApplyResult)})
+		row := edgeTenantRow{Placement: p, TenantName: t.Name(p.TenantID), Failed: applyFailed(p.ApplyResult)}
+		d.Tenants = append(d.Tenants, row)
+		if !p.Removing() && p.TemplateStale() {
+			d.Stale = append(d.Stale, row)
+		}
+	}
+	rs, err := h.radsec.EdgeRollouts(ctx, id, rolloutLimit)
+	if err != nil {
+		h.dbUnavailable(w, r, err)
+		return
+	}
+	for _, ro := range rs {
+		v := rolloutView{Rollout: ro, Names: map[int64]string{}}
+		for _, it := range ro.Items {
+			v.Names[it.TenantID] = t.Name(it.TenantID)
+		}
+		d.Rollouts = append(d.Rollouts, v)
 	}
 	if st, ok := h.radsecStatus(r); ok {
 		d.Status, d.Registered = edgeStatuses(st)[id]
@@ -532,6 +607,104 @@ func (h *Handler) edgeOrphanDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	h.record(r, audit.ActionEdgeOrphanDelete, edge, authz.NoTenant, map[string]any{"edge": edge, "tenant": tenant})
 	h.renderOrphans(w, r, edge, http.StatusOK, edgeOrphansData{Message: "エッジからテナント " + formatID(tenant) + " を消しました。"})
+}
+
+// ---- 反映し直し（段階 6-0 の U6-8） ----
+
+// edgeRolloutCreate は、選んだテナントを今の形か前の形で反映し直す。整合のループがエッジごとに 1 件ずつ進め、1 件でも失敗したら止まる。
+func (h *Handler) edgeRolloutCreate(w http.ResponseWriter, r *http.Request) {
+	if !h.requireOp(w, r, authz.EdgeOperate) {
+		return
+	}
+	edge := r.PathValue("id")
+	mode := r.PostFormValue("mode")
+	if mode != provisioner.TemplateLatest && mode != provisioner.TemplatePrevious {
+		h.renderEdge(w, r, edge, http.StatusUnprocessableEntity, func(d *edgeData) { d.Error = "反映し直しの種類が正しくありません。" })
+		return
+	}
+	ctx, cancel := dbContext(r)
+	defer cancel()
+	ps, err := h.radsec.EdgePlacements(ctx, edge)
+	if err != nil {
+		h.dbUnavailable(w, r, err)
+		return
+	}
+	// 選んだ順（画面の表の順）に並べる。外している配置と、前の形に戻せない配置は選べない。
+	var items []db.Placement
+	var tenants []int64
+	for _, v := range r.PostForm["placement"] {
+		id, err := parseID(v)
+		if err != nil {
+			continue
+		}
+		i := slices.IndexFunc(ps, func(p db.Placement) bool { return p.ID == id })
+		if i < 0 || ps[i].Removing() || slices.ContainsFunc(items, func(p db.Placement) bool { return p.ID == id }) {
+			continue
+		}
+		if mode == provisioner.TemplatePrevious && !ps[i].CanRollback {
+			h.renderEdge(w, r, edge, http.StatusUnprocessableEntity, func(d *edgeData) {
+				d.Error = "前の形に戻せないテナントが入っています（" + formatID(ps[i].TenantID) + "）。前の形に戻せるテナントだけを選んでください。"
+			})
+			return
+		}
+		items = append(items, ps[i])
+		tenants = append(tenants, ps[i].TenantID)
+	}
+	if len(items) == 0 {
+		h.renderEdge(w, r, edge, http.StatusUnprocessableEntity, func(d *edgeData) { d.Error = "テナントを選んでください。" })
+		return
+	}
+	ro, err := h.radsec.CreateRollout(ctx, edge, mode, userFrom(r.Context()).Email, items)
+	switch {
+	case errors.Is(err, db.ErrRolloutActive):
+		h.renderEdge(w, r, edge, http.StatusConflict, func(d *edgeData) {
+			d.Error = "このエッジには動いている・止まっている反映し直しがあります。終わるか、取り消してから始めてください。"
+		})
+		return
+	case err != nil:
+		h.dbUnavailable(w, r, err)
+		return
+	}
+	h.record(r, audit.ActionRolloutStart, edge, authz.NoTenant, map[string]any{"edge": edge, "rollout": ro.ID, "mode": mode, "tenants": tenants})
+	h.renderEdge(w, r, edge, http.StatusOK, func(d *edgeData) {
+		d.Message = fmt.Sprintf("反映し直しを始めました（%d 件。1 件ずつ進め、1 件でも失敗したら止まります）。", len(items))
+	})
+}
+
+// edgeRolloutAct は止まった反映し直しを続けるか（resume）、反映し直しを取り消す（cancel）。
+func (h *Handler) edgeRolloutAct(act string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !h.requireOp(w, r, authz.EdgeOperate) {
+			return
+		}
+		edge := r.PathValue("id")
+		id, err := parseID(r.PathValue("rollout"))
+		if err != nil {
+			h.notFound(w, r)
+			return
+		}
+		ctx, cancel := dbContext(r)
+		defer cancel()
+		action, msg := audit.ActionRolloutResume, "反映し直しを続けます（失敗した 1 件からやり直します）。"
+		if act == "cancel" {
+			action, msg = audit.ActionRolloutCancel, "反映し直しを取り消しました（まだのテナントには送りません。反映中の 1 件はエッジで続きます）。"
+			err = h.radsec.CancelRollout(ctx, edge, id)
+		} else {
+			err = h.radsec.ResumeRollout(ctx, edge, id)
+		}
+		switch {
+		case errors.Is(err, db.ErrNotFound):
+			h.renderEdge(w, r, edge, http.StatusConflict, func(d *edgeData) {
+				d.Error = "その反映し直しはもう続けられません（終わったか、取り消されたか、止まっていません）。"
+			})
+			return
+		case err != nil:
+			h.dbUnavailable(w, r, err)
+			return
+		}
+		h.record(r, action, edge, authz.NoTenant, map[string]any{"edge": edge, "rollout": id})
+		h.renderEdge(w, r, edge, http.StatusOK, func(d *edgeData) { d.Message = msg })
+	}
 }
 
 // ---- 全テナントの状態 ----
@@ -1191,6 +1364,15 @@ type radsecSummary struct {
 	APsTotal  int
 	// CRLs は CRL の期限が近いか切れた CA。
 	CRLs []radsecSummaryRow
+	// Stale はコンテナのひな形か設定の書き方が古いテナントのあるエッジと、その数。StoppedRollouts は反映し直しが止まったエッジ（段階 6-0）。
+	Stale           []staleEdge
+	StoppedRollouts []string
+}
+
+// staleEdge は古いテナントのあるエッジ。
+type staleEdge struct {
+	EdgeID string
+	Count  int
 }
 
 // radsecSummaryRow は欄の 1 行。
@@ -1207,7 +1389,7 @@ type radsecSummaryRow struct {
 
 // Clean は知らせることがないか。
 func (s radsecSummary) Clean() bool {
-	return len(s.Disconnected)+len(s.Failed)+len(s.EdgeCerts)+s.APsTotal+len(s.CRLs) == 0
+	return len(s.Disconnected)+len(s.Failed)+len(s.EdgeCerts)+s.APsTotal+len(s.CRLs)+len(s.Stale)+len(s.StoppedRollouts) == 0
 }
 
 // radsecSummaryAPs は欄に出す AP・グループの数の上限。
@@ -1231,11 +1413,15 @@ func (h *Handler) loadRadsecSummary(ctx context.Context, st *provisionerData) *r
 	now := time.Now()
 	s := &radsecSummary{}
 	names := map[string]string{}
+	stale := map[string]int{}
 	for _, t := range tenants {
 		names[formatID(t.TenantID)] = t.TenantName
 		for _, p := range t.Placements {
 			if p.Removing() {
 				continue
+			}
+			if p.TemplateStale() {
+				stale[p.EdgeID]++
 			}
 			row := radsecSummaryRow{TenantID: t.TenantID, TenantName: t.TenantName, EdgeID: p.EdgeID, Slot: p.Slot}
 			switch {
@@ -1263,6 +1449,19 @@ func (h *Handler) loadRadsecSummary(ctx context.Context, st *provisionerData) *r
 		return nil
 	}
 	s.APsTotal, s.APs = len(aps), aps[:min(len(aps), radsecSummaryAPs)]
+	for _, e := range edges {
+		if n := stale[e.ID]; n > 0 {
+			s.Stale = append(s.Stale, staleEdge{EdgeID: e.ID, Count: n})
+		}
+		rs, err := h.radsec.EdgeRollouts(ctx, e.ID, 1)
+		if err != nil {
+			h.log.Warn("home: rollouts", "error", err)
+			return nil
+		}
+		if len(rs) > 0 && rs[0].State == db.RolloutStopped {
+			s.StoppedRollouts = append(s.StoppedRollouts, e.ID)
+		}
+	}
 	if st == nil || st.Error != "" {
 		return s
 	}

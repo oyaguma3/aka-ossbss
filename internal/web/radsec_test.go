@@ -35,6 +35,42 @@ type fakeRadsec struct {
 	requested int
 	nextID    int64
 	expiring  []db.ExpiringAPCert
+	rollouts  []db.Rollout
+}
+
+func (f *fakeRadsec) EdgeRollouts(_ context.Context, edge string, limit int) ([]db.Rollout, error) {
+	var out []db.Rollout
+	for _, r := range slices.Backward(f.rollouts) {
+		if r.EdgeID == edge && len(out) < limit {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+func (f *fakeRadsec) CreateRollout(_ context.Context, edge, mode, by string, items []db.Placement) (db.Rollout, error) {
+	if slices.ContainsFunc(f.rollouts, func(r db.Rollout) bool { return r.EdgeID == edge && r.Active() }) {
+		return db.Rollout{}, db.ErrRolloutActive
+	}
+	r := db.Rollout{ID: int64(len(f.rollouts) + 1), EdgeID: edge, Mode: mode, State: db.RolloutRunning, CreatedBy: by}
+	for i, p := range items {
+		r.Items = append(r.Items, db.RolloutItem{Seq: i + 1, PlacementID: p.ID, TenantID: p.TenantID, State: db.RolloutItemWaiting})
+	}
+	f.rollouts = append(f.rollouts, r)
+	return r, nil
+}
+func (f *fakeRadsec) setRollout(edge string, id int64, from []string, to string) error {
+	i := slices.IndexFunc(f.rollouts, func(r db.Rollout) bool { return r.ID == id && r.EdgeID == edge && slices.Contains(from, r.State) })
+	if i < 0 {
+		return db.ErrNotFound
+	}
+	f.rollouts[i].State = to
+	return nil
+}
+func (f *fakeRadsec) ResumeRollout(_ context.Context, edge string, id int64) error {
+	return f.setRollout(edge, id, []string{db.RolloutStopped}, db.RolloutRunning)
+}
+func (f *fakeRadsec) CancelRollout(_ context.Context, edge string, id int64) error {
+	return f.setRollout(edge, id, []string{db.RolloutRunning, db.RolloutStopped}, db.RolloutCanceled)
 }
 
 func newFakeRadsec() *fakeRadsec {
@@ -429,6 +465,9 @@ func TestRadsecPermissions(t *testing.T) {
 		{"POST", "/tenants/10/aps", no, 400, 400, 400},
 		{"POST", "/tenants/20/aps", nf, nf, 400, 400},
 		{"GET", "/tenants/10/radsec/server-ca.pem", no, ok, ok, ok},
+		{"POST", "/edges/edge-01/rollouts", no, no, 422, 422},
+		{"POST", "/edges/edge-01/rollouts/9/resume", no, no, 409, 409},
+		{"POST", "/edges/edge-01/rollouts/9/cancel", no, no, 409, 409},
 	} {
 		for i, email := range []string{"a@example.com", "b@example.com", "c@example.com", "d@example.com"} {
 			h := e.as(email)
@@ -1032,4 +1071,65 @@ func TestRadsecPolicyCandidates(t *testing.T) {
 	e.pv.addRadius("440100123456789", "active", 10)
 	body := get(e.as("b@example.com"), "/subscribers/440100123456789/policy").Body.String()
 	mustContain(t, body, `<option value="acme-ap-1">`, `list="nas-candidates"`)
+}
+
+// エッジの詳細の古いテナントの一覧と反映し直し（段階 6-0 の U6-7・U6-8）。
+func TestEdgeRollout(t *testing.T) {
+	e := newRadsecEnv(t)
+	e.enable(10, "aaa")
+	e.enable(20, "bbb")
+	e.addEdge("edge-01", 5)
+	no, yes := new(false), new(true)
+	e.rs.places = []db.Placement{
+		{ID: 1, TenantID: 10, EdgeID: "edge-01", Slot: "primary", TemplateCurrent: no, ConfigCurrent: yes, CanRollback: false, TemplateImage: "aaaaaaaaaaaa"},
+		{ID: 2, TenantID: 20, EdgeID: "edge-01", Slot: "primary", TemplateCurrent: no, CanRollback: true},
+		{ID: 3, TenantID: 30, EdgeID: "edge-01", Slot: "secondary", TemplateCurrent: yes, ConfigCurrent: yes},
+	}
+	c := e.as("c@example.com")
+	body := get(c, "/edges/edge-01").Body.String()
+	mustContain(t, body, "古いテナント 2", `name="placement" value="1"`, `name="placement" value="2"`, "選んだテナントを今の形で反映し直す")
+	mustNotContain(t, body, `name="placement" value="3"`)
+	// 前の形に戻せないテナントは、前の形に戻すに選べない。
+	w := post(c, "/edges/edge-01/rollouts", url.Values{"mode": {"previous"}, "placement": {"1", "2"}})
+	if w.Code != 422 || len(e.rs.rollouts) != 0 {
+		t.Fatalf("previous with a tenant that cannot go back: %d %d", w.Code, len(e.rs.rollouts))
+	}
+	// 選んだ順で作る（外の配置・重なりは除く）。
+	w = post(c, "/edges/edge-01/rollouts", url.Values{"mode": {"latest"}, "placement": {"2", "1", "2", "99"}})
+	if w.Code != 200 || len(e.rs.rollouts) != 1 {
+		t.Fatalf("latest: %d %s", w.Code, w.Body.String())
+	}
+	if r := e.rs.rollouts[0]; r.Mode != "latest" || len(r.Items) != 2 || r.Items[0].PlacementID != 2 || r.Items[1].PlacementID != 1 || r.CreatedBy != "c@example.com" {
+		t.Errorf("rollout = %+v", r)
+	}
+	mustContain(t, w.Body.String(), "反映し直しを始めました（2 件", "進めています", "取り消す")
+	mustNotContain(t, w.Body.String(), `name="placement"`)
+	// 動いている間は新しく始められない。
+	if w := post(c, "/edges/edge-01/rollouts", url.Values{"mode": {"latest"}, "placement": {"1"}}); w.Code != 409 {
+		t.Errorf("second rollout: %d", w.Code)
+	}
+	// 止まったら続けられ、取り消せる。
+	e.rs.rollouts[0].State, e.rs.rollouts[0].StopReason = db.RolloutStopped, "ヘルスチェックに失敗しました"
+	mustContain(t, get(c, "/edges/edge-01").Body.String(), "止まりました", "ヘルスチェックに失敗しました", "続ける")
+	// ダッシュボードにも出す。
+	mustContain(t, get(c, "/").Body.String(), "反映し直しが止まったエッジ", "古いテナントのあるエッジ", "（2）")
+	if w := post(c, "/edges/edge-01/rollouts/1/resume", url.Values{}); w.Code != 200 || e.rs.rollouts[0].State != db.RolloutRunning {
+		t.Errorf("resume: %d %s", w.Code, e.rs.rollouts[0].State)
+	}
+	if w := post(e.as("d@example.com"), "/edges/edge-01/rollouts/1/cancel", url.Values{}); w.Code != 200 || e.rs.rollouts[0].State != db.RolloutCanceled {
+		t.Errorf("cancel: %d %s", w.Code, e.rs.rollouts[0].State)
+	}
+	if w := post(c, "/edges/edge-01/rollouts/1/resume", url.Values{}); w.Code != 409 {
+		t.Errorf("resume after cancel: %d", w.Code)
+	}
+	// 監査ログ。
+	var actions []string
+	for _, a := range e.db.audit {
+		if strings.HasPrefix(a.Action, "radsec.rollout.") {
+			actions = append(actions, a.Action)
+		}
+	}
+	if !slices.Equal(actions, []string{"radsec.rollout.start", "radsec.rollout.resume", "radsec.rollout.cancel"}) {
+		t.Errorf("audit = %v", actions)
+	}
 }

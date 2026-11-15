@@ -20,6 +20,10 @@ import (
 type pages map[string]*template.Template
 
 var funcs = template.FuncMap{
+	// rolloutItem は反映し直しの 1 件の状態の表示（段階 6-0）。
+	"rolloutItem": rolloutItemLabel,
+	// deref は *bool の値（nil は false）。
+	"deref": func(b *bool) bool { return b != nil && *b },
 	// asset は静的ファイルの URL（内容のハッシュつき）。
 	"asset": assetURL,
 	// stateLabel は加入者の状態の名前、sideLabel は側の名前、downstreamLabel は下流の名前。

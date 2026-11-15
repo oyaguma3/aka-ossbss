@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,25 @@ func TestIntegrationLoop(t *testing.T) {
 	got, err = pv.EdgeTenant(ctx, edge, tenant)
 	if err != nil || got.ServerCert == nil || got.ServerCert.Serial != s.place(1).ServerSerial || got.Pending {
 		t.Errorf("after renewal = %+v, %v", got, err)
+	}
+
+	// ひな形の状態の写しと反映し直し（段階 6-0 の U6-7・U6-8）。反映した形が今の形なので、今の形への反映し直しは作り直さずに成功し、
+	// 前の形への反映し直しは前の形がないのでエッジが断り、反映し直しが止まる。
+	until("template state", func() bool { return s.place(1).TemplateCurrent != nil })
+	if p := s.place(1); !*p.TemplateCurrent || p.CanRollback || p.TemplateImage == "" || p.TemplateStale() {
+		t.Fatalf("template state = %+v", p)
+	}
+	s.rollouts = []db.Rollout{{ID: 1, EdgeID: edge, Mode: provisioner.TemplateLatest, State: db.RolloutRunning,
+		Items: []db.RolloutItem{{Seq: 1, PlacementID: 1, TenantID: tenant, State: db.RolloutItemWaiting}}}}
+	until("rollout latest", func() bool { return s.rollouts[0].State != db.RolloutRunning })
+	if r := s.rollouts[0]; r.State != db.RolloutDone || r.Items[0].State != db.RolloutItemOK {
+		t.Fatalf("rollout latest = %+v", r)
+	}
+	s.rollouts = append(s.rollouts, db.Rollout{ID: 2, EdgeID: edge, Mode: provisioner.TemplatePrevious, State: db.RolloutRunning,
+		Items: []db.RolloutItem{{Seq: 1, PlacementID: 1, TenantID: tenant, State: db.RolloutItemWaiting}}})
+	pass()
+	if r := s.rollouts[1]; r.State != db.RolloutStopped || r.Items[0].State != db.RolloutItemFailed || !strings.Contains(r.Items[0].Error, "前の形") {
+		t.Fatalf("rollout previous = %+v", r)
 	}
 
 	// CRL の取り直し。

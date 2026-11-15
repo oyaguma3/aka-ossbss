@@ -68,6 +68,57 @@
       </table>
     </div>
   </div>
+  {{- /* コンテナのひな形と設定の書き方（段階 6-0 の U6-7・U6-8）。エッジを上げた後に、古いテナントを選んで少しずつ反映し直す。 */}}
+  {{- $active := false}}{{range .Rollouts}}{{if .Active}}{{$active = true}}{{end}}{{end}}
+  <div class="card bg-base-100 shadow mb-6">
+    <div class="card-body overflow-x-auto">
+      <h2 class="card-title">コンテナのひな形と設定の書き方{{with .Stale}} <span class="badge badge-warning">古いテナント {{len .}}</span>{{end}}</h2>
+      {{- if .Stale}}
+      <p class="text-sm text-base-content/60">エッジを上げると、radsecproxy のイメージ・コンテナのひな形・設定の書き方が古いテナントが出ます。エッジは動いているコンテナを自動では作り直しません。
+        まず試しのテナントを 1 つ反映し直して確かめ、次に少しずつ選んでください。反映し直すと、そのテナントの AP の接続がいったん切れます（予備のエッジにつなぎ直します）。1 件ずつ進め、1 件でも失敗したら残りには送りません。</p>
+      <form id="edge-rollout" hx-post="/edges/{{.Edge.ID}}/rollouts" hx-target="#edge" hx-swap="outerHTML">
+      <table class="table table-sm">
+        <thead><tr>{{if and .CanOperate (not $active)}}<th></th>{{end}}<th>テナント</th><th>スロット</th><th>ひな形</th><th>設定の書き方</th><th>前の形</th></tr></thead>
+        <tbody>
+          {{- range .Stale}}
+          <tr>{{if and $.CanOperate (not $active)}}<td><input type="checkbox" name="placement" value="{{.ID}}" class="checkbox checkbox-sm"></td>{{end}}
+            <td><a class="link" href="/tenants/{{.TenantID}}/radsec">{{.TenantName}}</a></td><td>{{.Slot}}</td>
+            <td>{{if not .TemplateCurrent}}—{{else if deref .TemplateCurrent}}今の形{{else}}<span class="badge badge-warning badge-sm">古い</span>{{end}}{{with .TemplateImage}} <code class="text-xs">{{.}}</code>{{end}}</td>
+            <td>{{if not .ConfigCurrent}}—{{else if deref .ConfigCurrent}}今の書き方{{else}}<span class="badge badge-warning badge-sm">古い</span>{{end}}</td>
+            <td>{{if .CanRollback}}戻せる{{else}}—{{end}}</td></tr>
+          {{- end}}
+        </tbody>
+      </table>
+      {{- if and .CanOperate (not $active)}}
+      <div class="card-actions">
+        <button type="submit" name="mode" value="latest" class="btn btn-primary btn-sm">選んだテナントを今の形で反映し直す</button>
+        <button type="submit" name="mode" value="previous" class="btn btn-sm">選んだテナントを前の形に戻す</button>
+      </div>
+      {{- else if $active}}<p class="text-sm text-base-content/60">反映し直しが動いているか止まっている間は、新しく始められません。</p>{{end}}
+      </form>
+      {{- else}}
+      <p class="text-sm text-base-content/60">古いテナントはありません（エッジに届かないときは分かりません）。前の形に戻すときは、テナントの「RadSec」の画面で状態を確かめてから、ここで選びます。</p>
+      {{- end}}
+      {{- range .Rollouts}}
+      <div class="border border-base-300 rounded p-3 mt-3">
+        <p><strong>{{.ModeLabel}}</strong>（{{datetime .CreatedAt}}、{{.CreatedBy}}）: <span class="badge {{if eq .State "stopped"}}badge-error{{else if eq .State "running"}}badge-info{{else}}badge-ghost{{end}} badge-sm">{{.StateLabel}}</span>
+          成功 {{.Count "ok"}} / {{len .Items}}{{with .StopReason}} — <span class="text-error">{{.}}</span>{{end}}</p>
+        {{- if .Active}}
+        <table class="table table-xs mt-2">
+          <thead><tr><th>#</th><th>テナント</th><th>状態</th><th>誤り</th></tr></thead>
+          <tbody>{{$names := .Names}}{{range .Items}}<tr><td>{{.Seq}}</td><td>{{index $names .TenantID}}</td><td>{{rolloutItem .State}}</td><td class="text-error text-xs">{{.Error}}</td></tr>{{end}}</tbody>
+        </table>
+        {{- if $.CanOperate}}
+        <div class="card-actions mt-2">
+          {{- if eq .State "stopped"}}<form hx-post="/edges/{{$.Edge.ID}}/rollouts/{{.ID}}/resume" hx-target="#edge" hx-swap="outerHTML"><button class="btn btn-sm btn-primary">続ける（失敗した 1 件からやり直す）</button></form>{{end}}
+          <form hx-post="/edges/{{$.Edge.ID}}/rollouts/{{.ID}}/cancel" hx-target="#edge" hx-swap="outerHTML" hx-confirm="反映し直しを取り消します。まだのテナントには送りません。よろしいですか？"><button class="btn btn-sm btn-outline">取り消す</button></form>
+        </div>
+        {{- end}}
+        {{- end}}
+      </div>
+      {{- end}}
+    </div>
+  </div>
   <div class="card bg-base-100 shadow mb-6">
     <div class="card-body overflow-x-auto">
       <h2 class="card-title">エッジにしかないテナント</h2>

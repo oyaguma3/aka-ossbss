@@ -27,6 +27,10 @@ const (
 	ActionBroughtRemove     = "radsec.brought.remove"
 	ActionRadsecRetry       = "radsec.apply.retry"
 	ActionEdgeOrphanDelete  = "radsec.edge.orphan_delete"
+	// 反映し直し（段階 6-0 の U6-8）。
+	ActionRolloutStart  = "radsec.rollout.start"
+	ActionRolloutResume = "radsec.rollout.resume"
+	ActionRolloutCancel = "radsec.rollout.cancel"
 
 	// 中央の整合のループが書くもの（操作者は system。段階 4-4 の OB19）。
 	ActionLoopDeclare     = "radsec.declare"
@@ -37,4 +41,8 @@ const (
 	ActionLoopCRLRefresh  = "radsec.crl.refresh"
 	ActionLoopRemoved     = "radsec.placement.removed"
 	ActionLoopBroughtOff  = "radsec.brought.disabled"
+	// 反映し直しの 1 件の始まりと終わり、反映し直しの終わりと止まり（段階 6-0 の U6-8）。
+	ActionLoopRolloutItem   = "radsec.rollout.item"
+	ActionLoopRolloutFinish = "radsec.rollout.finish"
+	ActionLoopRolloutStop   = "radsec.rollout.stop"
 )

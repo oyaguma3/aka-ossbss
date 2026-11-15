@@ -32,6 +32,44 @@ type memStore struct {
 	apCerts  []db.ExpiringAPCert
 	audit    []db.AuditEntry
 	writes   int
+	rollouts []db.Rollout
+}
+
+func (s *memStore) SetPlacementTemplate(_ context.Context, id int64, current, config *bool, canRollback bool, image string) error {
+	p := s.place(id)
+	p.TemplateCurrent, p.ConfigCurrent, p.CanRollback, p.TemplateImage = current, config, canRollback, image
+	return nil
+}
+func (s *memStore) rollout(id int64) *db.Rollout {
+	i := slices.IndexFunc(s.rollouts, func(r db.Rollout) bool { return r.ID == id })
+	return &s.rollouts[i]
+}
+func (s *memStore) RunningRollouts(context.Context) ([]db.Rollout, error) {
+	var out []db.Rollout
+	for _, r := range s.rollouts {
+		if r.State == db.RolloutRunning {
+			r.Items = slices.Clone(r.Items)
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+func (s *memStore) SetRolloutItem(_ context.Context, rollout int64, seq int, state string, started, finished time.Time, errText string) error {
+	it := &s.rollout(rollout).Items[seq-1]
+	it.State, it.Error = state, errText
+	if !started.IsZero() {
+		it.StartedAt = started
+	}
+	if !finished.IsZero() {
+		it.FinishedAt = finished
+	}
+	return nil
+}
+func (s *memStore) FinishRollout(_ context.Context, rollout int64, state, reason string) error {
+	if r := s.rollout(rollout); r.State == db.RolloutRunning {
+		r.State, r.StopReason = state, reason
+	}
+	return nil
 }
 
 func (s *memStore) InsertAudit(_ context.Context, e db.AuditEntry) (int64, time.Time, error) {
@@ -172,10 +210,12 @@ func (s *memStore) tenant(id int64) *db.TenantRadsec {
 
 // fakeTenant はエッジのテナント。
 type fakeTenant struct {
-	sum    provisioner.EdgeTenantSummary
+	sum provisioner.EdgeTenantSummary
+	// mode は最後に始めた反映のひな形の扱い（空は普段の反映）。
 	decl   provisioner.EdgeDeclaration
 	server *provisioner.EdgeCertInfo
 	probe  *provisioner.EdgeCertInfo
+	mode   string
 }
 
 // fakeEdges は偽の aka-provisioner。エッジの反映は finish を呼ぶまで動いている。
@@ -192,10 +232,13 @@ type fakeEdges struct {
 	crlResult *provisioner.EdgeCRLRefresh
 	// replayed は書き込んだキー（aka-provisioner とエッジと同じく、同じキーでは何もせず前の応答を返す）。
 	replayed map[string]provisioner.EdgeTenant
+	// clock はエッジの時計（反映の始まりと終わりの時刻。呼ぶたびに進む）。
+	clock time.Time
 }
 
 func newFakeEdges(ids ...string) *fakeEdges {
-	f := &fakeEdges{edges: map[string]map[int64]*fakeTenant{}, down: map[string]bool{}, stopped: map[string]bool{}, errs: map[string]error{}, replayed: map[string]provisioner.EdgeTenant{}}
+	f := &fakeEdges{edges: map[string]map[int64]*fakeTenant{}, down: map[string]bool{}, stopped: map[string]bool{}, errs: map[string]error{}, replayed: map[string]provisioner.EdgeTenant{},
+		clock: testNow.Add(-time.Hour)}
 	for _, id := range ids {
 		f.edges[id] = map[int64]*fakeTenant{}
 	}
@@ -339,6 +382,20 @@ func (f *fakeEdges) ApplyEdgeTenant(_ context.Context, edge string, tenant int64
 	t.sum.Apply.State = "running" // 本物のエッジと同じく、前回の結果は残したまま
 	return t.sum.Apply, nil
 }
+func (f *fakeEdges) ApplyEdgeTenantTemplate(_ context.Context, edge string, tenant int64, mode, key string) (provisioner.EdgeApply, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.note("apply-"+mode, edge, key); err != nil {
+		return provisioner.EdgeApply{}, err
+	}
+	t := f.edges[edge][tenant]
+	f.clock = f.clock.Add(time.Second)
+	t.mode = mode
+	t.sum.Apply.State, t.sum.Apply.StartedAt = "running", f.clock
+	a := t.sum.Apply
+	a.Started = true
+	return a, nil
+}
 func (f *fakeEdges) RefreshEdgeCRL(_ context.Context, edge string, _ int64, key string) (provisioner.EdgeCRLRefresh, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -376,7 +433,12 @@ func (f *fakeEdges) finish(edge string, tenant int64, result string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	t := f.edges[edge][tenant]
-	t.sum.Apply = provisioner.EdgeApply{State: "idle", LastResult: result, LastRevision: t.sum.Revision}
+	f.clock = f.clock.Add(time.Second)
+	t.sum.Apply = provisioner.EdgeApply{State: "idle", LastResult: result, LastRevision: t.sum.Revision, LastFinishedAt: f.clock}
+	if result == "ok" && t.mode == "latest" {
+		t.sum.Template.Current = new(true)
+	}
+	t.mode = ""
 	if result == "ok" {
 		t.sum.AppliedRevision, t.sum.Pending = t.sum.Revision, false
 	} else {

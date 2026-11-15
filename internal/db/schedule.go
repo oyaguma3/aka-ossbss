@@ -170,6 +170,9 @@ func (d *DB) PurgeOld(ctx context.Context, before time.Time) (PurgeCounts, error
 			WHERE state <> 'running' AND started_at < $1 ORDER BY id LIMIT $2)`},
 		{count: &c.Scheduled, at: before, sql: `DELETE FROM scheduled_runs WHERE id IN (SELECT id FROM scheduled_runs
 			WHERE status <> 'running' AND started_at < $1 ORDER BY id LIMIT $2)`},
+		// 終わった反映し直し（段階 6-0。項目も一緒に）。配置より先に消す。
+		{count: &c.Radsec, at: before, sql: `DELETE FROM edge_rollouts WHERE id IN (SELECT id FROM edge_rollouts
+			WHERE state IN ('done', 'canceled') AND coalesce(finished_at, created_at) < $1 ORDER BY id LIMIT $2)`},
 		// RadSec の消した行（課金の数量を数えるために残した分。OB20）。
 		{count: &c.Radsec, at: before, sql: `DELETE FROM aps WHERE id IN (SELECT id FROM aps WHERE deleted_at < $1 ORDER BY id LIMIT $2)`},
 		{count: &c.Radsec, at: before, sql: `DELETE FROM placements WHERE id IN (SELECT id FROM placements WHERE removed_at < $1 ORDER BY id LIMIT $2)`},

@@ -73,6 +73,11 @@ type Store interface {
 	MarkRenewals(ctx context.Context, before time.Time) (int64, error)
 	ExpiringAPCerts(ctx context.Context, before time.Time) ([]db.ExpiringAPCert, error)
 	TryNamedLock(ctx context.Context, name string) (release func(), ok bool, err error)
+	// 以下はコンテナのひな形を段階的に届ける反映し直し（段階 6-0 の U6-8）。
+	SetPlacementTemplate(ctx context.Context, id int64, current, config *bool, canRollback bool, image string) error
+	RunningRollouts(ctx context.Context) ([]db.Rollout, error)
+	SetRolloutItem(ctx context.Context, rollout int64, seq int, state string, started, finished time.Time, errText string) error
+	FinishRollout(ctx context.Context, rollout int64, state, reason string) error
 }
 
 // Provisioner は Runner が使う aka-provisioner の口。*provisioner.Client が満たす。
@@ -86,6 +91,7 @@ type Provisioner interface {
 	EdgeProbeCSR(ctx context.Context, edge string, tenant int64, idempotencyKey string) (string, error)
 	PutEdgeProbeCert(ctx context.Context, edge string, tenant int64, certificate, idempotencyKey string) (provisioner.EdgeTenant, error)
 	ApplyEdgeTenant(ctx context.Context, edge string, tenant int64, idempotencyKey string) (provisioner.EdgeApply, error)
+	ApplyEdgeTenantTemplate(ctx context.Context, edge string, tenant int64, mode, idempotencyKey string) (provisioner.EdgeApply, error)
 	RefreshEdgeCRL(ctx context.Context, edge string, tenant int64, idempotencyKey string) (provisioner.EdgeCRLRefresh, error)
 	IssueCert(ctx context.Context, i provisioner.CertIssue, idempotencyKey string) (provisioner.Cert, error)
 	RevokeCert(ctx context.Context, serial, reason, idempotencyKey string) (provisioner.Cert, error)
@@ -249,6 +255,7 @@ func (r *Runner) pass(ctx context.Context) (string, error) {
 	}
 	p.readEdges(ctx, edges)
 	p.reportOrphans(tenants)
+	p.rollouts(ctx)
 	for _, t := range tenants {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -466,6 +473,7 @@ func (p *pass) syncTenant(ctx context.Context, t db.RadsecOverview) {
 	}
 	for _, st := range states {
 		p.writeState(ctx, t, st)
+		p.writeTemplate(ctx, st)
 	}
 }
 

@@ -295,6 +295,8 @@ type EdgeDeclaration struct {
 
 // EdgeApply はエッジの反映の状態。
 type EdgeApply struct {
+	// Started は反映の口の応答だけにある（false なら、すでに動いていた反映があり、新しく始めていない）。
+	Started        bool      `json:"started,omitzero"`
 	State          string    `json:"state"`
 	StartedAt      time.Time `json:"startedAt,omitzero"`
 	LastResult     string    `json:"lastResult,omitempty"`
@@ -318,7 +320,32 @@ type EdgeTenantSummary struct {
 	ProbeProblem    string    `json:"probeProblem,omitempty"`
 	Apply           EdgeApply `json:"apply"`
 	APCount         int       `json:"apCount"`
+	// Template はコンテナのひな形の状態、ConfigCurrent は設定の書き方が今か（分からなければ nil。radsec-edge の §24.14）。
+	Template      EdgeTemplateState `json:"template"`
+	ConfigCurrent *bool             `json:"configCurrent,omitempty"`
 }
+
+// EdgeTemplateRef はエッジのテナントのコンテナのひな形（ひな形の版と radsecproxy のイメージの ID）。
+type EdgeTemplateRef struct {
+	Version int    `json:"version"`
+	Image   string `json:"image"`
+}
+
+// EdgeTemplateState はエッジのテナントのコンテナのひな形の状態。Current と CanRollback は、エッジが agent に届かないと nil。
+type EdgeTemplateState struct {
+	Recorded    *EdgeTemplateRef `json:"recorded,omitempty"`
+	Running     *EdgeTemplateRef `json:"running,omitempty"`
+	Previous    *EdgeTemplateRef `json:"previous,omitempty"`
+	Current     *bool            `json:"current,omitempty"`
+	Mismatch    bool             `json:"mismatch,omitzero"`
+	CanRollback *bool            `json:"canRollback,omitempty"`
+}
+
+// コンテナのひな形の扱い（反映の本文。radsec-edge の §24.14）。
+const (
+	TemplateLatest   = "latest"
+	TemplatePrevious = "previous"
+)
 
 // EdgeCertInfo はエッジに置いた証明書の情報。
 type EdgeCertInfo struct {
@@ -452,6 +479,15 @@ func (c *Client) PutEdgeProbeCert(ctx context.Context, edge string, tenant int64
 // ApplyEdgeTenant は反映を裏で始める。実行のたびに新しいキーを使う（同じキーだと最初の応答を返すだけで何もしない）。
 func (c *Client) ApplyEdgeTenant(ctx context.Context, edge string, tenant int64, idempotencyKey string) (EdgeApply, error) {
 	return c.call[EdgeApply](ctx, request{method: http.MethodPost, path: edgeTenantPath(edge, tenant, "apply"), long: true, write: true, idempotencyKey: idempotencyKey})
+}
+
+// ApplyEdgeTenantTemplate は、コンテナを今の形（TemplateLatest）か前の形（TemplatePrevious）のひな形で作り直す反映を裏で始める。
+// 実行のたびに新しいキーを使う。
+func (c *Client) ApplyEdgeTenantTemplate(ctx context.Context, edge string, tenant int64, mode, idempotencyKey string) (EdgeApply, error) {
+	return c.call[EdgeApply](ctx, request{method: http.MethodPost, path: edgeTenantPath(edge, tenant, "apply"), long: true, write: true, idempotencyKey: idempotencyKey,
+		body: struct {
+			Template string `json:"template"`
+		}{mode}})
 }
 
 // RefreshEdgeCRL は CRL をすぐ取りに行く。実行のたびに新しいキーを使う。

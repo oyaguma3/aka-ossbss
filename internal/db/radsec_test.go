@@ -689,3 +689,103 @@ func (d *DB) MarkAPCertRevokedForTest(ctx context.Context, tenant int64) error {
 		return bumpRevision(ctx, tx, tenant, false)
 	})
 }
+
+// ひな形の状態の写しと反映し直し（段階 6-0 の U6-7・U6-8）。エッジに動いている・止まっているものは 1 つまで。
+func TestRadsecRollout(t *testing.T) {
+	d, tn := radsecFixture(t)
+	ctx := t.Context()
+	if _, err := d.EnableRadsec(ctx, tn.ID, "acme", "PEM", "op"); err != nil {
+		t.Fatal(err)
+	}
+	other, _ := d.CreateTenant(ctx, "other", Meta{})
+	if _, err := d.EnableRadsec(ctx, other.ID, "other", "PEM", "op"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.CreateEdge(ctx, testEdge("edge-01", 9), "op"); err != nil {
+		t.Fatal(err)
+	}
+	p1, err := d.AddPlacement(ctx, tn.ID, "edge-01", "primary", "op")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := d.AddPlacement(ctx, other.ID, "edge-01", "primary", "op")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetPlacementTemplate(ctx, p1.ID, new(false), nil, true, "0123456789ab"); err != nil {
+		t.Fatal(err)
+	}
+	ps, err := d.EdgePlacements(ctx, "edge-01")
+	if err != nil || len(ps) != 2 {
+		t.Fatalf("placements = %v, %v", ps, err)
+	}
+	if p := ps[0]; p.TemplateCurrent == nil || *p.TemplateCurrent || p.ConfigCurrent != nil || !p.CanRollback || p.TemplateImage != "0123456789ab" || !p.TemplateStale() {
+		t.Errorf("placement 1 = %+v", p)
+	}
+	if ps[1].TemplateStale() || ps[1].TemplateCurrent != nil {
+		t.Errorf("placement 2 = %+v", ps[1])
+	}
+
+	r, err := d.CreateRollout(ctx, "edge-01", "latest", "op@example.com", []Placement{ps[1], ps[0]})
+	if err != nil || len(r.Items) != 2 || r.Items[0].PlacementID != p2.ID {
+		t.Fatalf("CreateRollout = %+v, %v", r, err)
+	}
+	if _, err := d.CreateRollout(ctx, "edge-01", "previous", "op", []Placement{ps[0]}); !errors.Is(err, ErrRolloutActive) {
+		t.Errorf("second rollout = %v", err)
+	}
+	started := time.Date(2026, 11, 15, 1, 2, 3, 0, time.UTC)
+	if err := d.SetRolloutItem(ctx, r.ID, 1, RolloutItemApplying, started, time.Time{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRolloutItem(ctx, r.ID, 1, RolloutItemFailed, time.Time{}, started.Add(time.Minute), "ヘルスチェックに失敗しました"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.FinishRollout(ctx, r.ID, RolloutStopped, "ヘルスチェックに失敗しました"); err != nil {
+		t.Fatal(err)
+	}
+	if rs, err := d.RunningRollouts(ctx); err != nil || len(rs) != 0 {
+		t.Errorf("running after stop = %v, %v", rs, err)
+	}
+	if rs, err := d.StoppedRollouts(ctx); err != nil || len(rs) != 1 || rs[0].Items[0].State != RolloutItemFailed || !rs[0].Items[0].StartedAt.Equal(started) {
+		t.Errorf("stopped = %+v, %v", rs, err)
+	}
+	if err := d.ResumeRollout(ctx, "edge-02", r.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("resume on another edge = %v", err)
+	}
+	if err := d.ResumeRollout(ctx, "edge-01", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	rs, err := d.RunningRollouts(ctx)
+	if err != nil || len(rs) != 1 || rs[0].Items[0].State != RolloutItemWaiting || !rs[0].Items[0].StartedAt.IsZero() || rs[0].StopReason != "" {
+		t.Fatalf("running after resume = %+v, %v", rs, err)
+	}
+	if err := d.CancelRollout(ctx, "edge-01", r.ID); err != nil {
+		t.Fatal(err)
+	}
+	all, err := d.EdgeRollouts(ctx, "edge-01", 5)
+	if err != nil || len(all) != 1 || all[0].State != RolloutCanceled || all[0].Count(RolloutItemSkipped) != 2 || all[0].FinishedAt.IsZero() {
+		t.Fatalf("after cancel = %+v, %v", all, err)
+	}
+	// 取り消した後は新しく始められ、新しいもの（動いているもの）が先頭。
+	r2, err := d.CreateRollout(ctx, "edge-01", "previous", "op", []Placement{ps[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all, _ := d.EdgeRollouts(ctx, "edge-01", 1); len(all) != 1 || all[0].ID != r2.ID {
+		t.Errorf("latest rollout = %+v", all)
+	}
+	if err := d.FinishRollout(ctx, r2.ID, RolloutDone, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 13 か月より古い終わったものは消える（項目も）。
+	if _, err := d.Pool.Exec(ctx, "UPDATE edge_rollouts SET finished_at = now() - interval '14 months'"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := d.PurgeOld(ctx, time.Now().AddDate(0, -13, 0))
+	if err != nil || c.Radsec < 2 {
+		t.Errorf("purge = %+v, %v", c, err)
+	}
+	if all, _ := d.EdgeRollouts(ctx, "edge-01", 5); len(all) != 0 {
+		t.Errorf("rollouts after purge = %+v", all)
+	}
+}
