@@ -314,7 +314,7 @@ func (f *fakeRadsec) AddAPCert(_ context.Context, t, ap int64, c db.APCert) erro
 			f.aps[i].Certs = append([]db.APCert{c}, a.Certs...)
 		}
 	}
-	f.bump(t, false)
+	f.bump(t, true)
 	return nil
 }
 func (f *fakeRadsec) MarkAPCertRevoked(_ context.Context, t, ap int64, serial, reason string) error {
@@ -328,6 +328,7 @@ func (f *fakeRadsec) MarkAPCertRevoked(_ context.Context, t, ap int64, serial, r
 				r := f.radsec[t]
 				r.CRLDirty = true
 				f.radsec[t] = r
+				f.bump(t, true)
 				return nil
 			}
 		}
@@ -910,7 +911,7 @@ func TestRadsecAPs(t *testing.T) {
 	path := "/tenants/10/aps/" + strconv.FormatInt(ap.ID, 10)
 	// 詳細: 接続の案内。A には案内と操作を出さない。
 	body := get(h, path+"?created=1").Body.String()
-	mustContain(t, body, "反映してください", "primary.acme.radsec.example.net", ">20000<", "/radsec/server-ca.pem", "証明書の更新")
+	mustContain(t, body, "反映してください", "primary.acme.radsec.example.net", ">20000<", "/radsec/server-ca.pem", "証明書の更新", "AP の再起動が要ります")
 	body = get(a, path).Body.String()
 	mustContain(t, body, "acme-ap-1")
 	mustNotContain(t, body, "接続の案内", "証明書の更新", "/certs/")
@@ -931,12 +932,18 @@ func TestRadsecAPs(t *testing.T) {
 	// 更新と古い証明書の失効。
 	w = post(h, path+"/renew", url.Values{"csr": {testCSRPEM}})
 	wantStatus(t, "renew", w.Code, 200, w.Body.String())
-	mustContain(t, w.Body.String(), "新しい証明書を発行しました")
+	mustContain(t, w.Body.String(), "新しい証明書を発行しました", "反映は自動で進みます")
+	// 更新は反映も求めるので、「未反映の変更」が残らない（段階 6-5 の A6-15）。
+	if r := e.rs.radsec[10]; r.RequestedRevision != r.Revision {
+		t.Errorf("renew did not request an apply: %+v", r)
+	}
+	mustNotContain(t, get(h, "/tenants/10/radsec").Body.String(), "未反映の変更があります")
 	w = post(h, path+"/certs/"+serial+"/revoke", url.Values{"reason": {"bad"}})
 	wantStatus(t, "bad reason", w.Code, 400, w.Body.String())
 	w = post(h, path+"/certs/"+serial+"/revoke", url.Values{"reason": {provisioner.RevokeSuperseded}})
 	wantStatus(t, "revoke", w.Code, 200, w.Body.String())
-	if r := e.rs.radsec[10]; !r.CRLDirty {
+	mustContain(t, w.Body.String(), "反映も自動で進みます")
+	if r := e.rs.radsec[10]; !r.CRLDirty || r.RequestedRevision != r.Revision {
 		t.Errorf("crl dirty = %+v", r)
 	}
 	w = post(h, path+"/certs/"+serial+"/revoke", url.Values{"reason": {provisioner.RevokeSuperseded}})

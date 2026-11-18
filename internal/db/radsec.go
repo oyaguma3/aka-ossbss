@@ -828,7 +828,8 @@ func (d *DB) CreateAP(ctx context.Context, a AP, cert APCert) (AP, error) {
 	return out, err
 }
 
-// AddAPCert は AP の更新の証明書を足す。設定は変わらないが、宣言の証明書の情報が変わるので版を上げる（エッジの再起動は起きない）。
+// AddAPCert は AP の更新の証明書を足す。設定は変わらないが、宣言の証明書の情報が変わるので版を上げ、反映も求める（エッジは設定が
+// 変わらないので再起動しない。「未反映の変更」を残さないため。段階 6-5 の A6-15）。
 func (d *DB) AddAPCert(ctx context.Context, tenant, ap int64, cert APCert) error {
 	return d.radsecTx(ctx, "add ap cert", tenant, func(tx pgx.Tx, _ TenantRadsec) error {
 		var exists bool
@@ -843,11 +844,11 @@ func (d *DB) AddAPCert(ctx context.Context, tenant, ap int64, cert APCert) error
 		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}
-		return bumpRevision(ctx, tx, tenant, false)
+		return bumpRevision(ctx, tx, tenant, true)
 	})
 }
 
-// MarkAPCertRevoked は AP の証明書を失効させたことを記録し、CRL の取り直しの印を立てる。
+// MarkAPCertRevoked は AP の証明書を失効させたことを記録し、CRL の取り直しの印を立てる。版を上げて反映も求める（AddAPCert と同じ）。
 func (d *DB) MarkAPCertRevoked(ctx context.Context, tenant, ap int64, serial, reason string) error {
 	return d.radsecTx(ctx, "mark ap cert revoked", tenant, func(tx pgx.Tx, _ TenantRadsec) error {
 		tag, err := tx.Exec(ctx, `UPDATE ap_certs SET revoked_at = now(), revoke_reason = $3 WHERE serial = $1 AND ap_id = $2 AND revoked_at IS NULL
@@ -861,7 +862,7 @@ func (d *DB) MarkAPCertRevoked(ctx context.Context, tenant, ap int64, serial, re
 		if _, err := tx.Exec(ctx, "UPDATE tenant_radsec SET crl_dirty = true WHERE tenant_id = $1", tenant); err != nil {
 			return err
 		}
-		return bumpRevision(ctx, tx, tenant, false)
+		return bumpRevision(ctx, tx, tenant, true)
 	})
 }
 

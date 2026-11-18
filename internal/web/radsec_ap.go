@@ -365,7 +365,7 @@ func (h *Handler) apRenew(w http.ResponseWriter, r *http.Request) {
 	}
 	h.record(r, audit.ActionAPRenew, ap.NASID, id, map[string]any{"serial": cert.Serial})
 	h.renderAP(w, r, id, http.StatusOK, func(d *apData) {
-		d.Message = "新しい証明書を発行しました。AP に入れ替えた後で、古い証明書を失効させてください。"
+		d.Message = "新しい証明書を発行しました。各エッジへの反映は自動で進みます（証明書の更新では設定が変わらないので、AP の接続は切れません）。AP に入れ替えた後で、古い証明書を失効させてください。"
 	})
 }
 
@@ -415,7 +415,7 @@ func (h *Handler) apRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	h.record(r, audit.ActionAPRevoke, ap.NASID, id, map[string]any{"serial": serial, "reason": reason})
 	h.renderAP(w, r, id, http.StatusOK, func(d *apData) {
-		d.Message = "証明書を失効させました。各エッジに CRL の取り直しを送ります。"
+		d.Message = "証明書を失効させました。各エッジに CRL の取り直しを送り、反映も自動で進みます（失効させた証明書の接続だけが切れます）。"
 	})
 }
 

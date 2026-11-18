@@ -70,7 +70,7 @@
         <fieldset class="fieldset">
           <legend class="fieldset-legend">新しい CSR（PEM）</legend>
           <textarea name="csr" rows="6" class="textarea font-mono w-full{{if .CSRError}} textarea-error{{end}}">{{.CSR}}</textarea>
-          {{- if .CSRError}}{{template "field-error" .CSRError}}{{else}}<p class="label">同じ名前で発行するので、エッジの設定は変わりません。新旧が両方有効な間はどちらでもつながります。</p>{{end}}
+          {{- if .CSRError}}{{template "field-error" .CSRError}}{{else}}<p class="label">同じ名前で発行するので、エッジの設定は変わらず、反映は自動で進みます。新旧が両方有効な間はどちらでもつながります。製品によっては、証明書を差し替えた後に AP の再起動が要ります。</p>{{end}}
         </fieldset>
         <button type="submit" class="btn btn-primary btn-sm mt-2">発行する</button>
       </form>

@@ -263,17 +263,24 @@ func TestRadsecAPs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 更新は証明書を足し、再送は何もしない。
+	// 更新は証明書を足し、再送は何もしない。更新と失効は反映も求める（「未反映の変更」を残さない。段階 6-5 の A6-15）。
 	rev := func() int64 { x, _ := d.TenantRadsec(ctx, tn.ID); return x.Revision }
+	applyRequested := func() bool { x, _ := d.TenantRadsec(ctx, tn.ID); return x.RequestedRevision == x.Revision }
 	before := rev()
+	if applyRequested() {
+		t.Fatal("the AP additions requested an apply")
+	}
 	if err := d.AddAPCert(ctx, tn.ID, got.ID, cert("06")); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.AddAPCert(ctx, tn.ID, got.ID, cert("06")); err != nil || rev() != before+1 {
-		t.Errorf("replayed cert: %v, revision %d", err, rev())
+	if err := d.AddAPCert(ctx, tn.ID, got.ID, cert("06")); err != nil || rev() != before+1 || !applyRequested() {
+		t.Errorf("replayed cert: %v, revision %d, requested %v", err, rev(), applyRequested())
 	}
 	if err := d.MarkAPCertRevoked(ctx, tn.ID, got.ID, "01", "superseded"); err != nil {
 		t.Fatal(err)
+	}
+	if !applyRequested() || rev() != before+2 {
+		t.Errorf("revoking did not request an apply (revision %d)", rev())
 	}
 	if err := d.MarkAPCertRevoked(ctx, tn.ID, got.ID, "01", "superseded"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("revoke twice = %v", err)
