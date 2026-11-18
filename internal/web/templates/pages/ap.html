@@ -53,7 +53,7 @@
       <p class="text-sm">AP に次を設定します。{{.PurposeNote}}</p>
       <table class="table table-sm">
         <tbody>
-          <tr><th class="w-48">RadSec サーバーの名前</th><td class="font-mono">{{if .Domain}}{{range .SlotNames}}{{.}}<br>{{else}}配置がまだありません。{{end}}{{else}}radsec-ca に届かないので、名前を出せません。{{end}}</td></tr>
+          <tr><th class="w-48">RadSec サーバー</th><td>{{template "slot-endpoints" (dict "Endpoints" .Endpoints "Domain" .Domain)}}</td></tr>
           <tr><th>ポート</th><td class="font-mono">{{.Radsec.Port}}</td></tr>
           <tr><th>シークレット</th><td class="font-mono">radsec</td></tr>
           {{- if .CanManage}}<tr><th>サーバーCA の証明書</th><td><a class="btn btn-xs" href="/tenants/{{.Tenant.ID}}/radsec/server-ca.pem">取り出す</a></td></tr>{{end}}

@@ -37,7 +37,7 @@
         <tbody>
           <tr><th class="w-48">slug</th><td class="font-mono">{{.Radsec.Slug}}</td></tr>
           <tr><th>ポート</th><td class="font-mono">{{.Radsec.Port}}</td></tr>
-          <tr><th>AP に設定する名前</th><td class="font-mono">{{if .Domain}}{{range .SlotNames}}{{.}}<br>{{else}}配置がまだありません。{{end}}{{else}}radsec-ca に届かないので、名前を出せません。{{end}}</td></tr>
+          <tr><th>AP に設定するサーバー</th><td>{{template "slot-endpoints" (dict "Endpoints" .Endpoints "Domain" .Domain)}}</td></tr>
           <tr><th>AP・グループ</th><td><a class="link" href="/tenants/{{.Tenant.ID}}/aps">一覧を開く</a></td></tr>
           {{- if .Staff}}<tr><th>持ち込みの CA</th><td><a class="link" href="/tenants/{{.Tenant.ID}}/brought-cas">一覧を開く</a></td></tr>{{end}}
         </tbody>

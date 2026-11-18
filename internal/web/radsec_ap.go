@@ -225,9 +225,9 @@ type apData struct {
 	Tenant db.TenantSummary
 	Radsec db.TenantRadsec
 	AP     apRow
-	// Domain は DNS のドメイン、SlotNames は AP に設定する名前。
+	// Domain は DNS のドメイン、Endpoints は AP に設定するスロットごとの名前とアドレス。
 	Domain      string
-	SlotNames   []string
+	Endpoints   []slotEndpoint
 	PurposeNote string
 	CSR         string
 	CSRError    string
@@ -263,6 +263,10 @@ func (h *Handler) renderAP(w http.ResponseWriter, r *http.Request, id int64, sta
 	if err == nil {
 		ps, err = h.radsec.Placements(ctx, id)
 	}
+	var addrs map[string]string
+	if err == nil {
+		addrs, err = h.edgeAddrs(ctx)
+	}
 	if errors.Is(err, db.ErrNotFound) {
 		h.renderErrorLink(w, r, http.StatusNotFound, "AP・グループが見つかりません。", fmt.Sprintf("/tenants/%d/aps", id), "一覧へ")
 		return
@@ -281,17 +285,7 @@ func (h *Handler) renderAP(w http.ResponseWriter, r *http.Request, id int64, sta
 	if st, ok := h.radsecStatus(r); ok {
 		d.Domain = dnsDomain(st)
 	}
-	if d.Domain != "" {
-		seen := map[string]bool{}
-		for _, s := range db.RadsecSlots() {
-			for _, p := range ps {
-				if p.Slot == s && !p.Removing() && !seen[s] {
-					seen[s] = true
-					d.SlotNames = append(d.SlotNames, slotDNSName(s, rad.Slug, d.Domain))
-				}
-			}
-		}
-	}
+	d.Endpoints = slotEndpoints(rad.Slug, d.Domain, ps, addrs)
 	if mutate != nil {
 		mutate(&d)
 	}

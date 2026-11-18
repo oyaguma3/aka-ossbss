@@ -249,3 +249,19 @@
   </div>
 </div>
 {{- end}}
+
+{{/* AP に設定するスロットごとの接続先（段階 6-5 の A6-14）。. は dict（Endpoints、Domain）。エッジの ID は出さない（OB16）。 */}}
+{{define "slot-endpoints" -}}
+{{- if .Endpoints}}
+<table class="table table-xs">
+  <thead><tr><th>スロット</th><th>名前</th><th>IP アドレス</th></tr></thead>
+  <tbody>
+    {{- range .Endpoints}}
+    <tr><td class="font-mono">{{.Slot}}</td><td class="font-mono">{{or .Name "―"}}</td><td class="font-mono">{{.Addr}}{{with .NewAddr}}<br><span class="font-sans text-warning">移動の途中です。移動の後は {{.}}</span>{{end}}</td></tr>
+    {{- end}}
+  </tbody>
+</table>
+{{- if not .Domain}}<p class="text-sm text-warning">radsec-ca に届かないので、名前を出せません。</p>{{end}}
+<p class="text-sm text-base-content/60">AP には名前で設定します。名前を書けない AP だけ IP アドレスを書きます（スロットの移動やエッジの入れ替えで変わります。サーバー証明書には名前だけが入るので、名前と IP アドレスを照らし合わせる AP はつながりません）。</p>
+{{- else}}配置がまだありません。{{end}}
+{{- end}}

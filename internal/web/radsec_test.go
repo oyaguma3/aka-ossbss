@@ -10,6 +10,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -424,7 +425,8 @@ func (e *radsecEnv) enable(tenant int64, slug string) {
 
 func (e *radsecEnv) addEdge(id string, capacity int) {
 	e.t.Helper()
-	e.rs.edges[id] = db.Edge{ID: id, Name: id, Capacity: capacity, PublicAddr: "203.0.113.1", AuthUpstream: "10.0.0.1:1812", AcctUpstream: "10.0.0.1:1813"}
+	addr := fmt.Sprintf("203.0.113.%d", len(e.rs.edges)+1) // 足した順に 203.0.113.1、.2、…
+	e.rs.edges[id] = db.Edge{ID: id, Name: id, Capacity: capacity, PublicAddr: addr, AuthUpstream: "10.0.0.1:1812", AcctUpstream: "10.0.0.1:1813"}
 }
 
 func wantStatus(t *testing.T, what string, got, want int, body string) {
@@ -588,8 +590,12 @@ func TestRadsecPlacementAndDNS(t *testing.T) {
 	// スタッフには CNAME の案内、A・B にはスロットの名前だけ（エッジの ID を見せない。OB16）。
 	mustContain(t, w.Body.String(), "primary.acme.radsec.example.net", "CNAME", "edge-01.radsec.example.net", "配置が 1 つだけ")
 	body := get(e.as("b@example.com"), "/tenants/10/radsec").Body.String()
-	mustContain(t, body, "primary.acme.radsec.example.net")
+	mustContain(t, body, "primary.acme.radsec.example.net", "203.0.113.1", "名前を書けない AP")
 	mustNotContain(t, body, "edge-01", "CNAME")
+	// A（テナントの利用者）にも名前と IP アドレスを出す（段階 6-5 の A6-14）。
+	body = get(e.as("a@example.com"), "/tenants/10/radsec").Body.String()
+	mustContain(t, body, "primary.acme.radsec.example.net", "203.0.113.1")
+	mustNotContain(t, body, "edge-01")
 	// 容量の超過。
 	w = post(h, "/tenants/10/radsec/placements", url.Values{"slot": {"secondary"}, "edge": {"edge-01"}})
 	wantStatus(t, "capacity", w.Code, 409, w.Body.String())
@@ -602,6 +608,10 @@ func TestRadsecPlacementAndDNS(t *testing.T) {
 	w = post(h, "/tenants/10/radsec/placements/"+strconv.FormatInt(pid, 10)+"/move", url.Values{"edge": {"edge-02"}})
 	wantStatus(t, "move", w.Code, 200, w.Body.String())
 	mustContain(t, w.Body.String(), "edge-02.radsec.example.net", "移動の途中です", "移動を完了")
+	// 移動の途中は、今のアドレスと移動の後のアドレスを出す（名前を書けない AP は書き換えが要る）。
+	body = get(e.as("b@example.com"), "/tenants/10/radsec").Body.String()
+	mustContain(t, body, "203.0.113.1", "移動の後は 203.0.113.2")
+	mustNotContain(t, body, "edge-02")
 	newID := e.rs.places[1].ID
 	w = post(h, "/tenants/10/radsec/placements/"+strconv.FormatInt(newID, 10)+"/move-finish", url.Values{})
 	wantStatus(t, "finish before apply", w.Code, 409, w.Body.String())
@@ -625,9 +635,11 @@ func TestRadsecPlacementAndDNS(t *testing.T) {
 	if w := get(h, "/tenants/10/radsec/placements/999/logs"); w.Code != 404 {
 		t.Errorf("unknown placement = %d", w.Code)
 	}
-	// radsec-ca に届かなければ、名前を出せないと言う。
+	// radsec-ca に届かなければ、名前を出せないと言う。IP アドレスは台帳から出せる（移動を終えたので新しいエッジのもの）。
 	e.pv.statusErr = errors.New("dial")
-	mustContain(t, get(h, "/tenants/10/radsec").Body.String(), "名前を出せません")
+	body = get(h, "/tenants/10/radsec").Body.String()
+	mustContain(t, body, "名前を出せません", "203.0.113.2")
+	mustNotContain(t, body, "primary.acme.radsec.example.net", "移動の後は")
 	e.pv.statusErr = nil
 }
 
@@ -911,7 +923,7 @@ func TestRadsecAPs(t *testing.T) {
 	path := "/tenants/10/aps/" + strconv.FormatInt(ap.ID, 10)
 	// 詳細: 接続の案内。A には案内と操作を出さない。
 	body := get(h, path+"?created=1").Body.String()
-	mustContain(t, body, "反映してください", "primary.acme.radsec.example.net", ">20000<", "/radsec/server-ca.pem", "証明書の更新", "AP の再起動が要ります")
+	mustContain(t, body, "反映してください", "primary.acme.radsec.example.net", "203.0.113.1", ">20000<", "/radsec/server-ca.pem", "証明書の更新", "AP の再起動が要ります")
 	body = get(a, path).Body.String()
 	mustContain(t, body, "acme-ap-1")
 	mustNotContain(t, body, "接続の案内", "証明書の更新", "/certs/")

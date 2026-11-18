@@ -158,6 +158,58 @@ func slotRecords(slug, domain string, ps []db.Placement) []dnsRecord {
 	return out
 }
 
+// slotEndpoint は AP に設定するスロットごとの接続先（段階 6-5 の A6-14）。Name は DNS の名前（ドメインが分からなければ空）、
+// Addr はエッジの台帳の公開のアドレス（名前を書けない AP が書く）。移動の途中は、NewAddr に新しいエッジのアドレスを入れる。
+// A・B にも出すので、エッジの ID は持たない（OB16）。
+type slotEndpoint struct {
+	Slot, Name, Addr, NewAddr string
+}
+
+// slotEndpoints は配置からスロットごとの接続先を作る（スロットの順）。addrs はエッジの ID から公開のアドレス。
+func slotEndpoints(slug, domain string, ps []db.Placement, addrs map[string]string) []slotEndpoint {
+	var out []slotEndpoint
+	for _, s := range db.RadsecSlots() {
+		var cur, next *db.Placement
+		for _, p := range ps {
+			switch {
+			case p.Slot != s || p.Removing():
+			case p.Replaces != 0:
+				next = &p
+			default:
+				cur = &p
+			}
+		}
+		if cur == nil {
+			cur, next = next, nil
+		}
+		if cur == nil {
+			continue
+		}
+		ep := slotEndpoint{Slot: s, Addr: addrs[cur.EdgeID]}
+		if domain != "" {
+			ep.Name = slotDNSName(s, slug, domain)
+		}
+		if next != nil {
+			ep.NewAddr = addrs[next.EdgeID]
+		}
+		out = append(out, ep)
+	}
+	return out
+}
+
+// edgeAddrs はエッジの ID から公開のアドレスを返す（AP に設定する接続先に出す）。
+func (h *Handler) edgeAddrs(ctx context.Context) (map[string]string, error) {
+	edges, err := h.radsec.Edges(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(edges))
+	for _, e := range edges {
+		out[e.ID] = e.PublicAddr
+	}
+	return out, nil
+}
+
 // ---- エッジの台帳 ----
 
 // edgeForm はエッジのフォームの値と誤り。
@@ -889,9 +941,10 @@ type tenantRadsecData struct {
 	// Edges は配置の先の選択肢。FreeSlots は空いているスロット。
 	Edges     []db.Edge
 	FreeSlots []string
-	// Domain は DNS のドメイン（読めなければ空）。SlotNames は AP に設定する名前、Records は DNS に登録するレコード（C・D）。
+	// Domain は DNS のドメイン（読めなければ空）。Endpoints は AP に設定するスロットごとの名前とアドレス（全役割）、
+	// Records は DNS に登録するレコード（C・D）。
 	Domain    string
-	SlotNames []string
+	Endpoints []slotEndpoint
 	Records   []dnsRecord
 	// NoCRL は CRL のない持ち込みの CA があるか（テナント全体が CRLCheck off になる）。
 	NoCRL bool
@@ -985,19 +1038,14 @@ func (h *Handler) renderTenantRadsec(w http.ResponseWriter, r *http.Request, id 
 		if stOK {
 			d.Domain = dnsDomain(st)
 		}
-		if d.Domain != "" {
-			for s := range used {
-				d.SlotNames = append(d.SlotNames, s)
-			}
-			slices.SortFunc(d.SlotNames, func(x, y string) int {
-				return cmp.Compare(slices.Index(db.RadsecSlots(), x), slices.Index(db.RadsecSlots(), y))
-			})
-			for i, s := range d.SlotNames {
-				d.SlotNames[i] = slotDNSName(s, rad.Slug, d.Domain)
-			}
-			if d.Staff {
-				d.Records = slotRecords(rad.Slug, d.Domain, ps)
-			}
+		addrs, err := h.edgeAddrs(ctx)
+		if err != nil {
+			h.dbUnavailable(w, r, err)
+			return
+		}
+		d.Endpoints = slotEndpoints(rad.Slug, d.Domain, ps, addrs)
+		if d.Domain != "" && d.Staff {
+			d.Records = slotRecords(rad.Slug, d.Domain, ps)
 		}
 	}
 	if mutate != nil {
