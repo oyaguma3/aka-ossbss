@@ -193,11 +193,11 @@ jobs:
       # 契約テストの相手にする aka-provisioner と、その下流（aka-vecgen・aka-radius・radsec-ca・エッジ）のコミット。
       # 下流は aka-provisioner の ci.yml の VECGEN_REF・RADIUS_REF・CA_REF・EDGE_REF（aka-mvpset の versions.env）に合わせる。
       # aka-provisioner や下流の API を変えたら、その main のコミットに更新する。
-      PROVISIONER_REF: 930387aa98757b9899a2046d0a770442e517e2aa
-      VECGEN_REF: 53e7b3b542666e641ef23bd89cf79d3b8b44deb9
-      RADIUS_REF: 20c4575a05d7160cfd01c91d2adb6249c70abc29
-      CA_REF: d7f9a515a18965bb521d91e5a23913c4744cce7b
-      EDGE_REF: 85b798b88ce7adc0e74d6c498b9c2e6007936082
+      PROVISIONER_REF: 0bbc58da5f0aaf43afec003e76396b4b01997f33
+      VECGEN_REF: 42f5f5d6c996471d0e7cfb2f63c5ccc3d775e503
+      RADIUS_REF: 603f8c91af61bf5df1731790ac4355e439fe43da
+      CA_REF: e84ab759f5ef604968e2f690113c8a173c356da0
+      EDGE_REF: 4254bace5c81a7976819fdddff4b0d4e5e1424aa
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
